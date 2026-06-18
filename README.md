@@ -47,6 +47,27 @@ With no `.env`, the app runs on **localStorage** — fully functional on one bro
    npm run preview  # preview the production build
    ```
 
+## Deploy to Vercel
+
+The app is a static Vite SPA — any static host works; these steps are for Vercel
+(`vercel.json` pins the framework + SPA fallback).
+
+1. **Import the repo.** Vercel → *Add New… → Project* → import this GitHub repo.
+   Vite is auto-detected (build `npm run build`, output `dist`).
+2. **Set environment variables** under *Project → Settings → Environment
+   Variables* (Production), the same three from step 5 above:
+   ```
+   VITE_SUPABASE_URL=https://<ref>.supabase.co
+   VITE_SUPABASE_ANON_KEY=<anon public key>
+   VITE_AI_FUNCTION_URL=https://<ref>.functions.supabase.co/ai
+   ```
+3. **Deploy.** You get a `*.vercel.app` URL (add a custom domain under
+   *Settings → Domains*). It redeploys on every push to the production branch.
+
+> Set the env vars **before** the first build, or redeploy after adding them —
+> Vite inlines `VITE_*` values at build time, not at runtime. Without them the
+> app falls back to localStorage (no login, no cloud data).
+
 ## What runs where
 
 | Concern        | File                                  |
