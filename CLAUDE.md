@@ -24,10 +24,12 @@ src/
   RollinCoalDashboard.jsx        the entire app (~606 lines, one file by design)
   lib/
     storage.js                   db adapter: Supabase app_state table ⇄ localStorage fallback
-    ai.js                        askClaude() → calls the Supabase Edge Function
+    ai.js                        askClaude() → calls the Supabase Edge Function (sends the user's token)
+    auth.js                      email/password auth + login gate (Supabase); no-op on localStorage
 supabase/
-  functions/ai/index.ts          Deno function; holds ANTHROPIC_API_KEY server-side
-  migrations/0001_init.sql       app_state key-value table + RLS policy
+  functions/ai/index.ts          Deno function; holds ANTHROPIC_API_KEY, requires a logged-in user
+  migrations/0001_init.sql       app_state key-value table + RLS
+  migrations/0002_auth.sql       swaps anon access for an authenticated-only RLS policy
 ```
 
 Run: `npm install` → `npm run dev`. Build: `npm run build`. See README.md for Supabase setup.
@@ -79,9 +81,17 @@ Overview · Customers · Quotes · Inventory · Parts · Invoicing · Operations
 - **Storage** (`lib/storage.js`): if `VITE_SUPABASE_*` set → Supabase `app_state` (key `rc:<list>`, JSONB value). Else → localStorage. The component is unaware which; it just calls `db.getItem/setItem/removeItem`.
 - **AI** (`lib/ai.js` + `supabase/functions/ai`): `askClaude(prompt)` POSTs to the Edge Function, which calls Anthropic with the server-side key. Model via `ANTHROPIC_MODEL` secret (default `claude-sonnet-4-6`).
 
-## Auth & security (do before going public)
+## Auth & security (implemented — P0)
 
-The default RLS policy in `0001_init.sql` allows anon full access — acceptable only for a private internal tool. To harden: enable Supabase Auth, add a `user_id`/`org_id` column to `app_state`, and scope the policy to `auth.uid()`. Then gate the app behind a login.
+Auth is wired up. When Supabase is configured the app requires an email/password login; on localStorage (no `.env`) it runs open for local dev — there is no shared backend to protect, so the gate is skipped.
+
+- **Model: shared workspace.** `0002_auth.sql` replaces the old anon policy with one scoped to the `authenticated` role (`for all to authenticated using(true) with check(true)`). Any logged-in staff member reads/writes *all* shop data — no per-user isolation by design (it's one shop).
+- **Invite-only.** Create users in Supabase Dashboard → Authentication → Users. Disable public sign-up (Authentication → Providers → Email → "Allow new users to sign up" OFF). There is deliberately **no sign-up form** — don't add one.
+- **AI function requires a real user.** `functions/ai` verifies the caller's token with `auth.getUser()` and rejects the anon key (the anon key is itself a valid JWT, so gateway JWT-verification alone is not enough). Deploy it **without** `--no-verify-jwt`.
+- **The UI login gate is convenience only.** Real enforcement is server-side: RLS + the function's user check. A client that bypasses the React gate still can't touch data without a session.
+- **Client:** `lib/auth.js` exposes `getSession/signIn/signOut/onAuthChange` and re-exports `usingCloud`. `App` renders `<Login>` when `usingCloud && !session`; the header shows the email + a Sign Out button. Load/save effects are gated on `authed`, so nothing reads or writes while logged out.
+
+Not yet done (future hardening): per-user audit columns, role-based admin (e.g. gating the Reset button), password policy.
 
 ## Future: relational migration (optional, larger)
 
