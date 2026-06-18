@@ -23,8 +23,11 @@ With no `.env`, the app runs on **localStorage** — fully functional on one bro
    supabase login
    supabase link --project-ref <your-project-ref>
    supabase secrets set ANTHROPIC_API_KEY=sk-ant-...
-   supabase functions deploy ai      # do NOT use --no-verify-jwt — the function requires a signed-in user
+   supabase functions deploy ai --no-verify-jwt   # the function verifies the user itself (auth.getUser)
    ```
+   It deploys with `--no-verify-jwt` on purpose: the function does its own auth
+   check (which also rejects the anon key, unlike gateway JWT verification) and
+   this lets the browser's CORS preflight through.
 
 4. **Set up staff logins (invite-only).** The app requires an email/password login once Supabase is configured.
    - In **Authentication → Providers → Email**, turn **off** "Allow new users to sign up" (there is no sign-up form by design).

@@ -2,8 +2,7 @@
 // Rollin Coal — AI proxy Edge Function (Deno)
 //
 // Holds the Anthropic API key server-side and forwards prompts from the dashboard.
-// Deploy:   supabase functions deploy ai
-//           (do NOT pass --no-verify-jwt — we require a real signed-in user)
+// Deploy:   supabase functions deploy ai --no-verify-jwt
 // Secrets:  supabase secrets set ANTHROPIC_API_KEY=sk-ant-...
 //           (optional) supabase secrets set ANTHROPIC_MODEL=claude-sonnet-4-6
 //           SUPABASE_URL and SUPABASE_ANON_KEY are injected automatically.
@@ -11,8 +10,10 @@
 // Auth: the caller must send a logged-in user's access token as the Bearer
 // credential. We verify it with supabase.auth.getUser() and reject anything that
 // is not a real user — including the shared anon key (which is itself a valid
-// JWT, so gateway-level JWT verification is not sufficient on its own). This is
-// what stops the function from being an open relay on the Anthropic key.
+// JWT, so gateway JWT verification would let it through). Because the function
+// does its own check we deploy with --no-verify-jwt: that makes getUser() the
+// real (stronger) gate AND lets the browser's credential-less CORS preflight
+// (OPTIONS) through. This is what stops the function being an open relay.
 // ─────────────────────────────────────────────────────────────
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
