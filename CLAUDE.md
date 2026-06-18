@@ -42,7 +42,7 @@ Single file, intentionally. React with `useReducer`. Approximate map (search by 
 - `const STORE_KEYS` — the 18 persisted lists (see below)
 - `function reducer` — actions: `TAB, MODAL, CLOSE, LOAD, ADD, UPDATE, DELETE, UNDO, TOAST, RESET`
 - Helpers — `$$, $K, invTot, stk, cn`, engine helpers (`isEngine, engStatus, costBasis, trueMargin, marginPct, engLinks`), `CHANNELS`, `compressImg`
-- `saveAll / loadAll / clearAll` — call `db` from `lib/storage`
+- `saveAll / loadAll / clearAll` — call `db` from `lib/storage`. `loadAll` seeds `EMPTY` only for keys that were **never persisted**; a stored empty list stays empty (deleting every row no longer re-seeds it).
 - Shared UI — `Badge, Stat, SH, Fil, Empty, Tbl, BtnRow`
 - Views — `Overview, Customers, Quotes, Inv, Parts, Invoicing, Operations, Marketing, Schedule, Emps, Reports`
 - `function Modals` — every add/edit/detail modal; helpers `F, CS, ES, TS, PH, FM, EFM, LI, W, X, C`
@@ -60,7 +60,7 @@ Overview · Customers · Quotes · Inventory · Parts · Invoicing · Operations
 ## Key domain concepts (important — this is an engine shop, not a parts store)
 
 - **Engine unit record (the "passport").** Each engine in `inventory` with `cat==="Complete Engine"` (or `"Core"`) is a serialized unit. Fields: `serial`/`esn`, `cpl`, `arrangement`, `year`, `ratedHp`, `oilCap`, `sourceCore`, `status`, `photo`, `listedOn`, and a cost-basis breakdown (`costCore, costFreight, costParts, costLabor`). Opening an engine shows the full passport (in `Modals`, `s.modal==="part-detail"`).
-- **Lifecycle status** (`ENG_STATUSES`): `core → in-reman → available → on-hold → sold`. Use `engStatus(i)` (falls back to "available", or "core" for cores). Don't store status as free text in `notes`.
+- **Lifecycle status** (`ENG_STATUSES`): `core → in-reman → available → on-hold → sold`. Use `engStatus(i)` (reads `i.status`; falls back to "available", or "core" for cores). Don't store status as free text in `notes`. Engine availability/stock derives from `status`, **never `qty`** — `qty`/`reorder`/`stk()` are parts-only.
 - **True margin.** `costBasis(i)` sums the breakdown (falls back to flat `cost`); `trueMargin`/`marginPct` use it. A returned core can erase margin — keep cost basis honest.
 - **Linked records.** Invoices, cores, warranties, shipments may carry `engineId` pointing at the inventory item. `engLinks(s, id)` resolves them; the passport renders them. The "Sell Engine" button in the passport opens a pre-filled invoice and flips the engine to `sold`.
 - **Advertising channels** (`CHANNELS`): facebook, kijiji, marketbook. Each engine has `listedOn: []`. The **1-Post Funnel** (Marketing tab) generates platform-tailored listings via AI, opens all three posting pages, and stamps `listedOn`. Inventory shows channel chips + a "Not Listed" filter.
