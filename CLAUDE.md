@@ -30,6 +30,7 @@ supabase/
   functions/ai/index.ts          Deno function; holds ANTHROPIC_API_KEY, requires a logged-in user
   migrations/0001_init.sql       app_state key-value table + RLS
   migrations/0002_auth.sql       swaps anon access for an authenticated-only RLS policy
+  migrations/0003_inventory_table.sql  P4 phase 1: inventory → its own table (data jsonb + columns)
 ```
 
 Run: `npm install` → `npm run dev`. Build: `npm run build`. See README.md for Supabase setup.
@@ -79,7 +80,7 @@ Overview · Customers · Quotes · Inventory · Parts · Invoicing · Operations
 
 ## Backend
 
-- **Storage** (`lib/storage.js`): if `VITE_SUPABASE_*` set → Supabase `app_state` (key `rc:<list>`, JSONB value). Else → localStorage. The component is unaware which; it just calls `db.getItem/setItem/removeItem`.
+- **Storage** (`lib/storage.js`): if `VITE_SUPABASE_*` set → Supabase. Else → localStorage. The component is unaware which; it just calls `db.getItem/setItem/removeItem`. Most lists are one JSON blob per key in `app_state`; lists that have graduated to a real table (see `TABLE_ADAPTERS`) route there instead — currently **`rc:inventory` → the `inventory` table** (per-row: a `data` jsonb the app reads verbatim + projected typed columns + a real `id` PK). localStorage mode always uses the blob path (the cloud adapter is dead-code-eliminated when no Supabase env is set).
 - **AI** (`lib/ai.js` + `supabase/functions/ai`): `askClaude(prompt)` POSTs to the Edge Function, which calls Anthropic with the server-side key. Model via `ANTHROPIC_MODEL` secret (default `claude-sonnet-4-6`).
 
 ## Auth & security (implemented — P0)
@@ -94,9 +95,13 @@ Auth is wired up. When Supabase is configured the app requires an email/password
 
 Not yet done (future hardening): per-user audit columns, role-based admin (e.g. gating the Reset button), password policy.
 
-## Future: relational migration (optional, larger)
+## Relational migration (in progress — incremental)
 
-The current backend stores each list as one JSON blob — simple and reliable, but the engine↔invoice/core/warranty/shipment links are app-resolved by `engineId`, not enforced by the DB. To make them real foreign keys, create per-entity tables (`customers, engines, invoices, cores, warranties, shipments, ...`) with `engine_id` FKs, then refactor `lib/storage.js` to map lists to tables and the reducer to per-row ops. Do this incrementally, one entity at a time, keeping `app_state` working until each table is migrated. Not required for the app to function.
+Goal: move each list from a single JSON blob in `app_state` into its own real table with enforced FKs (the engine↔invoice/core/warranty/shipment links are currently app-resolved by `engineId`, not DB-enforced).
+
+**Pattern (per entity):** add a table with a `data` jsonb column (the exact object the app reads back — perfect round-trip, no reducer changes) + a few projected typed columns for SQL + a real `id` PK that child tables' FKs will reference. Add an entry to `TABLE_ADAPTERS` in `lib/storage.js` so the matching `rc:<list>` key routes to the table. Migrate the live data and retire the old blob (renamed to `rc:_bak:<list>_<nnnn>`). The dashboard/reducer don't change; the adapter syncs the whole list on each save (upsert + delete-missing).
+
+**Done:** phase 1 — `inventory` (`0003_inventory_table.sql`). **Next, in order:** `customers`, then the linked cluster (`invoices, cores, warranties, shipments`) — once two linked entities are both tables, add the real `engine_id`/`customer_id` FK constraints. A later phase can refactor the reducer to true per-row async writes for efficiency/concurrency. Not required for the app to function.
 
 ## Safe-change checklist
 
