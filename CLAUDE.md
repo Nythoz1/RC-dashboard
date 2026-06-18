@@ -39,7 +39,7 @@ Run: `npm install` → `npm run dev`. Build: `npm run build`. See README.md for 
 Single file, intentionally. React with `useReducer`. Approximate map (search by the landmark strings, don't trust line numbers — they drift):
 
 - `const FONTS` / `const EMPTY` — initial state, incl. 80-engine inventory seed + injector `parts` seed
-- `const STORE_KEYS` — the 18 persisted lists (see below)
+- `const STORE_KEYS` — the 19 persisted lists (see below)
 - `function reducer` — actions: `TAB, MODAL, CLOSE, LOAD, ADD, UPDATE, DELETE, UNDO, TOAST, RESET`
 - Helpers — `$$, $K, invTot, stk, cn`, engine helpers (`isEngine, engStatus, costBasis, trueMargin, marginPct, engLinks`), `CHANNELS`, `compressImg`
 - `saveAll / loadAll / clearAll` — call `db` from `lib/storage`. `loadAll` seeds `EMPTY` only for keys that were **never persisted**; a stored empty list stays empty (deleting every row no longer re-seeds it).
@@ -50,7 +50,7 @@ Single file, intentionally. React with `useReducer`. Approximate map (search by 
 - `export default function App` — load/save effects, tab routing, toast UI
 
 ### State shape (`STORE_KEYS`, all arrays)
-`customers, jobs, quotes, inventory, invoices, schedule, employees, expenses, leads, social, campaigns, contentCalendar, cores, shipments, commsLog, purchaseOrders, warranties, parts`
+`customers, jobs, timeEntries, quotes, inventory, invoices, schedule, employees, expenses, leads, social, campaigns, contentCalendar, cores, shipments, commsLog, purchaseOrders, warranties, parts`
 
 Transient state (NOT persisted): `tab, modal, md, toast, lastDel`. `saveAll` only writes `STORE_KEYS`, so these never hit the DB.
 
@@ -63,6 +63,7 @@ Overview · Customers · Quotes · Inventory · Parts · Invoicing · Operations
 - **Lifecycle status** (`ENG_STATUSES`): `core → in-reman → available → on-hold → sold`. Use `engStatus(i)` (reads `i.status`; falls back to "available", or "core" for cores). Don't store status as free text in `notes`. Engine availability/stock derives from `status`, **never `qty`** — `qty`/`reorder`/`stk()` are parts-only.
 - **True margin.** `costBasis(i)` sums the breakdown (falls back to flat `cost`); `trueMargin`/`marginPct` use it. A returned core can erase margin — keep cost basis honest.
 - **Linked records.** Invoices, cores, warranties, shipments may carry `engineId` pointing at the inventory item. `engLinks(s, id)` resolves them; the passport renders them. The "Sell Engine" button in the passport opens a pre-filled invoice and flips the engine to `sold`.
+- **Labor / time tracking.** `timeEntries` (`{id, jobId, tech, date, hours, rate, notes}`) logs labor against a work order, linked by `jobId` (a separate list, not embedded on the job). The Work Order modal (`job-detail`) shows logged time + hour/$ totals, with **Log Time** (→ `add-time`; the tech picker prefills `rate` from the employee) and **Bill Labor** (→ pre-filled invoice, one line per entry). Reports rolls it up as *Labor by Technician* (hours + billable $). `rate` is snapshotted onto each entry so historical labor cost survives employee rate changes.
 - **Advertising channels** (`CHANNELS`): facebook, kijiji, marketbook. Each engine has `listedOn: []`. The **1-Post Funnel** (Marketing tab) generates platform-tailored listings via AI, opens all three posting pages, and stamps `listedOn`. Inventory shows channel chips + a "Not Listed" filter.
 
 ## Conventions (follow these — they prevent regressions)
