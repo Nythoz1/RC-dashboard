@@ -64,7 +64,13 @@ Deno.serve(async (req) => {
       }),
     });
     const d = await r.json();
+    if (!r.ok || d?.error) {
+      const msg = d?.error?.message || d?.error?.type || `Anthropic API error (${r.status})`;
+      console.error("Anthropic error:", r.status, JSON.stringify(d));
+      return json({ error: msg }, 502);
+    }
     const text = (d.content || []).map((b: { text?: string }) => b.text || "").join("\n").trim();
+    if (!text) return json({ error: "The model returned an empty response." }, 502);
     return json({ text });
   } catch (e) {
     return json({ error: String(e) }, 500);
