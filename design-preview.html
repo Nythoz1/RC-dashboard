@@ -1,0 +1,338 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Rollin Coal — Bold &amp; Modern (design concept)</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@400;500;600;700;800;900&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+
+:root{
+  --fd:'Barlow Condensed',sans-serif;
+  --fm:'IBM Plex Mono',monospace;
+  --bg:#08090b;
+  --panel:#16181c;
+  --panel2:#1c1f24;
+  --line:#2a2d34;
+  --line2:#33373f;
+  --txt:#edeae4;
+  --mut:#9a958b;
+  --dim:#615d54;
+  --orange:#ff6a20;
+  --orange2:#d4581a;
+  --grad:linear-gradient(135deg,#ff7a2e,#d4581a);
+  --green:#3fae5a;--blue:#3a8fd6;--amber:#e0a92e;--red:#e0492f;--purple:#9a6ad6;
+}
+*{margin:0;padding:0;box-sizing:border-box;}
+html,body{background:var(--bg);}
+body{font-family:var(--fm);color:var(--txt);min-height:100vh;
+  background:
+    radial-gradient(900px 380px at 50% -120px,rgba(255,106,32,.10),transparent 70%),
+    radial-gradient(600px 300px at 90% 10%,rgba(58,143,214,.05),transparent 70%),
+    var(--bg);
+  background-attachment:fixed;}
+body::before{content:'';position:fixed;inset:0;pointer-events:none;z-index:9999;
+  background:repeating-linear-gradient(0deg,transparent,transparent 3px,rgba(255,255,255,.006) 3px,rgba(255,255,255,.006) 4px);}
+
+/* preview ribbon */
+.ribbon{display:flex;gap:12px;align-items:center;justify-content:center;flex-wrap:wrap;
+  padding:8px 16px;background:linear-gradient(90deg,rgba(255,106,32,.16),rgba(255,106,32,.04));
+  border-bottom:1px solid rgba(255,106,32,.3);font-size:11px;color:#ffd9c2;letter-spacing:.5px;}
+.ribbon b{font-family:var(--fd);letter-spacing:2px;text-transform:uppercase;color:#ff905c;}
+
+/* ── HEADER ── */
+.hdr{position:sticky;top:0;z-index:100;display:flex;align-items:center;justify-content:space-between;
+  padding:14px 22px;background:linear-gradient(180deg,#191919,#0d0d0e);
+  border-bottom:1px solid var(--line);box-shadow:0 1px 0 rgba(255,106,32,.25),0 10px 30px -18px rgba(0,0,0,.9);}
+.hl{display:flex;align-items:center;gap:13px;}
+.hi{width:46px;height:46px;border-radius:12px;display:flex;align-items:center;justify-content:center;
+  font-family:var(--fd);font-weight:900;font-size:20px;color:#fff;letter-spacing:-1px;background:var(--grad);
+  box-shadow:0 6px 18px -4px rgba(255,106,32,.6),inset 0 1px 0 rgba(255,255,255,.35);}
+.hn{font-family:var(--fd);font-weight:800;font-size:26px;letter-spacing:3px;text-transform:uppercase;line-height:1;
+  background:linear-gradient(180deg,#fff,#cdc8bf);-webkit-background-clip:text;background-clip:text;color:transparent;}
+.hs{font-size:9px;color:var(--orange);letter-spacing:3px;text-transform:uppercase;margin-top:3px;font-weight:600;}
+.hr{display:flex;align-items:center;gap:11px;font-size:10px;color:var(--dim);flex-wrap:wrap;}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--green);box-shadow:0 0 10px var(--green);animation:p 2s infinite;}
+@keyframes p{0%,100%{opacity:1}50%{opacity:.45}}
+.chip{padding:4px 9px;border:1px solid var(--line);border-radius:20px;color:var(--mut);font-size:9px;letter-spacing:1px;text-transform:uppercase;}
+
+/* ── NAV ── */
+.nav{position:sticky;top:74px;z-index:90;display:flex;gap:4px;padding:8px 16px;background:rgba(13,13,14,.92);
+  border-bottom:1px solid var(--line);overflow-x:auto;backdrop-filter:blur(8px);}
+.nav button{flex:0 0 auto;padding:9px 16px;background:none;border:none;border-radius:9px;color:var(--dim);
+  font-family:var(--fd);font-weight:700;font-size:12px;letter-spacing:1.5px;text-transform:uppercase;cursor:pointer;
+  transition:all .18s;white-space:nowrap;}
+.nav button:hover{color:var(--txt);background:#1b1d21;}
+.nav button.on{color:#fff;background:var(--grad);box-shadow:0 6px 16px -6px rgba(255,106,32,.7),inset 0 1px 0 rgba(255,255,255,.3);}
+
+/* ── BODY ── */
+.body{padding:24px;max-width:1440px;margin:0 auto;}
+.sectitle{font-family:var(--fd);font-weight:800;font-size:13px;letter-spacing:3px;text-transform:uppercase;color:var(--dim);
+  margin:34px 0 14px;display:flex;align-items:center;gap:10px;}
+.sectitle::after{content:'';flex:1;height:1px;background:linear-gradient(90deg,var(--line),transparent);}
+.sectitle .lead{color:var(--mut);}
+
+/* ── STAT GRID ── */
+.g6{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:14px;}
+.stat{position:relative;overflow:hidden;border-radius:14px;padding:18px 16px;
+  background:linear-gradient(160deg,#1b1e23,#131418);border:1px solid var(--line);
+  box-shadow:0 10px 28px -18px rgba(0,0,0,.9);transition:transform .18s,border-color .18s,box-shadow .18s;}
+.stat:hover{transform:translateY(-3px);border-color:var(--line2);box-shadow:0 18px 36px -20px rgba(0,0,0,1);}
+.stat::before{content:'';position:absolute;left:0;top:0;right:0;height:3px;background:var(--grad);box-shadow:0 0 14px rgba(255,106,32,.5);}
+.stat .sl{font-size:9px;color:var(--mut);letter-spacing:1.6px;text-transform:uppercase;margin-bottom:8px;font-weight:500;}
+.stat .sv{font-family:var(--fd);font-weight:900;font-size:38px;line-height:.9;letter-spacing:-.5px;}
+.stat .ss{font-size:10px;margin-top:8px;color:var(--dim);}
+.stat .ss.up{color:var(--green);}.stat .ss.dn{color:var(--red);}
+.stat .ghost{position:absolute;right:-6px;bottom:-14px;font-size:64px;opacity:.06;font-family:var(--fd);font-weight:900;}
+.stat.accent-amber::before{background:linear-gradient(135deg,#f0c14a,#e0a92e);box-shadow:0 0 14px rgba(224,169,46,.5);}
+.stat.accent-blue::before{background:linear-gradient(135deg,#5aa6e6,#3a8fd6);box-shadow:0 0 14px rgba(58,143,214,.5);}
+.stat.accent-red::before{background:linear-gradient(135deg,#ff6a4a,#e0492f);box-shadow:0 0 14px rgba(224,73,47,.5);}
+.stat.accent-green::before{background:linear-gradient(135deg,#5ed07a,#3fae5a);box-shadow:0 0 14px rgba(63,174,90,.5);}
+.tint-orange{color:#ff905c;}.tint-green{color:#6fd98a;}
+
+/* ── 2-COL ── */
+.two{display:grid;grid-template-columns:3fr 2fr;gap:18px;}
+@media(max-width:880px){.two{grid-template-columns:1fr;}}
+
+/* ── CARD / TABLE ── */
+.card{background:linear-gradient(160deg,#181a1e,#131417);border:1px solid var(--line);border-radius:14px;overflow:hidden;
+  box-shadow:0 10px 30px -22px rgba(0,0,0,1);}
+table{width:100%;border-collapse:collapse;}
+th{padding:11px 14px;text-align:left;font-size:9px;color:var(--mut);letter-spacing:1.6px;text-transform:uppercase;
+  background:#0f1012;border-bottom:1px solid var(--line);font-weight:600;white-space:nowrap;}
+td{padding:11px 14px;font-size:12px;border-bottom:1px solid #212327;vertical-align:middle;}
+tr:last-child td{border-bottom:none;}
+tbody tr{transition:background .15s;}
+tbody tr:hover td{background:linear-gradient(90deg,rgba(255,106,32,.07),transparent);}
+.tn{font-family:var(--fd);font-weight:700;font-size:14px;}
+.sub{color:var(--mut);}.dimt{color:var(--dim);}
+
+/* badges */
+.badge{display:inline-flex;align-items:center;gap:5px;padding:4px 10px;border-radius:20px;font-size:9px;font-weight:700;
+  letter-spacing:1.2px;text-transform:uppercase;font-family:var(--fm);border:1px solid;}
+.badge::before{content:'';width:5px;height:5px;border-radius:50%;background:currentColor;box-shadow:0 0 6px currentColor;}
+.b-green{color:#6fd98a;border-color:rgba(63,174,90,.5);background:rgba(63,174,90,.12);}
+.b-amber{color:#f0c14a;border-color:rgba(224,169,46,.5);background:rgba(224,169,46,.12);}
+.b-blue{color:#7ab9ef;border-color:rgba(58,143,214,.5);background:rgba(58,143,214,.12);}
+.b-red{color:#ff8a72;border-color:rgba(224,73,47,.5);background:rgba(224,73,47,.12);}
+.b-purple{color:#bd9aee;border-color:rgba(154,106,214,.5);background:rgba(154,106,214,.12);}
+.b-gray{color:#a39e94;border-color:var(--line2);background:#1d1f23;}
+
+/* buttons */
+.btn{padding:9px 16px;border-radius:9px;border:1px solid transparent;background:var(--grad);color:#fff;
+  font-family:var(--fm);font-size:12px;font-weight:600;cursor:pointer;transition:transform .15s,box-shadow .15s;
+  box-shadow:0 6px 16px -6px rgba(255,106,32,.6);}
+.btn:hover{transform:translateY(-2px);box-shadow:0 12px 22px -8px rgba(255,106,32,.8);}
+.btn.ghost{background:#191b1f;border-color:var(--line);color:var(--txt);box-shadow:none;}
+.btn.ghost:hover{border-color:var(--orange);color:#ff905c;transform:none;background:#1d1f24;}
+.fil{display:inline-flex;gap:7px;flex-wrap:wrap;margin-bottom:16px;}
+.fb{padding:6px 13px;border:1px solid var(--line);border-radius:20px;background:none;color:var(--dim);font-family:var(--fm);
+  font-size:9px;letter-spacing:1px;text-transform:uppercase;cursor:pointer;transition:all .15s;}
+.fb:hover{border-color:var(--mut);color:var(--mut);}
+.fb.on{border-color:var(--orange);color:#ff905c;background:rgba(255,106,32,.1);}
+.alerts{padding:6px 18px;}
+.alert{display:flex;gap:12px;align-items:center;padding:13px 0;border-bottom:1px solid #212327;font-size:12px;}
+.alert:last-child{border-bottom:none;}
+.alert .ic{font-size:17px;}
+
+/* ── REMAN BOARD ── */
+.rboard{display:grid;grid-template-columns:repeat(5,minmax(180px,1fr));gap:12px;overflow-x:auto;padding-bottom:6px;}
+.bcol{background:linear-gradient(180deg,#121316,#0e0f11);border:1px solid var(--line);border-radius:14px;min-height:260px;}
+.bh{padding:12px 14px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;}
+.bt{font-family:var(--fd);font-weight:800;font-size:12px;letter-spacing:2px;text-transform:uppercase;color:var(--mut);}
+.bc{font-size:10px;color:#fff;background:var(--grad);padding:2px 9px;border-radius:20px;font-weight:700;}
+.bcards{padding:11px;display:flex;flex-direction:column;gap:10px;}
+.jc{background:linear-gradient(160deg,#1a1c20,#141518);border:1px solid var(--line);border-left:3px solid var(--stage,#615d54);
+  border-radius:11px;padding:12px;cursor:pointer;transition:transform .15s,border-color .15s,box-shadow .15s;}
+.jc:hover{transform:translateY(-2px);border-color:var(--line2);box-shadow:0 12px 22px -14px rgba(0,0,0,1);}
+.jcn{font-family:var(--fd);font-weight:700;font-size:13px;margin-bottom:3px;}
+.jcm{display:flex;justify-content:space-between;font-size:10px;color:var(--dim);margin-top:7px;}
+.s-core{--stage:#a39e94;}.s-reman{--stage:#9a6ad6;}.s-avail{--stage:#3fae5a;}.s-hold{--stage:#e0a92e;}.s-sold{--stage:#e0492f;}
+
+/* ── PASSPORT MODAL ── */
+.modal{background:linear-gradient(160deg,#191b1f,#131417);border:1px solid var(--line2);border-radius:16px;overflow:hidden;
+  max-width:520px;box-shadow:0 30px 80px -30px rgba(0,0,0,1),0 0 0 1px rgba(255,106,32,.15);}
+.mhead{padding:18px 20px;background:linear-gradient(135deg,rgba(255,106,32,.18),rgba(255,106,32,.02));border-bottom:1px solid var(--line);
+  display:flex;align-items:flex-start;justify-content:space-between;gap:12px;}
+.mt{font-family:var(--fd);font-weight:800;font-size:20px;letter-spacing:1px;line-height:1.05;}
+.msk{font-size:10px;color:var(--orange);letter-spacing:2px;text-transform:uppercase;margin-top:4px;}
+.mbody{padding:20px;}
+.specs{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:18px;}
+.spec{background:#101113;border:1px solid var(--line);border-radius:10px;padding:11px;}
+.spec .l{font-size:8px;color:var(--dim);letter-spacing:1px;text-transform:uppercase;}
+.spec .v{font-family:var(--fd);font-weight:700;font-size:16px;margin-top:3px;}
+.cost{display:flex;justify-content:space-between;padding:9px 0;border-bottom:1px solid #212327;font-size:12px;}
+.cost:last-of-type{border-bottom:none;}
+.cost .v{font-family:var(--fd);font-weight:700;}
+.x{width:30px;height:30px;border-radius:8px;border:1px solid var(--line);background:#111;color:var(--mut);cursor:pointer;font-size:14px;}
+
+/* toast */
+.toast{display:inline-flex;align-items:center;gap:14px;background:#16181c;border:1px solid var(--line);border-left:3px solid var(--orange);
+  border-radius:11px;padding:12px 18px;font-size:12px;box-shadow:0 16px 40px -16px rgba(0,0,0,1);}
+.toast .u{color:#ff905c;border:1px solid var(--orange);border-radius:8px;padding:4px 10px;font-size:11px;cursor:pointer;background:none;}
+.label{font-size:10px;color:var(--dim);letter-spacing:1px;text-transform:uppercase;margin:30px 0 10px;}
+</style>
+</head>
+<body>
+
+<div class="ribbon"><b>Design Concept</b> · Bold &amp; Modern direction · static mockup — your live app is untouched · <span style="color:#caa">numbers are representative</span></div>
+
+<!-- HEADER -->
+<header class="hdr">
+  <div class="hl">
+    <div class="hi">RC</div>
+    <div><div class="hn">Rollin Coal</div><div class="hs">Diesel Engine Specialists</div></div>
+  </div>
+  <div class="hr">
+    <span class="dot"></span><span>Medicine Hat, AB</span>
+    <span class="chip">Mon · Jun 22</span>
+    <span class="chip">wayne@rollin-coal.ca</span>
+    <button class="btn ghost" style="font-size:10px;padding:6px 12px;">Sign Out</button>
+  </div>
+</header>
+
+<!-- NAV -->
+<nav class="nav">
+  <button class="on">Overview</button><button>Customers</button><button>Quotes</button>
+  <button>Inventory</button><button>Parts</button><button>Invoicing</button><button>Operations</button>
+  <button>Marketing</button><button>Schedule</button><button>Team</button><button>Reports</button>
+</nav>
+
+<div class="body">
+
+  <!-- OVERVIEW -->
+  <div class="sectitle"><span class="lead">Overview</span></div>
+  <div class="g6">
+    <div class="stat"><div class="sl">Active Jobs</div><div class="sv">4</div><div class="ghost">🔧</div></div>
+    <div class="stat accent-green"><div class="sl">Engines Available</div><div class="sv tint-green">17</div><div class="ss up">+2 this week</div></div>
+    <div class="stat"><div class="sl">Open Quotes</div><div class="sv">3</div></div>
+    <div class="stat"><div class="sl">Pending Revenue</div><div class="sv tint-orange">$48.2k</div><div class="ss">5 invoices</div></div>
+    <div class="stat accent-green"><div class="sl">Revenue Collected</div><div class="sv">$124k</div><div class="ss up">▲ 18% vs last mo</div></div>
+    <div class="stat"><div class="sl">New Leads</div><div class="sv">5</div></div>
+  </div>
+  <div class="g6" style="margin-top:14px;">
+    <div class="stat accent-amber"><div class="sl">Pending Cores</div><div class="sv">2</div><div class="ss dn">needs follow-up</div></div>
+    <div class="stat accent-blue"><div class="sl">Active Shipments</div><div class="sv">3</div></div>
+    <div class="stat accent-red"><div class="sl">Overdue Invoices</div><div class="sv">1</div><div class="ss dn">action needed</div></div>
+    <div class="stat"><div class="sl">Open POs</div><div class="sv">2</div></div>
+    <div class="stat"><div class="sl">Active Warranties</div><div class="sv">6</div></div>
+    <div class="stat"><div class="sl">Customers</div><div class="sv">18</div></div>
+  </div>
+
+  <div class="sectitle"></div>
+  <div class="two">
+    <div>
+      <div class="label">Recent Jobs</div>
+      <div class="card">
+        <table>
+          <thead><tr><th>Customer</th><th>Service</th><th>Due</th><th>Status</th></tr></thead>
+          <tbody>
+            <tr><td class="tn">Prairie Hauling Ltd</td><td class="sub">DD-15 reman swap</td><td class="dimt">Jun 24</td><td><span class="badge b-blue">In Progress</span></td></tr>
+            <tr><td class="tn">Hat Diesel Co</td><td class="sub">ISX-15 inspection</td><td class="dimt">Jun 25</td><td><span class="badge b-amber">Queued</span></td></tr>
+            <tr><td class="tn">Redcliff Trucking</td><td class="sub">Injector R&amp;R</td><td class="dimt">Jun 26</td><td><span class="badge b-blue">In Progress</span></td></tr>
+            <tr><td class="tn">Bow Valley Ag</td><td class="sub">DT466 dyno test</td><td class="dimt">Jun 28</td><td><span class="badge b-amber">Queued</span></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+    <div>
+      <div class="label">Alerts</div>
+      <div class="card alerts">
+        <div class="alert"><span class="ic" style="color:#ff8a72">⚠</span><span style="color:#ff8a72">1 overdue invoice</span></div>
+        <div class="alert"><span class="ic" style="color:#f0c14a">🔄</span><span style="color:#f0c14a">2 core returns pending</span></div>
+        <div class="alert"><span class="ic" style="color:#7ab9ef">🚚</span><span style="color:#7ab9ef">3 shipments in transit</span></div>
+        <div class="alert"><span class="ic" style="color:#6fd98a">✓</span><span style="color:#6fd98a">Warranties all current</span></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- INVENTORY -->
+  <div class="sectitle"><span class="lead">Inventory</span> · 77 engines</div>
+  <div class="fil">
+    <button class="fb on">All</button><button class="fb">Available</button><button class="fb">In Reman</button>
+    <button class="fb">Core</button><button class="fb">On Hold</button><button class="fb">Sold</button><button class="fb">Not Listed</button>
+  </div>
+  <div class="card" style="margin-bottom:8px;">
+    <table>
+      <thead><tr><th>SKU</th><th>Engine</th><th>ESN / Serial</th><th>Status</th><th>Cost</th><th>Price</th><th>Margin</th></tr></thead>
+      <tbody>
+        <tr><td class="dimt">BH-038</td><td class="tn">Detroit DD-15 (2020)</td><td class="sub">NA-BH3-178</td><td><span class="badge b-green">Available</span></td><td class="sub">$16,000</td><td>$20,800</td><td class="tint-green">+$4,800</td></tr>
+        <tr><td class="dimt">BH-016</td><td class="tn">Cummins ISX-15 (2012)</td><td class="sub">S60SCB7708922</td><td><span class="badge b-red">Sold</span></td><td class="sub">$10,000</td><td>$13,000</td><td class="tint-green">+$3,000</td></tr>
+        <tr><td class="dimt">BH-004</td><td class="tn">Caterpillar C-7 (2007)</td><td class="sub">NA-BH2-398</td><td><span class="badge b-purple">In Reman</span></td><td class="sub">$7,500</td><td>$9,750</td><td class="tint-green">+$2,250</td></tr>
+        <tr><td class="dimt">BH-048</td><td class="tn">International DT466</td><td class="sub">472903s0043786</td><td><span class="badge b-amber">On Hold</span></td><td class="sub">$5,500</td><td>$7,150</td><td class="tint-green">+$1,650</td></tr>
+        <tr><td class="dimt">BH-027</td><td class="tn">Detroit DD-13 Turbo (2014)</td><td class="sub">471903s0086558</td><td><span class="badge b-gray">Core</span></td><td class="sub">$12,000</td><td>$15,600</td><td class="tint-green">+$3,600</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="label">Reman Board · drag a card or use ←/→ to advance a unit</div>
+  <div class="rboard">
+    <div class="bcol"><div class="bh"><span class="bt">Core</span><span class="bc">41</span></div>
+      <div class="bcards">
+        <div class="jc s-core"><div class="jcn">Detroit DD-13 (2014)</div><div class="sub" style="font-size:11px;color:#ff905c">BH-026</div><div class="jcm"><span>core</span><span>$11,500</span></div></div>
+        <div class="jc s-core"><div class="jcn">Paccar PX-8 (2011)</div><div class="sub" style="font-size:11px;color:#ff905c">BH-076</div><div class="jcm"><span>core</span><span>$6,000</span></div></div>
+      </div>
+    </div>
+    <div class="bcol"><div class="bh"><span class="bt">In Reman</span><span class="bc">3</span></div>
+      <div class="bcards">
+        <div class="jc s-reman"><div class="jcn">Caterpillar C-7 (2007)</div><div class="sub" style="font-size:11px;color:#ff905c">BH-004</div><div class="jcm"><span>in-reman</span><span>$7,500</span></div></div>
+        <div class="jc s-reman"><div class="jcn">Cummins N14 Celect</div><div class="sub" style="font-size:11px;color:#ff905c">BH-017</div><div class="jcm"><span>in-reman</span><span>$7,000</span></div></div>
+      </div>
+    </div>
+    <div class="bcol"><div class="bh"><span class="bt">Available</span><span class="bc">17</span></div>
+      <div class="bcards">
+        <div class="jc s-avail"><div class="jcn">Detroit DD-15 (2020)</div><div class="sub" style="font-size:11px;color:#ff905c">BH-038</div><div class="jcm"><span>available</span><span>$16,000</span></div></div>
+        <div class="jc s-avail"><div class="jcn">Cummins ISX-15 (2010)</div><div class="sub" style="font-size:11px;color:#ff905c">BH-014</div><div class="jcm"><span>available</span><span>$9,000</span></div></div>
+      </div>
+    </div>
+    <div class="bcol"><div class="bh"><span class="bt">On Hold</span><span class="bc">1</span></div>
+      <div class="bcards">
+        <div class="jc s-hold"><div class="jcn">International DT466</div><div class="sub" style="font-size:11px;color:#ff905c">BH-048</div><div class="jcm"><span>on-hold</span><span>$5,500</span></div></div>
+      </div>
+    </div>
+    <div class="bcol"><div class="bh"><span class="bt">Sold</span><span class="bc">10</span></div>
+      <div class="bcards">
+        <div class="jc s-sold"><div class="jcn">Mack MP7 Turbo</div><div class="sub" style="font-size:11px;color:#ff905c">BH-064</div><div class="jcm"><span>sold</span><span>$3,589</span></div></div>
+        <div class="jc s-sold"><div class="jcn">Detroit DD-15 (2010)</div><div class="sub" style="font-size:11px;color:#ff905c">BH-030</div><div class="jcm"><span>sold</span><span>$9,500</span></div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL + TOAST -->
+  <div class="label">Engine Passport (modal) &amp; toast</div>
+  <div style="display:flex;gap:22px;flex-wrap:wrap;align-items:flex-start;">
+    <div class="modal">
+      <div class="mhead">
+        <div><div class="mt">Detroit DD-15 (2020)</div><div class="msk">BH-038 · ESN NA-BH3-178</div></div>
+        <button class="x">✕</button>
+      </div>
+      <div class="mbody">
+        <div style="margin-bottom:16px;"><span class="badge b-green">Available</span> <span class="badge b-blue" style="margin-left:6px;">FB</span><span class="badge b-green" style="margin-left:4px;">Kijiji</span></div>
+        <div class="specs">
+          <div class="spec"><div class="l">Year</div><div class="v">2020</div></div>
+          <div class="spec"><div class="l">Rated HP</div><div class="v">505 hp</div></div>
+          <div class="spec"><div class="l">Oil Cap</div><div class="v">40 qt</div></div>
+          <div class="spec"><div class="l">CPL</div><div class="v">—</div></div>
+          <div class="spec"><div class="l">Arrangement</div><div class="v">Complete</div></div>
+          <div class="spec"><div class="l">Listed</div><div class="v">Jun 14</div></div>
+        </div>
+        <div style="background:#101113;border:1px solid var(--line);border-radius:10px;padding:13px 15px;margin-bottom:16px;">
+          <div class="cost"><span class="sub">Core</span><span class="v">$9,000</span></div>
+          <div class="cost"><span class="sub">Freight</span><span class="v">$1,200</span></div>
+          <div class="cost"><span class="sub">Parts</span><span class="v">$3,400</span></div>
+          <div class="cost"><span class="sub">Labor</span><span class="v">$2,400</span></div>
+          <div class="cost" style="margin-top:6px;border-top:1px solid var(--line);padding-top:11px;"><span style="color:#ff905c;font-weight:700;">True Margin</span><span class="v tint-green" style="font-size:16px;">+$4,800 · 23%</span></div>
+        </div>
+        <div style="display:flex;gap:10px;justify-content:flex-end;">
+          <button class="btn ghost">Edit</button>
+          <button class="btn">Sell Engine →</button>
+        </div>
+      </div>
+    </div>
+    <div class="toast"><span>Engine moved to <b style="color:#ff905c">In Reman</b></span><button class="u">↩ Undo</button></div>
+  </div>
+
+  <div style="height:40px;"></div>
+</div>
+</body>
+</html>
