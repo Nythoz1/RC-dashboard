@@ -33,16 +33,22 @@ const TABLE_ADAPTERS = {
   "rc:inventory": {
     table: "inventory",
     // Full object in `data`; a few projected columns for querying + the id PK.
-    toRow: (it) => ({
-      id: it.id,
-      sku: it.sku ?? null,
-      name: it.name ?? null,
-      cat: it.cat ?? null,
-      status: it.status ?? null,
-      price: num(it.price),
-      cost: num(it.cost),
-      data: it,
-    }),
+    toRow: (it) => {
+      // Coerce id to a number everywhere: the edit form stringifies numeric
+      // fields for its inputs, and a string id here would make the keep-set
+      // miss the numeric DB id below and wrongly delete the row.
+      const id = it.id == null ? null : Number(it.id);
+      return {
+        id,
+        sku: it.sku ?? null,
+        name: it.name ?? null,
+        cat: it.cat ?? null,
+        status: it.status ?? null,
+        price: num(it.price),
+        cost: num(it.cost),
+        data: { ...it, id },
+      };
+    },
   },
 };
 
