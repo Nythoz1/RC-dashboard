@@ -1,5 +1,6 @@
 import React, { useState, useReducer, useEffect } from "react";
 import { db } from "./lib/storage";
+import { uploadPhoto } from "./lib/photos";
 import { askClaude } from "./lib/ai";
 import { usingCloud, getSession, signIn, signOut, onAuthChange } from "./lib/auth";
 const FONTS="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap";
@@ -166,11 +167,10 @@ const CHANNELS=[
 const chan=k=>CHANNELS.find(c=>c.k===k)||{l:k,ab:k,col:"#8a8579"};
 const today=()=>new Date().toLocaleDateString("en-US",{month:"short",day:"numeric"});
 const isoToday=()=>new Date().toISOString().split("T")[0];
-// Compress an image File to a small base64 JPEG (max 480px, q0.6) to stay within storage limits
-function compressImg(file,cb){if(!file)return;const r=new FileReader();r.onload=e=>{const img=new Image();img.onload=()=>{const max=480;let w=img.width,h=img.height;if(w>h&&w>max){h=Math.round(h*max/w);w=max;}else if(h>=w&&h>max){w=Math.round(w*max/h);h=max;}const c=document.createElement("canvas");c.width=w;c.height=h;c.getContext("2d").drawImage(img,0,0,w,h);try{cb(c.toDataURL("image/jpeg",0.6));}catch(err){cb("");}};img.onerror=()=>cb("");img.src=e.target.result;};r.onerror=()=>cb("");r.readAsDataURL(file);}
+// Image compression + upload now lives in lib/photos.js → uploadPhoto (Storage-backed).
 
 // Storage
-async function saveAll(s){for(const k of STORE_KEYS){try{await db.setItem("rc:"+k,JSON.stringify(s[k]||[]));}catch(e){}}}
+async function saveAll(s){const failed=[];for(const k of STORE_KEYS){try{await db.setItem("rc:"+k,JSON.stringify(s[k]||[]));}catch(e){failed.push(k);console.error("[rc save] "+k+" failed:",e&&e.message?e.message:e);}}return failed;}
 async function loadAll(){const d={};for(const k of STORE_KEYS){try{const r=await db.getItem("rc:"+k);d[k]=(r!=null)?JSON.parse(r):(EMPTY[k]||[]);}catch(e){d[k]=EMPTY[k]||[];}}return d;}
 async function clearAll(){for(const k of STORE_KEYS){try{await db.removeItem("rc:"+k);}catch(e){}}}
 
@@ -481,7 +481,7 @@ function Reports({s}){
 // MODAL SYSTEM (all modals — add/edit/detail)
 // ═══════════════════════════════════════════════════════════════
 function Modals({s,d}){
-  const[f,sf]=useState({});const[lines,setLines]=useState([{d:"",q:1,r:0}]);
+  const[f,sf]=useState({});const[lines,setLines]=useState([{d:"",q:1,r:0}]);const[uploading,setUploading]=useState(false);
   const set=(k,v)=>sf(p=>({...p,[k]:v}));
   useEffect(()=>{if(s.modal&&s.modal.startsWith("edit-")&&s.md){const item={...s.md};if(Array.isArray(item.vehicles))item.vehicles=item.vehicles.join(", ");if(Array.isArray(item.tags))item.tags=item.tags.join(", ");if(Array.isArray(item.specialties))item.specialties=item.specialties.join(", ");if(Array.isArray(item.certs))item.certs=item.certs.join(", ");Object.keys(item).forEach(k=>{if(typeof item[k]==="number")item[k]=String(item[k]);});sf(item);}else{const m=s.md||{};sf({...(m.custId?{custId:String(m.custId)}:{}),...(m.engineId?{engineId:m.engineId,engineName:m.engineName}:{})});}setLines(s.md&&Array.isArray(s.md.prefillItems)&&s.md.prefillItems.length?s.md.prefillItems:[{d:"",q:1,r:0}]);},[s.modal]);
   if(!s.modal)return null;
@@ -491,7 +491,7 @@ function Modals({s,d}){
   const CS=()=>(<div className="rc-fg"><label className="rc-fl">Customer</label><select className="rc-fi" value={f.custId||""} onChange={e=>set("custId",e.target.value)} style={{appearance:"none"}}><option value="">Select...</option>{(s.customers||[]).map(c=>(<option key={c.id} value={c.id}>{c.name}</option>))}</select></div>);
   const ES=(auto)=>(<div className="rc-fg"><label className="rc-fl">Engine (optional)</label><select className="rc-fi" value={f.engineId||""} onChange={e=>{const id=+e.target.value;const eng=(s.inventory||[]).find(x=>x.id===id);set("engineId",e.target.value);if(eng&&auto)auto(eng);}} style={{appearance:"none"}}><option value="">Not linked</option>{(s.inventory||[]).filter(isEngine).map(eng=>(<option key={eng.id} value={eng.id}>{eng.name} {eng.serial?`· ESN ${eng.serial}`:""}</option>))}</select></div>);
   const TS=()=>(<div className="rc-fg"><label className="rc-fl">Technician</label><select className="rc-fi" value={f.tech||""} onChange={e=>set("tech",e.target.value)} style={{appearance:"none"}}><option value="">Unassigned</option>{(s.employees||[]).filter(e=>e.status==="active").map(e=>(<option key={e.id} value={e.nick||e.name}>{e.name}</option>))}</select></div>);
-  const PH=()=>(<div className="rc-fg"><label className="rc-fl">Photo</label>{f.photo?(<div style={{position:"relative",marginBottom:6}}><img src={f.photo} alt="" style={{width:"100%",maxHeight:160,objectFit:"cover",borderRadius:4,border:"1px solid #2a2a2a"}}/><button className="rc-bs rc-bsr" onClick={()=>set("photo","")} style={{position:"absolute",top:6,right:6,fontSize:9}}>Remove</button></div>):null}<div style={{display:"flex",gap:6,alignItems:"center"}}><label className="rc-bs" style={{cursor:"pointer",textAlign:"center"}}>📷 Upload<input type="file" accept="image/*" onChange={e=>compressImg(e.target.files[0],b=>set("photo",b))} style={{display:"none"}}/></label><input className="rc-fi" placeholder="...or paste image URL" value={(f.photo||"").startsWith("data:")?"":(f.photo||"")} onChange={e=>set("photo",e.target.value)} style={{flex:1}}/></div></div>);
+  const PH=()=>(<div className="rc-fg"><label className="rc-fl">Photo</label>{f.photo?(<div style={{position:"relative",marginBottom:6}}><img src={f.photo} alt="" style={{width:"100%",maxHeight:160,objectFit:"cover",borderRadius:4,border:"1px solid #2a2a2a"}}/><button className="rc-bs rc-bsr" onClick={()=>set("photo","")} style={{position:"absolute",top:6,right:6,fontSize:9}}>Remove</button></div>):null}<div style={{display:"flex",gap:6,alignItems:"center"}}><label className="rc-bs" style={{cursor:uploading?"default":"pointer",textAlign:"center",opacity:uploading?.6:1}}>{uploading?"⏳ Uploading…":"📷 Upload"}<input type="file" accept="image/*" disabled={uploading} onChange={e=>{const file=e.target.files[0];if(!file)return;setUploading(true);uploadPhoto(file).then(u=>set("photo",u)).catch(err=>{console.error("photo upload failed:",err&&err.message?err.message:err);d({type:"TOAST",d:{msg:"⚠ Photo upload failed — try again",t:Date.now()}});}).finally(()=>setUploading(false));}} style={{display:"none"}}/></label><input className="rc-fi" placeholder="...or paste image URL" value={(f.photo||"").startsWith("data:")?"":(f.photo||"")} onChange={e=>set("photo",e.target.value)} style={{flex:1}}/></div></div>);
   const C=<button className="rc-bs" onClick={()=>d({type:"CLOSE"})}>Close</button>;
   const X=<button className="rc-bs" onClick={()=>d({type:"CLOSE"})}>Cancel</button>;
   const FM=(t,flds,onSave)=>W(<div><div className="rc-mt">{t}</div>{flds.map(([k,l,tp])=>F(k,l,tp))}<div className="rc-fa">{X}<button className="rc-ba" onClick={onSave}>Save</button></div></div>);
@@ -615,7 +615,7 @@ export default function App(){
   useEffect(()=>{if(!usingCloud)return;let sub;(async()=>{try{setSession(await getSession());}catch(e){}setAuthReady(true);sub=onAuthChange(ns=>setSession(ns));})();return()=>{try{if(sub)sub.unsubscribe();}catch(e){}};},[]);
   // Load data once authenticated (immediately in localStorage mode). Never loads/saves while logged out.
   useEffect(()=>{if(!authed){setLoading(false);return;}let off=false;setLoading(true);(async()=>{try{const data=await loadAll();if(!off)d({type:"LOAD",d:data});}catch(e){}if(!off)setLoading(false);})();return()=>{off=true;};},[authed]);
-  useEffect(()=>{if(loading||!authed)return;const t=setTimeout(()=>saveAll(s),500);return()=>clearTimeout(t);},[s.customers,s.jobs,s.quotes,s.inventory,s.invoices,s.schedule,s.employees,s.expenses,s.leads,s.social,s.campaigns,s.contentCalendar,s.cores,s.shipments,s.commsLog,s.purchaseOrders,s.warranties,s.parts,s.timeEntries,loading,authed]);
+  useEffect(()=>{if(loading||!authed)return;const t=setTimeout(()=>{saveAll(s).then(failed=>{if(failed&&failed.length)d({type:"TOAST",d:{msg:"⚠ Couldn't save changes — check your connection",t:Date.now()}});});},500);return()=>clearTimeout(t);},[s.customers,s.jobs,s.quotes,s.inventory,s.invoices,s.schedule,s.employees,s.expenses,s.leads,s.social,s.campaigns,s.contentCalendar,s.cores,s.shipments,s.commsLog,s.purchaseOrders,s.warranties,s.parts,s.timeEntries,loading,authed]);
   useEffect(()=>{const t=setInterval(()=>setTime(new Date()),60000);return()=>clearInterval(t);},[]);
   useEffect(()=>{if(s.toast){const t=setTimeout(()=>d({type:"TOAST",d:null}),s.toast.undo?5000:2200);return()=>clearTimeout(t);}},[s.toast]);
   const tabs=[{k:"overview",l:"Overview"},{k:"customers",l:"Customers"},{k:"quotes",l:"Quotes"},{k:"inventory",l:"Inventory"},{k:"parts",l:"Parts"},{k:"invoices",l:"Invoicing"},{k:"operations",l:"Operations"},{k:"social",l:"Marketing"},{k:"schedule",l:"Schedule"},{k:"employees",l:"Team"},{k:"reports",l:"Reports"}];
