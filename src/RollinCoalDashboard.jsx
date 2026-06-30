@@ -441,6 +441,7 @@ function Reports({s}){
   const overhead=(s.expenses||[]).reduce((a,e)=>a+(e.amount||0),0);
   const payroll=(s.employees||[]).reduce((a,e)=>a+(e.rate||0)*(e.hrs||0),0)*4.33;
   const pendRev=(s.invoices||[]).filter(i=>i.status==="pending"||i.status==="overdue").reduce((a,inv)=>a+invTot(inv),0);
+  const soldEng=s.inventory.filter(i=>isEngine(i)&&engStatus(i)==="sold");const invEngIds=new Set((s.invoices||[]).map(inv=>inv.engineId).filter(Boolean));const directSold=soldEng.filter(e=>!invEngIds.has(e.id));const engRev=directSold.reduce((a,e)=>a+(+e.price||0),0);const engCogs=directSold.reduce((a,e)=>a+costBasis(e),0);
   const totalFreight=(s.shipments||[]).reduce((a,sh)=>a+(sh.freightCost||0),0);
   const coreDeposits=(s.cores||[]).filter(c=>c.status==="pending").reduce((a,c)=>a+(c.deposit||0),0);
   const quoteConv=(s.quotes||[]).length>0?((s.quotes||[]).filter(q=>q.status==="approved").length/(s.quotes||[]).length*100):0;
@@ -453,7 +454,7 @@ function Reports({s}){
     <div className="rc-print-header rc-print-only"><div><h1>Rollin Coal — Business Report</h1><div style={{fontSize:11,color:"#666",marginTop:4}}>Medicine Hat, AB · 1-587-863-0505</div></div><div className="rc-ph-sub"><div>{td}</div></div></div>
     <SH title="Business Report"><button className="rc-ba rc-noprint" onClick={()=>window.print()}>🖨 Print</button></SH>
     <div className="rc-g6">
-      <Stat label="Revenue (Paid)" value={$K(totalRev)}/><Stat label="Pending" value={$K(pendRev)}/><Stat label="Avg Invoice" value={$$(avgTkt)}/>
+      <Stat label="Revenue (Paid)" value={$K(totalRev)}/><Stat label="Engine Sales" value={$K(engRev)} sub={directSold.length+(directSold.length===1?" engine sold":" engines sold")}/><Stat label="Pending" value={$K(pendRev)}/><Stat label="Avg Invoice" value={$$(avgTkt)}/>
       <Stat label="Quote Conversion" value={quoteConv.toFixed(0)+"%"}/><Stat label="Overhead/mo" value={$K(overhead)}/><Stat label="Payroll/mo" value={$K(payroll)}/>
     </div>
     <div className="rc-g6">
@@ -463,9 +464,9 @@ function Reports({s}){
     <div className="rc-card" style={{padding:16,marginBottom:16}}>
       <div style={{fontFamily:"var(--fd)",fontWeight:700,fontSize:14,letterSpacing:2,textTransform:"uppercase",color:"#8a8579",marginBottom:12}}>Profit & Loss</div>
       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:16}}>
-        <div><div className="rc-ml">Revenue</div>{[["Paid",totalRev],["Pending",pendRev]].map(([l,v],i)=>(<div key={i} style={{display:"flex",justifyContent:"space-between",padding:"3px 0",fontSize:12}}><span style={{color:"#8a8579"}}>{l}</span><span style={{color:"#3a9a4f",fontWeight:600}}>{$$(v)}</span></div>))}<div style={{display:"flex",justifyContent:"space-between",paddingTop:6,fontSize:13,fontWeight:700,borderTop:"1px solid #2a2a2a",marginTop:4}}><span>Total</span><span style={{color:"#3a9a4f"}}>{$$(totalRev+pendRev)}</span></div></div>
-        <div><div className="rc-ml">Costs</div>{[["Overhead",overhead],["Payroll",payroll],["Freight",totalFreight]].map(([l,v],i)=>(<div key={i} style={{display:"flex",justifyContent:"space-between",padding:"3px 0",fontSize:12}}><span style={{color:"#8a8579"}}>{l}</span><span style={{color:"#c43a2a",fontWeight:600}}>{$$(v)}</span></div>))}<div style={{display:"flex",justifyContent:"space-between",paddingTop:6,fontSize:13,fontWeight:700,borderTop:"1px solid #2a2a2a",marginTop:4}}><span>Total</span><span style={{color:"#c43a2a"}}>{$$(overhead+payroll+totalFreight)}</span></div></div>
-        <div><div className="rc-ml">Net</div><div style={{fontFamily:"var(--fd)",fontWeight:800,fontSize:24,color:(totalRev-overhead-payroll-totalFreight)>=0?"#3a9a4f":"#c43a2a",marginTop:8}}>{$$(totalRev-overhead-payroll-totalFreight)}</div><div style={{fontSize:10,color:"#5a5650",marginTop:4}}>{(totalRev-overhead-payroll-totalFreight)>=0?"Profitable":"Net Loss"}</div></div>
+        <div><div className="rc-ml">Revenue</div>{[["Paid",totalRev],["Engine Sales",engRev],["Pending",pendRev]].map(([l,v],i)=>(<div key={i} style={{display:"flex",justifyContent:"space-between",padding:"3px 0",fontSize:12}}><span style={{color:"#8a8579"}}>{l}</span><span style={{color:"#3a9a4f",fontWeight:600}}>{$$(v)}</span></div>))}<div style={{display:"flex",justifyContent:"space-between",paddingTop:6,fontSize:13,fontWeight:700,borderTop:"1px solid #2a2a2a",marginTop:4}}><span>Total</span><span style={{color:"#3a9a4f"}}>{$$(totalRev+engRev+pendRev)}</span></div></div>
+        <div><div className="rc-ml">Costs</div>{[["Overhead",overhead],["Payroll",payroll],["Freight",totalFreight],["Engine Cost",engCogs]].map(([l,v],i)=>(<div key={i} style={{display:"flex",justifyContent:"space-between",padding:"3px 0",fontSize:12}}><span style={{color:"#8a8579"}}>{l}</span><span style={{color:"#c43a2a",fontWeight:600}}>{$$(v)}</span></div>))}<div style={{display:"flex",justifyContent:"space-between",paddingTop:6,fontSize:13,fontWeight:700,borderTop:"1px solid #2a2a2a",marginTop:4}}><span>Total</span><span style={{color:"#c43a2a"}}>{$$(overhead+payroll+totalFreight+engCogs)}</span></div></div>
+        <div><div className="rc-ml">Net</div><div style={{fontFamily:"var(--fd)",fontWeight:800,fontSize:24,color:(totalRev+engRev-overhead-payroll-totalFreight-engCogs)>=0?"#3a9a4f":"#c43a2a",marginTop:8}}>{$$(totalRev+engRev-overhead-payroll-totalFreight-engCogs)}</div><div style={{fontSize:10,color:"#5a5650",marginTop:4}}>{(totalRev+engRev-overhead-payroll-totalFreight-engCogs)>=0?"Profitable":"Net Loss"}</div></div>
       </div>
     </div>
     <div className="rc-2col">
