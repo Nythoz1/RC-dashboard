@@ -196,6 +196,7 @@ function Overview({s,d}){
   const aq=(s.quotes||[]).filter(q=>q.status==="sent"||q.status==="draft").length;
   const pi=s.invoices.filter(i=>i.status==="pending"||i.status==="overdue");const pa=pi.reduce((a,inv)=>a+invTot(inv),0);
   const rv=s.invoices.filter(i=>i.status==="paid").reduce((a,inv)=>a+invTot(inv),0);
+  const _se=s.inventory.filter(i=>isEngine(i)&&engStatus(i)==="sold");const _ie=new Set((s.invoices||[]).map(inv=>inv.engineId).filter(Boolean));const engRev=_se.filter(e=>!_ie.has(e.id)).reduce((a,e)=>a+(+e.price||0),0);
   const nl=s.leads.filter(l=>l.status==="new"||l.status==="contacted").length;
   const pendCores=(s.cores||[]).filter(c=>c.status==="pending").length;
   const activeShip=(s.shipments||[]).filter(sh=>!sh.deliveryConfirmed).length;
@@ -205,7 +206,7 @@ function Overview({s,d}){
   return (<div>
     <div className="rc-g6">
       <Stat label="Active Jobs" value={aj}/><Stat label="Engines Available" value={ec}/><Stat label="Open Quotes" value={aq}/>
-      <Stat label="Pending Revenue" value={$K(pa)} sub={`${pi.length} invoices`}/><Stat label="Revenue Collected" value={$K(rv)}/><Stat label="New Leads" value={nl}/>
+      <Stat label="Pending Revenue" value={$K(pa)} sub={`${pi.length} invoices`}/><Stat label="Revenue Collected" value={$K(rv+engRev)} sub={engRev>0?"incl "+$K(engRev)+" engines":undefined}/><Stat label="New Leads" value={nl}/>
     </div>
     <div className="rc-g6">
       <Stat label="Pending Cores" value={pendCores} sub={pendCores>0?"needs follow-up":"all clear"} dir={pendCores>0?"dn":"up"}/><Stat label="Active Shipments" value={activeShip}/>
