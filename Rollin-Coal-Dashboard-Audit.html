@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Rollin Coal — Dashboard Audit &amp; Roadmap</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+@page { size: letter portrait; margin: 14mm 12mm; }
+*{box-sizing:border-box;}
+html,body{background:#fff;}
+body{font-family:'IBM Plex Mono',monospace;color:#151515;margin:0;padding:24px;font-size:11.5px;line-height:1.55;-webkit-print-color-adjust:exact;print-color-adjust:exact;}
+.wrap{max-width:960px;margin:0 auto;}
+.head{display:flex;justify-content:space-between;align-items:flex-end;border-bottom:3px solid #d4581a;padding-bottom:10px;margin-bottom:18px;}
+.brand{display:flex;align-items:center;gap:12px;}
+.logo{width:46px;height:46px;background:#d4581a;color:#fff;border-radius:8px;display:flex;align-items:center;justify-content:center;font-family:'Barlow Condensed',sans-serif;font-weight:800;font-size:22px;letter-spacing:-1px;}
+h1{font-family:'Barlow Condensed',sans-serif;font-weight:800;font-size:26px;letter-spacing:2px;text-transform:uppercase;margin:0;line-height:1;}
+.sub{font-size:9px;letter-spacing:2px;text-transform:uppercase;color:#d4581a;font-weight:600;margin-top:3px;}
+.meta{text-align:right;font-size:10px;color:#555;line-height:1.6;}
+h2{font-family:'Barlow Condensed',sans-serif;font-weight:800;font-size:17px;letter-spacing:2.5px;text-transform:uppercase;margin:26px 0 8px;padding-left:11px;border-left:4px solid #d4581a;page-break-after:avoid;}
+h3{font-family:'Barlow Condensed',sans-serif;font-weight:700;font-size:13.5px;letter-spacing:1.5px;text-transform:uppercase;margin:16px 0 6px;color:#333;page-break-after:avoid;}
+p{margin:6px 0;}
+table{width:100%;border-collapse:collapse;margin:8px 0 14px;}
+th{text-align:left;font-size:8.5px;letter-spacing:1px;text-transform:uppercase;color:#444;border-bottom:2px solid #333;padding:5px 7px;background:#f2f2f2;}
+td{padding:5px 7px;border-bottom:1px solid #ddd;vertical-align:top;}
+tr{page-break-inside:avoid;}
+.chip{display:inline-block;font-size:8px;font-weight:700;letter-spacing:.6px;text-transform:uppercase;padding:1px 7px;border-radius:9px;border:1.3px solid currentColor;white-space:nowrap;}
+.crit{color:#b3261e;}.high{color:#c4520e;}.med{color:#9a6a00;}.low{color:#555;}.fixed{color:#1e7a34;}.win{color:#6a3fb0;}
+.grade{font-family:'Barlow Condensed',sans-serif;font-weight:800;font-size:20px;}
+.g-a{color:#1e7a34;}.g-b{color:#5a7a1e;}.g-c{color:#9a6a00;}.g-d{color:#b3261e;}
+.callout{border:1.5px solid #d4581a;border-left:6px solid #d4581a;border-radius:6px;padding:10px 14px;margin:10px 0;background:#fdf4ee;page-break-inside:avoid;}
+.callout.green{border-color:#1e7a34;background:#f0f7f1;}
+.snapshot{display:flex;flex-wrap:wrap;gap:8px;margin:10px 0 4px;}
+.snap{border:1px solid #ccc;border-left:3px solid #d4581a;border-radius:4px;padding:6px 11px;min-width:90px;}
+.snap .l{font-size:7.5px;letter-spacing:1px;text-transform:uppercase;color:#777;}
+.snap .v{font-family:'Barlow Condensed',sans-serif;font-weight:800;font-size:17px;line-height:1.1;}
+.snap .v small{font-size:10px;color:#888;font-weight:600;}
+ul{margin:5px 0 10px;padding-left:20px;}
+li{margin:3.5px 0;}
+.mono{font-size:10px;color:#666;}
+.foot{margin-top:22px;font-size:9px;color:#888;display:flex;justify-content:space-between;border-top:1px solid #ddd;padding-top:8px;}
+.num{font-family:'Barlow Condensed',sans-serif;font-weight:800;font-size:13px;color:#d4581a;padding-right:4px;}
+@media screen{body{background:#e9e9e9;}.wrap{background:#fff;box-shadow:0 4px 30px rgba(0,0,0,.25);padding:34px;border-radius:4px;}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<div class="head">
+  <div class="brand">
+    <div class="logo">RC</div>
+    <div><h1>Dashboard Audit &amp; Roadmap</h1><div class="sub">Rollin Coal — Shop Management System</div></div>
+  </div>
+  <div class="meta"><strong>Full report</strong><br/>July 2, 2026 · prepared from live data<br/>rollin-coal.ca · Medicine Hat, AB</div>
+</div>
+
+<h2>1 · Executive Summary</h2>
+<p><strong>Overall grade today: <span class="grade g-b">B−</span> as a management tool · <span class="grade g-d">D</span> as a place where wins feel good.</strong> The bones are genuinely strong: a serialized engine passport model, a reman lifecycle board, channel-listing tracking, and (as of this week) reliable cloud persistence with photos. The two things holding it back: <strong>the financial numbers can't be trusted yet</strong> (every engine has $0 cost, so "profit" is really revenue; the P&amp;L mixes all-time revenue with monthly costs), and <strong>most modules are still empty</strong> (no invoices, quotes, cores, warranties, or time entries yet) — the tool tracks your iron but not yet your money or your people's work. The gamification plan in §6 is designed to fix adoption <em>and</em> fun at the same time: the game mechanics literally pull the missing data in.</p>
+
+<div class="snapshot">
+  <div class="snap"><div class="l">Engines</div><div class="v">14</div></div>
+  <div class="snap"><div class="l">Sold</div><div class="v">1 <small>($29k C13)</small></div></div>
+  <div class="snap"><div class="l">Photographed</div><div class="v">12<small>/14</small></div></div>
+  <div class="snap"><div class="l">With cost basis</div><div class="v g-d" style="color:#b3261e">0<small>/14</small></div></div>
+  <div class="snap"><div class="l">With ESN</div><div class="v">6<small>/14</small></div></div>
+  <div class="snap"><div class="l">Employees</div><div class="v">4</div></div>
+  <div class="snap"><div class="l">Invoices / Quotes</div><div class="v">0 / 0</div></div>
+  <div class="snap"><div class="l">Cores / Warranties</div><div class="v">0 / 0</div></div>
+  <div class="snap"><div class="l">Orphan photos</div><div class="v">16</div></div>
+</div>
+<p class="mono">Numbers pulled live from the database at report time.</p>
+
+<h2>2 · Area Scorecard</h2>
+<table>
+  <thead><tr><th>Area</th><th>Grade</th><th>Verdict</th></tr></thead>
+  <tbody>
+    <tr><td><strong>Inventory &amp; Reman Board</strong></td><td class="grade g-a">A−</td><td>The heart of the app and it shows: passports, lifecycle statuses, photos, kanban, WIP capital. Missing: sale dates, cost data, reman stage timers.</td></tr>
+    <tr><td><strong>Data safety &amp; persistence</strong></td><td class="grade g-b">B+</td><td>Big week: the vanishing-engine bug, photo persistence, and silent save failures are all fixed. Remaining: last-write-wins between two simultaneous users; no export/backup; Reset is one confirm away from wiping the shop.</td></tr>
+    <tr><td><strong>Financial truth (P&amp;L, margins)</strong></td><td class="grade g-c">C</td><td>Engine sales now flow to profit (good), but $0 costs, timeframe-mixed P&amp;L, and empty invoicing mean the numbers don't yet describe reality.</td></tr>
+    <tr><td><strong>Customers &amp; work orders</strong></td><td class="grade g-c">C+</td><td>Functional but barely used (1 customer, 2 jobs). Jobs don't link to engines, so reman labor can't feed cost basis. Customer "Spent" is a manual field that will drift from truth.</td></tr>
+    <tr><td><strong>Marketing / listings</strong></td><td class="grade g-b">B−</td><td>Channel chips + 1-Post Funnel are a real differentiator. AI assist was erroring earlier (likely API credit) — status unverified. 5 available engines are unlisted right now.</td></tr>
+    <tr><td><strong>Security &amp; auth</strong></td><td class="grade g-b">B</td><td>Login gate + server-side enforcement is the right model for one shop. 3 advisories worth acting on (§5). No roles yet — every login can do everything, including Reset.</td></tr>
+    <tr><td><strong>Fun factor / motivation</strong></td><td class="grade g-d">D</td><td>Selling a $29,000 engine currently looks identical to editing a text field. Zero celebration, zero records, zero streaks. Biggest cheap win available — see §6.</td></tr>
+  </tbody>
+</table>
+
+<h2>3 · What's Solid (keep building on this)</h2>
+<ul>
+  <li><strong>The engine passport concept.</strong> Serialized units with lifecycle status, cost-basis breakdown, linked invoice/core/warranty/shipment records — this is the correct data model for a reman shop, and most off-the-shelf shop software gets it wrong.</li>
+  <li><strong>Reman board.</strong> Drag/keyboard kanban with WIP capital in the header. This is your shop-floor heartbeat screen.</li>
+  <li><strong>True-margin design intent.</strong> costBasis() summing core+freight+parts+labor is exactly how engine profit should be computed — it just needs data.</li>
+  <li><strong>This week's fixes held under fire:</strong> photos persist (Storage bucket + instant attach), engines no longer vanish on edit, saves fail loudly, engines add by status (no qty), sold engines hit the P&amp;L, thumbnails 2×.</li>
+  <li><strong>Print styling</strong> for reports/inventory sheets, undo-able deletes, dark industrial brand consistently applied.</li>
+</ul>
+
+<h2>4 · Flaws &amp; Errors</h2>
+
+<h3>Fixed during this engagement (for the record)</h3>
+<table>
+  <thead><tr><th></th><th>Issue</th><th>Consequence</th></tr></thead>
+  <tbody>
+    <tr><td><span class="chip fixed">Fixed</span></td><td>Editing an engine stringified its id; sync then deleted the row</td><td>15 engines lost (restored), root-caused, patched at both layers</td></tr>
+    <tr><td><span class="chip fixed">Fixed</span></td><td>Photos stored as base64 blew the save-request size; failures swallowed by an empty catch</td><td>Photos never persisted; now in a Storage bucket with URL-only rows + failure toasts</td></tr>
+    <tr><td><span class="chip fixed">Fixed</span></td><td>Uploaded photo URL wasn't attached to the record without a racy second save</td><td>Now attaches instantly with a confirmation toast</td></tr>
+    <tr><td><span class="chip fixed">Fixed</span></td><td>Add-engine form asked for Quantity</td><td>Now lifecycle status–driven, lands directly on the reman board</td></tr>
+    <tr><td><span class="chip fixed">Fixed</span></td><td>Sold engines contributed nothing to Reports/Overview revenue</td><td>Engine sales now count once (invoice-linked engines excluded)</td></tr>
+  </tbody>
+</table>
+
+<h3>Open — ranked</h3>
+<table>
+  <thead><tr><th>#</th><th></th><th>Finding</th><th>Why it matters / evidence</th><th>Fix</th></tr></thead>
+  <tbody>
+    <tr><td class="num">1</td><td><span class="chip high">High</span></td><td><strong>All 14 engines have $0 cost</strong></td><td>"Profit" is currently just revenue. The sold C13 shows $29,000 profit at 100% margin. Every margin figure in the app is fiction until costs are entered.</td><td>Cost-entry blitz + a "% with cost basis" meter (see §6.6). Make cost prominent in the add flow.</td></tr>
+    <tr><td class="num">2</td><td><span class="chip high">High</span></td><td><strong>No sale date is recorded</strong> when an engine flips to sold</td><td>Monthly revenue, best-month records, trends, and seasonal analysis are all impossible. This single missing timestamp blocks half the gamification plan.</td><td>Stamp <span class="mono">soldDate</span> on the sold transition (and <span class="mono">stageDate</span> on every stage change for reman timers).</td></tr>
+    <tr><td class="num">3</td><td><span class="chip high">High</span></td><td><strong>P&amp;L mixes timeframes</strong></td><td>Revenue is all-time; payroll is a synthetic monthly estimate (rate × listed hrs × 4.33 — your 4 employees now register as a monthly cost even with zero time logged); expenses are an all-time sum labeled "/mo". Net can read as a loss while you're profitable, or vice versa.</td><td>Add a period picker (This month / Last month / YTD / All-time) and drive payroll from logged time entries, falling back to the estimate.</td></tr>
+    <tr><td class="num">4</td><td><span class="chip high">High</span></td><td><strong>Customer "Spent" never updates</strong></td><td>It's a static field set at creation. Top Customers on Reports will be permanently wrong the moment real business flows.</td><td>Compute from paid invoices + engine sales linked to the customer; delete the manual field.</td></tr>
+    <tr><td class="num">5</td><td><span class="chip high">High</span></td><td><strong>Double-count edge on engine sales</strong></td><td>The P&amp;L excludes sold engines that have a linked invoice — but only the passport "Sell Engine" button sets that link. A hand-made invoice for an engine plus a status flip = revenue counted twice.</td><td>Add the engine picker to the standard invoice form (it exists — <span class="mono">ES()</span>) and always stamp <span class="mono">engineId</span>.</td></tr>
+    <tr><td class="num">6</td><td><span class="chip high">High</span></td><td><strong>Reset wipes the shop with one confirm; no backup/export exists</strong></td><td>Any logged-in staff member can destroy all data. There is no export, no scheduled backup, no role gating.</td><td>Type-the-word-RESET gate + one-click JSON export + (later) role-gated admin.</td></tr>
+    <tr><td class="num">7</td><td><span class="chip high">High</span></td><td><strong>Two users can silently overwrite each other</strong></td><td>Each save uploads the whole list; last write wins. With 4 employees onboarding, simultaneous edits (front desk invoicing while shop moves board cards) will eat changes with no warning.</td><td>Per-row writes (already the planned P4 phase). Interim: a "someone else saved" conflict toast via updated_at check.</td></tr>
+    <tr><td class="num">8</td><td><span class="chip med">Med</span></td><td><strong>16 orphaned photos</strong> in storage and growing</td><td>Replacing/removing a photo leaks the old file (was 11 mid-week, now 16). Harmless cost-wise today, but it's entropy.</td><td>Delete the old object on replace/remove; one-time cleanup of the 16.</td></tr>
+    <tr><td class="num">9</td><td><span class="chip med">Med</span></td><td><strong>Dates stored as display strings</strong></td><td>Invoices/jobs store "Jun 30" / "Net 30" — no year, unsortable, breaks AR aging and any period math (compounds #2/#3).</td><td>Store ISO dates, format at render (the <span class="mono">F()</span> date inputs already produce ISO — the seams are <span class="mono">today()</span> call sites).</td></tr>
+    <tr><td class="num">10</td><td><span class="chip med">Med</span></td><td><strong>AI assist health unverified</strong></td><td>The 1-Post Funnel / AI quote errored earlier (most likely Anthropic credit balance); the improved error reporting was deployed but never confirmed working end-to-end. No retry/backoff on calls.</td><td>Top up credits, run the funnel once, read the function logs; add one retry with backoff.</td></tr>
+    <tr><td class="num">11</td><td><span class="chip med">Med</span></td><td><strong>Security advisories (3)</strong></td><td>(a) Public photo bucket allows <em>listing</em> all filenames — URL access doesn't need that; (b) leaked-password protection is off in Auth; (c) RLS is "always true" for authenticated — by design for a shared shop, but it means no roles and Reset-for-everyone (#6).</td><td>(a) drop/narrow the broad SELECT policy; (b) enable in dashboard (2 min); (c) revisit when roles land.</td></tr>
+    <tr><td class="num">12</td><td><span class="chip med">Med</span></td><td><strong>8 of 14 engines missing ESN/serial</strong></td><td>The serial is the unit's identity — warranty claims, buyer trust, listing credibility. Passports are thin without them.</td><td>Data blitz + "% with ESN" meter (§6.6).</td></tr>
+    <tr><td class="num">13</td><td><span class="chip low">Minor</span></td><td>Undo covers deletes only, 5-second window; stale backup blob (17 KB) in app_state; job "due" is free text; GST hardcoded at 5% (fine for AB); no CSV export for the accountant; 11 nav tabs while 4 see use.</td><td>Batch of small cleanups when convenient.</td><td>—</td></tr>
+  </tbody>
+</table>
+
+<h2>5 · Heavy-Duty Shop Lens — functional gaps that matter for a reman business</h2>
+<table>
+  <thead><tr><th>Gap</th><th>Why a diesel shop needs it</th></tr></thead>
+  <tbody>
+    <tr><td><strong>Work orders don't link to engines</strong></td><td>The killer feature you're one join away from: tie a reman job to a unit, and every logged tech hour automatically feeds that engine's <em>Machine + Assembly</em> cost. True margin then computes itself instead of relying on someone typing labor cost by hand. This is the single highest-leverage build in the app.</td></tr>
+    <tr><td><strong>Core bank aging</strong></td><td>You buy and take cores; the cores module tracks deposits and due dates but sits empty. An aging view ("core out 45 days, $2,500 deposit exposed") protects real money.</td></tr>
+    <tr><td><strong>Warranty auto-start</strong></td><td>Selling an engine should create the warranty with the clock started (sale date — see finding #2) instead of relying on someone remembering.</td></tr>
+    <tr><td><strong>PO receiving → parts stock</strong></td><td>Marking a PO received should increment the parts quantities it contains; right now receiving is a status change only.</td></tr>
+    <tr><td><strong>Customer units (VIN / unit #)</strong></td><td>Fleet customers think in unit numbers. Vehicles are free text today; structured units unlock "full history on unit 402" — a fleet-account selling point.</td></tr>
+    <tr><td><strong>Test evidence on the passport</strong></td><td>Compression / blow-by numbers, oil pressure, a runner-video link. Doubles as listing ammo — "can be seen running" with proof attached.</td></tr>
+    <tr><td><strong>AR aging (30/60/90)</strong></td><td>Once invoicing is live, overdue buckets drive collections. Blocked by finding #9 (real dates).</td></tr>
+  </tbody>
+</table>
+
+<h2>6 · Gamification Blueprint — "Make wins land"</h2>
+<p>Design rules first: <strong>one big moment, everything else subtle</strong> (if everything celebrates, nothing does); shop-floor aesthetic — stamps, plaques, flames, air-horns — never candy-crush; sounds always toggleable; celebrate the <em>person</em> as well as the number. Everything below runs on data the app already has or that findings #1–2 unlock.</p>
+
+<table>
+  <thead><tr><th>#</th><th>Feature</th><th>How it works</th><th>What it drives</th></tr></thead>
+  <tbody>
+    <tr><td class="num">1</td><td><strong>The SOLD Moment</strong> <span class="chip win">flagship</span></td><td>Flipping an engine to sold slams a full-screen orange <strong>SOLD</strong> stamp over its passport, reveals the margin ("C13 · $29,000 · +$10.5k · 36%"), optional air-horn, and auto-posts to a permanent <strong>Wins feed</strong>. Undo-friendly (it's just the existing status change underneath).</td><td>Makes the single most important event in the business feel like scoring. Also nudges cost entry — the margin reveal shows "?" if cost is $0.</td></tr>
+    <tr><td class="num">2</td><td><strong>Monthly Goal Thermometer</strong></td><td>You set a target (e.g. $60k or 4 engines/mo). A big gauge on Overview fills orange → overflows green past 100%. Beating your best month triggers a "🏆 BEST MONTH EVER" banner that stays up all day.</td><td>Turns the Overview from a status page into a scoreboard. Needs sale dates (finding #2).</td></tr>
+    <tr><td class="num">3</td><td><strong>Records Board (trophy case)</strong></td><td>Permanent plaques on Reports: <em>Biggest Sale · Best Margin % · Fastest Reman (core→available) · Most Units in a Month</em> — each with the engine, the number, and the date. Breaking one gets its own stamp moment.</td><td>Memorable wins with names on them. Records persist — that's what makes them worth chasing.</td></tr>
+    <tr><td class="num">4</td><td><strong>Reman Race Timers</strong></td><td>Every board card shows days-in-stage. Beating the shop's average pace earns a small green flame; the longest resident gets called out in the column header. Finishing a reman (→ Available) gets a medium celebration + logs the turnaround time.</td><td>WIP reduction becomes a race against your own average. Uses stage timestamps (finding #2).</td></tr>
+    <tr><td class="num">5</td><td><strong>The Shift Card ("Daily 3")</strong></td><td>Each morning the app deals 3 tasks from real data: <em>"2 available engines unlisted · 1 core deposit overdue · C13 has no cost basis."</em> Punching all 3 stamps the day complete; consecutive days build a streak counter in the header.</td><td>This is the adoption engine — it walks staff into the unused modules (invoicing, cores, listings) three taps at a time.</td></tr>
+    <tr><td class="num">6</td><td><strong>Lot Health Meters</strong></td><td>Four completion gauges on Inventory: <em>% photographed (12/14) · % listed · % with cost (0/14) · % with ESN (6/14)</em>. 100% on all four = "FULL LOT" badge on the header.</td><td>Your audit findings #1 and #12, converted into a collection game. Filling the meters literally fixes the data.</td></tr>
+    <tr><td class="num">7</td><td><strong>Tech of the Week</strong></td><td>Every Monday the app crowns last week's top tech from logged hours/billable $ (the Labor by Technician table already computes this). Small plaque on Team + the Wins feed.</td><td>Makes techs <em>want</em> to log time — which is exactly the data that makes labor cost and engine cost basis true (§5 row 1).</td></tr>
+    <tr><td class="num">8</td><td><strong>Weekly Recap Card</strong></td><td>Friday: a printable one-pager — "This week: 2 sold · $41k · 38h logged · 3 cores returned · streak 9 days." Same print styling as your inventory sheet; pin it in the break room.</td><td>The fridge-door artifact. Wins that get printed get remembered.</td></tr>
+  </tbody>
+</table>
+
+<div class="callout"><strong>Build order for fun:</strong> #1 SOLD Moment + Wins feed first (one afternoon, biggest emotional payoff), then #2 Goal Thermometer + #6 Lot Health Meters (they need only sale-date stamping and existing data), then #4/#5 once stage timestamps exist. #3, #7, #8 layer on cleanly after.</div>
+
+<h2>7 · Roadmap</h2>
+<h3>Now — this week (small changes, big payoff)</h3>
+<ul>
+  <li>Stamp <strong>soldDate + stage timestamps</strong> on every status change (unblocks everything time-based) — <em>finding #2</em></li>
+  <li><strong>SOLD Moment + Wins feed</strong> (§6.1) and <strong>Goal Thermometer</strong> (§6.2)</li>
+  <li><strong>Cost-basis blitz</strong>: enter what you paid for the 14 engines; add Lot Health meters (§6.6) — <em>findings #1, #12</em></li>
+  <li><strong>Type-RESET gate + JSON export button</strong> — <em>finding #6</em></li>
+  <li><strong>Photo hygiene</strong>: delete-on-replace + clean the 16 orphans — <em>finding #8</em></li>
+  <li>Enable <strong>leaked-password protection</strong>; narrow the bucket listing policy — <em>finding #11</em></li>
+</ul>
+<h3>Next — this month</h3>
+<ul>
+  <li><strong>P&amp;L period picker</strong> (This month / Last / YTD / All-time) + payroll from logged time — <em>finding #3</em></li>
+  <li><strong>Engine picker on every invoice</strong> + customer Spent auto-calc — <em>findings #4, #5</em></li>
+  <li><strong>ISO dates everywhere</strong> (enables AR aging) — <em>finding #9</em></li>
+  <li><strong>Daily 3 Shift Card</strong> (§6.5), <strong>Records Board</strong> (§6.3), <strong>Reman timers</strong> (§6.4)</li>
+  <li>Verify the <strong>AI funnel</strong> end-to-end (credits + logs) — <em>finding #10</em></li>
+</ul>
+<h3>Later — this quarter</h3>
+<ul>
+  <li><strong>Job ↔ engine link</strong> so logged tech time auto-feeds engine cost basis (§5 row 1 — the highest-leverage build)</li>
+  <li><strong>Per-row sync</strong> for true multi-user safety — <em>finding #7</em></li>
+  <li>Core bank aging · warranty auto-start on sale · PO receiving → stock · customer units (VIN) · CSV/accountant export · role-gated admin · Tech of the Week + Weekly Recap (§6.7–6.8)</li>
+</ul>
+
+<div class="callout green"><strong>Bottom line:</strong> the inventory core is already better than most commercial shop software for a reman business. Make the money numbers true (costs, dates, periods), protect the data (backup, reset gate, multi-user), and then let the game layer do double duty — every mechanic here is designed so that having fun <em>is</em> entering the data the audit says is missing.</div>
+
+<div class="foot"><span>Rollin Coal — Confidential · prepared by Claude</span><span>July 2, 2026</span></div>
+</div>
+</body>
+</html>
