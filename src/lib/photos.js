@@ -69,3 +69,20 @@ export async function uploadPhoto(file) {
   const { data } = supabase.storage.from(BUCKET).getPublicUrl(path);
   return data.publicUrl;
 }
+
+// Best-effort removal of a photo we uploaded to the bucket, so replacing or
+// clearing a photo doesn't leave the old file orphaned in Storage. Only acts
+// on URLs that point into our bucket — static assets (/engine-photos/*.jpg in
+// the repo) and data: URLs are left alone. Fire-and-forget: never throws.
+export async function deletePhoto(url) {
+  try {
+    if (!usingCloud || !supabase || !url) return;
+    const marker = "/storage/v1/object/public/" + BUCKET + "/";
+    const i = url.indexOf(marker);
+    if (i === -1) return;
+    const path = decodeURIComponent(url.slice(i + marker.length).split("?")[0]);
+    if (path) await supabase.storage.from(BUCKET).remove([path]);
+  } catch (e) {
+    console.warn("photo cleanup skipped:", e && e.message ? e.message : e);
+  }
+}
