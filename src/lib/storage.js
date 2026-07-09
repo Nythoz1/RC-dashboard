@@ -58,19 +58,32 @@ async function tableGet(a) {
   return JSON.stringify((data || []).map((r) => r.data));
 }
 
-// The dashboard saves the whole list, so sync the table to it: upsert every
-// present row, then delete rows whose id is no longer in the list.
-async function tableSet(a, valueString) {
+// The dashboard saves the whole list; write only what changed vs the caller's
+// previous snapshot: upsert new/modified rows, delete only ids the user
+// actually removed locally. A stale client can therefore never mass-delete
+// rows it hasn't seen (the old delete-anything-missing behavior). With no
+// snapshot available we upsert everything and delete nothing — safe default.
+async function tableSet(a, valueString, prevString) {
   const arr = JSON.parse(valueString);
-  const rows = (Array.isArray(arr) ? arr : []).map(a.toRow).filter((r) => r.id != null);
-  const keep = new Set(rows.map((r) => r.id));
-  if (rows.length) {
-    const up = await supabase.from(a.table).upsert(rows);
+  const cur = (Array.isArray(arr) ? arr : []).filter((it) => it && it.id != null);
+  let prev = null;
+  try { prev = prevString != null ? JSON.parse(prevString) : null; } catch (e) { prev = null; }
+  const rows = cur.map(a.toRow);
+  let upserts = rows, removed = [];
+  if (Array.isArray(prev)) {
+    const prevBy = new Map(prev.filter((p) => p && p.id != null).map((p) => [Number(p.id), p]));
+    upserts = [];
+    cur.forEach((it, idx) => {
+      const p = prevBy.get(Number(it.id));
+      if (!p || JSON.stringify(p) !== JSON.stringify(it)) upserts.push(rows[idx]);
+    });
+    const curIds = new Set(cur.map((it) => Number(it.id)));
+    removed = [...prevBy.keys()].filter((id) => !curIds.has(id));
+  }
+  if (upserts.length) {
+    const up = await supabase.from(a.table).upsert(upserts);
     if (up.error) throw up.error;
   }
-  const { data: existing, error: selErr } = await supabase.from(a.table).select("id");
-  if (selErr) throw selErr;
-  const removed = (existing || []).map((r) => r.id).filter((id) => !keep.has(id));
   if (removed.length) {
     const del = await supabase.from(a.table).delete().in("id", removed);
     if (del.error) throw del.error;
@@ -101,13 +114,13 @@ export const db = {
     return data ? JSON.stringify(data.value) : null;
   },
 
-  async setItem(key, valueString) {
+  async setItem(key, valueString, prevString) {
     if (!supabase) {
       localStorage.setItem(key, valueString);
       return;
     }
     const a = TABLE_ADAPTERS[key];
-    if (a) return tableSet(a, valueString);
+    if (a) return tableSet(a, valueString, prevString);
     const { error } = await supabase
       .from(TABLE)
       .upsert({ key, value: JSON.parse(valueString), updated_at: new Date().toISOString() });

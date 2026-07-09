@@ -1,4 +1,4 @@
-import React, { useState, useReducer, useEffect } from "react";
+import React, { useState, useReducer, useEffect, useRef } from "react";
 import { db } from "./lib/storage";
 import { uploadPhoto, deletePhoto } from "./lib/photos";
 import { askClaude } from "./lib/ai";
@@ -286,7 +286,9 @@ function horn(){try{const C=window.AudioContext||window.webkitAudioContext;if(!C
 // Image compression + upload now lives in lib/photos.js → uploadPhoto (Storage-backed).
 
 // Storage
-async function saveAll(s){const failed=[];for(const k of STORE_KEYS){try{await db.setItem("rc:"+k,JSON.stringify(s[k]||[]));}catch(e){failed.push(k);console.error("[rc save] "+k+" failed:",e&&e.message?e.message:e);}}return failed;}
+// Save only the given (changed) lists, handing the adapter the previous
+// snapshot so table-backed lists can diff per-row instead of rewriting.
+async function saveAll(s,keys,prev){const failed=[];for(const k of (keys||STORE_KEYS)){try{await db.setItem("rc:"+k,JSON.stringify(s[k]||[]),prev&&prev[k]!=null?JSON.stringify(prev[k]||[]):undefined);}catch(e){failed.push(k);console.error("[rc save] "+k+" failed:",e&&e.message?e.message:e);}}return failed;}
 async function loadAll(){const d={};for(const k of STORE_KEYS){try{const r=await db.getItem("rc:"+k);d[k]=(r!=null)?JSON.parse(r):(EMPTY[k]||[]);}catch(e){d[k]=EMPTY[k]||[];}}return d;}
 async function clearAll(){for(const k of STORE_KEYS){try{await db.removeItem("rc:"+k);}catch(e){}}}
 
@@ -803,6 +805,7 @@ function Login({onAuthed}){
 // ═══════════════════════════════════════════════════════════════
 export default function App(){
   const[s,d]=useReducer(reducer,EMPTY);const[loading,setLoading]=useState(true);const[time,setTime]=useState(new Date());
+  const lastSaved=useRef(null);const sRef=useRef(s);sRef.current=s;
   const[session,setSession]=useState(null);const[authReady,setAuthReady]=useState(!usingCloud);
   const authed=!usingCloud||!!session;
   // Auth bootstrap (cloud only): read any existing session, then subscribe to login/logout.
@@ -812,8 +815,12 @@ export default function App(){
   // SOLD splash: air horn (unless muted) + auto-dismiss
   useEffect(()=>{if(!s.soldSplash)return;if(getSet(s).soundOn!==false)horn();const t=setTimeout(()=>d({type:"SPLASH",d:null}),6500);return()=>clearTimeout(t);},[s.soldSplash]);
   // Load data once authenticated (immediately in localStorage mode). Never loads/saves while logged out.
-  useEffect(()=>{if(!authed){setLoading(false);return;}let off=false;setLoading(true);(async()=>{try{const data=await loadAll();if(!off)d({type:"LOAD",d:data});}catch(e){}if(!off)setLoading(false);})();return()=>{off=true;};},[authed]);
-  useEffect(()=>{if(loading||!authed)return;const t=setTimeout(()=>{saveAll(s).then(failed=>{if(failed&&failed.length)d({type:"TOAST",d:{msg:"⚠ Couldn't save changes — check your connection",t:Date.now()}});});},500);return()=>clearTimeout(t);},[s.customers,s.jobs,s.quotes,s.inventory,s.invoices,s.schedule,s.employees,s.expenses,s.leads,s.social,s.campaigns,s.contentCalendar,s.cores,s.shipments,s.commsLog,s.purchaseOrders,s.warranties,s.parts,s.timeEntries,s.wins,s.activity,s.settings,loading,authed]);
+  useEffect(()=>{if(!authed){setLoading(false);return;}let off=false;setLoading(true);(async()=>{try{const data=await loadAll();if(!off){lastSaved.current=data;d({type:"LOAD",d:data});}}catch(e){}if(!off)setLoading(false);})();return()=>{off=true;};},[authed]);
+  useEffect(()=>{if(loading||!authed)return;const t=setTimeout(()=>{const prev=lastSaved.current;const dirty=prev?STORE_KEYS.filter(k=>s[k]!==prev[k]):STORE_KEYS.slice();if(!dirty.length)return;saveAll(s,dirty,prev||{}).then(failed=>{const snap={...(lastSaved.current||{})};dirty.forEach(k=>{if(!(failed||[]).includes(k))snap[k]=s[k];});lastSaved.current=snap;if(failed&&failed.length)d({type:"TOAST",d:{msg:"⚠ Couldn't save changes — check your connection",t:Date.now()}});});},500);return()=>clearTimeout(t);},[s.customers,s.jobs,s.quotes,s.inventory,s.invoices,s.schedule,s.employees,s.expenses,s.leads,s.social,s.campaigns,s.contentCalendar,s.cores,s.shipments,s.commsLog,s.purchaseOrders,s.warranties,s.parts,s.timeEntries,s.wins,s.activity,s.settings,loading,authed]);
+  // Live sync: quietly re-pull the shop's data on window focus and every 60s
+  // (cloud only, never while a modal is open or local changes are unsaved),
+  // so a tab left open overnight can't overwrite the crew's newer work.
+  useEffect(()=>{if(!usingCloud||!authed||loading)return;let busy=false;const refresh=async()=>{const cur=sRef.current;const prev=lastSaved.current;if(busy||document.hidden||!prev||cur.modal)return;if(STORE_KEYS.some(k=>cur[k]!==prev[k]))return;busy=true;try{const data=await loadAll();lastSaved.current=data;d({type:"LOAD",d:data});}catch(e){}busy=false;};const iv=setInterval(refresh,60000);window.addEventListener("focus",refresh);return()=>{clearInterval(iv);window.removeEventListener("focus",refresh);};},[authed,loading]);
   useEffect(()=>{const t=setInterval(()=>setTime(new Date()),60000);return()=>clearInterval(t);},[]);
   useEffect(()=>{if(s.toast){const t=setTimeout(()=>d({type:"TOAST",d:null}),s.toast.undo?5000:2200);return()=>clearTimeout(t);}},[s.toast]);
   const tabs=[{k:"overview",l:"Overview"},{k:"customers",l:"Customers"},{k:"quotes",l:"Quotes"},{k:"inventory",l:"Inventory"},{k:"parts",l:"Parts"},{k:"invoices",l:"Invoicing"},{k:"operations",l:"Operations"},{k:"social",l:"Marketing"},{k:"schedule",l:"Schedule"},{k:"employees",l:"Team"},{k:"reports",l:"Reports"}];
