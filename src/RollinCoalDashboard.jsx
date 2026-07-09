@@ -211,6 +211,29 @@ const uwLevel=i=>{if(!["core","in-reman","on-hold"].includes(engStatus(i)))retur
 // Where the buyer came from — tagged on the SOLD splash or the wins feed
 const SALE_SRC=[["facebook","FB"],["kijiji","Kijiji"],["marketbook","MarketBook"],["repeat","Repeat"],["word","Word of mouth"]];
 const srcLabel=k=>(SALE_SRC.find(x=>x[0]===k)||[k,k])[1];
+// Daily 3 shift card: deal 3 real tasks from live data; tasks complete
+// themselves when the underlying condition is fixed in the app.
+function genDaily3(s){
+  const c=[];const E=(s.inventory||[]).filter(isEngine);
+  E.filter(i=>costBasis(i)<=0).forEach(i=>c.push({t:"cost",id:i.id,l:"💲 Enter core cost — "+(i.sku||i.name||"")}));
+  E.filter(i=>engStatus(i)==="available"&&!(i.listedOn||[]).length).forEach(i=>c.push({t:"list",id:i.id,l:"📣 Post "+(i.sku||"")+" — not advertised"}));
+  E.filter(i=>!i.photo).forEach(i=>c.push({t:"photo",id:i.id,l:"📷 Photo "+(i.sku||i.name||"")}));
+  E.filter(i=>!(i.serial||i.esn)).forEach(i=>c.push({t:"esn",id:i.id,l:"🔢 Record ESN — "+(i.sku||i.name||"")}));
+  E.filter(i=>["core","in-reman","on-hold"].includes(engStatus(i))&&i.stageDate&&Date.now()-new Date(i.stageDate).getTime()>7*864e5).forEach(i=>c.push({t:"stale",id:i.id,l:"⏳ Touch "+(i.sku||i.name||"")+" — stuck in "+engStatusLabel(engStatus(i))}));
+  (s.invoices||[]).filter(v=>v.status==="overdue").forEach(v=>c.push({t:"inv",id:v.id,l:"💰 Chase invoice "+(v.invNum||v.id)}));
+  const day=Math.floor(Date.now()/864e5);const types=[...new Set(c.map(x=>x.t))];const picks=[];
+  for(let k=0;k<types.length&&picks.length<3;k++){const ty=types[(k+day)%types.length];const cand=c.find(x=>x.t===ty&&!picks.includes(x));if(cand)picks.push(cand);}
+  for(const x of c){if(picks.length>=3)break;if(!picks.includes(x))picks.push(x);}
+  return picks.slice(0,3);
+}
+const d3Done=(s,t)=>{const gi=id=>(s.inventory||[]).find(x=>x.id===id);switch(t.t){
+  case "cost":{const i=gi(t.id);return !i||costBasis(i)>0;}
+  case "list":{const i=gi(t.id);return !i||engStatus(i)!=="available"||(i.listedOn||[]).length>0;}
+  case "photo":{const i=gi(t.id);return !i||!!i.photo;}
+  case "esn":{const i=gi(t.id);return !i||!!(i.serial||i.esn);}
+  case "stale":{const i=gi(t.id);return !i||!["core","in-reman","on-hold"].includes(engStatus(i))||!i.stageDate||Date.now()-new Date(i.stageDate).getTime()<=7*864e5;}
+  case "inv":{const v=(s.invoices||[]).find(x=>x.id===t.id);return !v||v.status!=="overdue";}
+  default:return false;}};
 // Velocity from stage history: days first-stage→available (build), available→sold (sell)
 const velo=i=>{const lg=i.stageLog||[];const first=st=>{const e=lg.find(x=>x.st===st);return e?new Date(e.ts).getTime():null;};const acq=lg.length?new Date(lg[0].ts).getTime():null;const av=first("available");const so=i.soldDate?new Date(i.soldDate+"T12:00:00").getTime():first("sold");return{build:acq!=null&&av!=null&&av>acq?(av-acq)/864e5:null,sell:av!=null&&so!=null&&so>=av?(so-av)/864e5:null};};
 const trueMargin=i=>(+i.price||0)-costBasis(i);
@@ -339,6 +362,15 @@ function Overview({s,d}){
   const noCostO=engsO.filter(i=>costBasis(i)<=0).length;
   const staleO=engsO.filter(i=>["core","in-reman","on-hold"].includes(engStatus(i))&&i.stageDate&&(Date.now()-new Date(i.stageDate).getTime())>7*864e5);
   const uwO=engsO.filter(i=>uwLevel(i));
+  // Daily 3 shift card: dealt once per day, tasks self-complete as data is fixed
+  const d3set=getSet(s);
+  const d3=(d3set.d3&&d3set.d3.date===tIso)?(d3set.d3.tasks||[]):null;
+  useEffect(()=>{const cur=(s.settings||[])[0];if(cur&&cur.d3&&cur.d3.date===tIso)return;const tasks=genDaily3(s);const patch={d3:{date:tIso,tasks}};if(cur)d({type:"UPDATE",list:"settings",id:cur.id,d:patch});else d({type:"ADD",list:"settings",d:patch,label:"Shift card dealt"});},[tIso,s.settings]);
+  const d3done=d3?d3.map(t=>d3Done(s,t)):[];
+  const allDone=!!d3&&d3.length>0&&d3done.every(Boolean);
+  useEffect(()=>{if(!allDone)return;const cur=(s.settings||[])[0];if(!cur||cur.d3LastDone===tIso)return;const y=new Date(Date.now()-864e5).toISOString().slice(0,10);const streak=cur.d3LastDone===y?(+cur.d3Streak||0)+1:1;d({type:"UPDATE",list:"settings",id:cur.id,d:{d3LastDone:tIso,d3Streak:streak}});d({type:"TOAST",d:{msg:"✅ Shift card complete — 🔥 streak "+streak,t:Date.now()}});},[allDone]);
+  const d3streak=+d3set.d3Streak||0;
+  const d3open=t=>{if(t.t==="inv"){d({type:"TAB",v:"invoices"});return;}const i=(s.inventory||[]).find(x=>x.id===t.id);if(i)d({type:"MODAL",v:"part-detail",d:i});};
   // Break-even: monthly fixed costs vs average engine margin
   const fixedMo=(s.expenses||[]).reduce((a,e)=>a+(+e.amount||0),0)+(s.employees||[]).reduce((a,e)=>a+(+e.rate||0)*(+e.hrs||0),0)*4.33;
   const costWins=(s.wins||[]).filter(w=>w.kind==="sale"&&+w.cost>0);
@@ -350,6 +382,10 @@ function Overview({s,d}){
       <div className="rc-goal-top"><span className="rc-sl" style={{margin:0,fontSize:10,letterSpacing:2}}>{monthName} GOAL</span>{isRecord&&<span className="rc-goal-best">🏆 BEST MONTH EVER</span>}<span style={{flex:1}}/><span className="rc-goal-v">{$K(mRev)} <em>/ {$K(goal)}</em></span><button className="rc-bs" style={{fontSize:10}} onClick={()=>d({type:"MODAL",v:"set-goal"})}>✎ Goal</button></div>
       <div className="rc-goal-bar"><div className="rc-goal-fill" style={{width:pct+"%",background:pct>=100?"linear-gradient(90deg,#3fae5a,#5ed07a)":"var(--grad)"}}/>{bePct!=null&&bePct<100&&<div className="rc-goal-mark" style={{left:bePct+"%"}} title={"break-even "+$K(fixedMo)}/>}</div>
       <div className="rc-goal-sub">{mWins.length} engine{mWins.length===1?"":"s"} sold this month · {pct.toFixed(0)}% of goal{fixedMo>0?(<span> · break-even {$K(fixedMo)}{beEng?` ≈ ${beEng} engine${beEng>1?"s":""}`:""}{mRev>=fixedMo?" ✓ cleared":""}</span>):(<span style={{color:"#3a3a3a"}}> · add monthly expenses to see your break-even line</span>)}</div>
+    </div>
+    <div className="rc-card" style={{padding:"12px 16px",marginBottom:16}}>
+      <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:8,flexWrap:"wrap"}}><span className="rc-sl" style={{margin:0,fontSize:10,letterSpacing:2}}>TODAY'S 3 — SHIFT CARD</span>{d3streak>0&&<span style={{fontSize:10,color:"#f0c14a",fontWeight:700}}>🔥 {d3streak}-day streak</span>}<span style={{flex:1}}/>{allDone&&<span className="rc-lm-full" style={{fontSize:11}}>✅ SHIFT COMPLETE</span>}</div>
+      {!d3||d3.length===0?(<div style={{fontSize:11,color:"#6fd98a"}}>🏁 Lot's clean — nothing urgent today. Go sell something.</div>):d3.map((t,x)=>(<div key={x} onClick={()=>!d3done[x]&&d3open(t)} style={{display:"flex",gap:9,alignItems:"center",padding:"6px 0",borderBottom:x<d3.length-1?"1px solid #212327":"none",fontSize:12,cursor:d3done[x]?"default":"pointer",opacity:d3done[x]?.55:1}}><span style={{width:16,textAlign:"center",color:d3done[x]?"#6fd98a":"#5a5650",fontWeight:700}}>{d3done[x]?"✓":x+1}</span><span style={{flex:1,textDecoration:d3done[x]?"line-through":"none"}}>{t.l}</span>{!d3done[x]&&<span style={{fontSize:9,color:"#5a5650"}}>tap to open →</span>}</div>))}
     </div>
     <div className="rc-g6">
       <Stat label="Active Jobs" value={aj}/><Stat label="Engines Available" value={ec}/><Stat label="Open Quotes" value={aq}/>
@@ -625,6 +661,28 @@ function Reports({s}){
       <Stat label="Freight Costs" value={$$(totalFreight)}/><Stat label="Core Deposits Pending" value={$$(coreDeposits)}/><Stat label="Active Warranties" value={(s.warranties||[]).filter(w=>w.status==="active").length}/>
       <Stat label="Open POs" value={(s.purchaseOrders||[]).filter(p=>p.status!=="received").length}/><Stat label="Engines Available" value={s.inventory.filter(i=>isEngine(i)&&engStatus(i)==="available").length}/><Stat label="Jobs Done" value={(s.jobs||[]).filter(j=>j.status==="complete").length}/>
     </div>
+    {(()=>{const W=(s.wins||[]).filter(w=>w.kind==="sale");
+      const big=W.reduce((a,w)=>!a||(+w.price||0)>(+a.price||0)?w:a,null);
+      const bm=W.filter(w=>+w.cost>0&&+w.price>0).reduce((a,w)=>{const m=((+w.price)-(+w.cost))/(+w.price);return !a||m>a.m?{w,m}:a;},null);
+      let fast=null;(s.inventory||[]).filter(isEngine).forEach(i=>{const v=velo(i);if(v.build!=null&&(!fast||v.build<fast.dd))fast={i,dd:v.build};});
+      const mo={};W.forEach(w=>{const k=(w.ts||"").slice(0,7);mo[k]=mo[k]||{n:0,v:0};mo[k].n++;mo[k].v+=(+w.price||0);});
+      let bmo=null;Object.entries(mo).forEach(([k,x])=>{if(!bmo||x.v>bmo.v)bmo={k,...x};});
+      const P=(t,v,h)=>(<div style={{border:"1.4px solid #c49a2a55",background:"linear-gradient(160deg,#1d1a14,#141310)",borderRadius:13,padding:"13px 14px",textAlign:"center"}}><div className="rc-ml" style={{color:"#c49a2a",marginBottom:5}}>🏆 {t}</div><div style={{fontFamily:"var(--fd)",fontWeight:900,fontSize:21,color:"#f0c14a",lineHeight:1}}>{v}</div><div style={{fontSize:9,color:"#8a8579",marginTop:5,minHeight:12}}>{h||""}</div></div>);
+      return(<><SH title="Records Board"/><div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(170px,1fr))",gap:12,marginBottom:20}}>
+        {P("Biggest Sale",big?$K(+big.price):"—",big?big.name+" · "+(big.ts||"").slice(0,10):"first sale sets it")}
+        {P("Best Margin",bm?Math.round(bm.m*100)+"%":"—",bm?bm.w.name:"needs cost + sale")}
+        {P("Fastest Reman",fast?Math.round(fast.dd)+"d":"—",fast?fast.i.name:"core → available")}
+        {P("Best Month",bmo?$K(bmo.v):"—",bmo?bmo.k+" · "+bmo.n+" engine"+(bmo.n>1?"s":""):"")}
+      </div></>);})()}
+    {(()=>{const since=Date.now()-7*864e5;const inD=v=>v&&new Date(v.length<=10?v+"T12:00":v).getTime()>=since;
+      const wW=(s.wins||[]).filter(w=>inD(w.ts));const wRev=wW.reduce((a,w)=>a+(+w.price||0),0);
+      const wH=(s.timeEntries||[]).filter(t=>inD(t.date)).reduce((a,t)=>a+(+t.hours||0),0);
+      const wP=(s.inventory||[]).filter(isEngine).reduce((a,i)=>a+(i.partsLog||[]).filter(p=>inD(p.date)).reduce((x,p)=>x+(+p.v||0),0),0);
+      const wA=(s.activity||[]).filter(x=>inD(x.ts));const wAv=wA.filter(x=>/→ Available/.test(x.msg||"")).length;
+      const C=(l,v)=>(<div className="rc-lm-c"><span className="rc-lm-l">{l}</span><span className="rc-lm-n">{v}</span></div>);
+      return(<><SH title="This Week at the Shop"/><div className="rc-card" style={{padding:14,display:"flex",gap:10,flexWrap:"wrap",marginBottom:20}}>
+        {C("🏆 Sold",wW.length+" · "+$K(wRev))}{C("⏱ Wrenching",wH+"h")}{C("🧩 Parts into builds",$K(wP))}{C("🔧 Reman completed",wAv)}{C("📜 Actions logged",wA.length)}
+      </div></>);})()}
     <div className="rc-card" style={{padding:16,marginBottom:16}}>
       <div style={{fontFamily:"var(--fd)",fontWeight:700,fontSize:14,letterSpacing:2,textTransform:"uppercase",color:"#8a8579",marginBottom:12}}>Profit & Loss</div>
       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:16}}>
