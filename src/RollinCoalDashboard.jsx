@@ -175,7 +175,7 @@ function reducer(s,a){switch(a.type){
     else if(a.list==="inventory"&&it&&a.d.partsLog&&(a.d.partsLog||[]).length>(it.partsLog||[]).length){const np=a.d.partsLog[(a.d.partsLog||[]).length-1]||{};act="🧩 Part into "+(it.name||it.sku||"engine")+": "+(np.d||"part")+" — $"+(+np.v||0).toLocaleString();}
     else if(a.list==="invoices"&&it&&a.d.status==="paid"&&it.status!=="paid"){act="💰 Invoice paid: "+(it.invNum||a.id);}
     else if(a.list==="jobs"&&it&&a.d.status&&it.status!==a.d.status){act="🛠 Job → "+a.d.status+(it.service?" ("+it.service+")":"");}
-    const stU={...s,[a.list]:(s[a.list]||[]).map(x=>x.id===a.id?{...x,...d2}:x),activity:act?pushAct(s,"update",act):s.activity,wins,soldSplash:splash};
+    const stU={...s,activity:act?pushAct(s,"update",act):s.activity,wins,soldSplash:splash,[a.list]:(s[a.list]||[]).map(x=>x.id===a.id?{...x,...d2}:x)};
     return LABOR_LISTS.includes(a.list)?syncLabor(stU):stU;}
   case "DELETE":{const item=(s[a.list]||[]).find(x=>x.id===a.id);const stD={...s,[a.list]:(s[a.list]||[]).filter(x=>x.id!==a.id),lastDel:item?{list:a.list,item}:null,activity:item?pushAct(s,"delete","🗑 Deleted: "+(item.name||item.sku||item.invNum||item.service||a.list)):s.activity,toast:{msg:"Deleted",undo:!!item,t:Date.now()}};
     return LABOR_LISTS.includes(a.list)?syncLabor(stD):stD;}
@@ -253,7 +253,7 @@ const CHANNELS=[
 ];
 const chan=k=>CHANNELS.find(c=>c.k===k)||{l:k,ab:k,col:"#8a8579"};
 const today=()=>new Date().toLocaleDateString("en-US",{month:"short",day:"numeric"});
-const isoToday=()=>new Date().toISOString().split("T")[0];
+const isoToday=()=>{const n=new Date();return new Date(n.getTime()-n.getTimezoneOffset()*60000).toISOString().split("T")[0];};
 // Shop settings live as a single row in the settings list
 const getSet=s=>((s.settings||[])[0])||{};
 // One-click JSON backup of every persisted list
@@ -317,7 +317,7 @@ function horn(){try{const C=window.AudioContext||window.webkitAudioContext;if(!C
 // Save only the given (changed) lists, handing the adapter the previous
 // snapshot so table-backed lists can diff per-row instead of rewriting.
 async function saveAll(s,keys,prev){const failed=[];for(const k of (keys||STORE_KEYS)){try{await db.setItem("rc:"+k,JSON.stringify(s[k]||[]),prev&&prev[k]!=null?JSON.stringify(prev[k]||[]):undefined);}catch(e){failed.push(k);console.error("[rc save] "+k+" failed:",e&&e.message?e.message:e);}}return failed;}
-async function loadAll(){const d={};for(const k of STORE_KEYS){try{const r=await db.getItem("rc:"+k);d[k]=(r!=null)?JSON.parse(r):(EMPTY[k]||[]);}catch(e){d[k]=EMPTY[k]||[];}}return d;}
+async function loadAll(){const d={};let err=false;for(const k of STORE_KEYS){try{const r=await db.getItem("rc:"+k);d[k]=(r!=null)?JSON.parse(r):(EMPTY[k]||[]);}catch(e){err=true;d[k]=EMPTY[k]||[];console.error("[rc load] "+k+" failed:",e&&e.message?e.message:e);}}if(err)d.__loadError=true;return d;}
 async function clearAll(){for(const k of STORE_KEYS){try{await db.removeItem("rc:"+k);}catch(e){}}}
 
 // Claude AI
@@ -874,7 +874,7 @@ function Login({onAuthed}){
 // APP
 // ═══════════════════════════════════════════════════════════════
 export default function App(){
-  const[s,d]=useReducer(reducer,EMPTY);const[loading,setLoading]=useState(true);const[time,setTime]=useState(new Date());
+  const[s,d]=useReducer(reducer,EMPTY);const[loading,setLoading]=useState(true);const[loadErr,setLoadErr]=useState(false);const[time,setTime]=useState(new Date());
   const lastSaved=useRef(null);const sRef=useRef(s);sRef.current=s;
   const[session,setSession]=useState(null);const[authReady,setAuthReady]=useState(!usingCloud);
   const authed=!usingCloud||!!session;
@@ -885,18 +885,19 @@ export default function App(){
   // SOLD splash: air horn (unless muted) + auto-dismiss
   useEffect(()=>{if(!s.soldSplash)return;if(getSet(s).soundOn!==false)horn();const t=setTimeout(()=>d({type:"SPLASH",d:null}),6500);return()=>clearTimeout(t);},[s.soldSplash]);
   // Load data once authenticated (immediately in localStorage mode). Never loads/saves while logged out.
-  useEffect(()=>{if(!authed){setLoading(false);return;}let off=false;setLoading(true);(async()=>{try{const data=await loadAll();if(!off){lastSaved.current=data;d({type:"LOAD",d:data});}}catch(e){}if(!off)setLoading(false);})();return()=>{off=true;};},[authed]);
-  useEffect(()=>{if(loading||!authed)return;const t=setTimeout(()=>{const prev=lastSaved.current;const dirty=prev?STORE_KEYS.filter(k=>s[k]!==prev[k]):STORE_KEYS.slice();if(!dirty.length)return;saveAll(s,dirty,prev||{}).then(failed=>{const snap={...(lastSaved.current||{})};dirty.forEach(k=>{if(!(failed||[]).includes(k))snap[k]=s[k];});lastSaved.current=snap;if(failed&&failed.length)d({type:"TOAST",d:{msg:"⚠ Couldn't save changes — check your connection",t:Date.now()}});});},500);return()=>clearTimeout(t);},[s.customers,s.jobs,s.quotes,s.inventory,s.invoices,s.schedule,s.employees,s.expenses,s.leads,s.social,s.campaigns,s.contentCalendar,s.cores,s.shipments,s.commsLog,s.purchaseOrders,s.warranties,s.parts,s.timeEntries,s.wins,s.activity,s.settings,loading,authed]);
+  useEffect(()=>{if(!authed){setLoading(false);return;}let off=false;setLoading(true);setLoadErr(false);(async()=>{try{const data=await loadAll();if(off)return;if(data.__loadError){setLoadErr(true);setLoading(false);return;}lastSaved.current=data;d({type:"LOAD",d:data});}catch(e){if(!off)setLoadErr(true);}if(!off)setLoading(false);})();return()=>{off=true;};},[authed]);
+  useEffect(()=>{if(loading||!authed||loadErr||!lastSaved.current)return;const t=setTimeout(()=>{const prev=lastSaved.current;const dirty=prev?STORE_KEYS.filter(k=>s[k]!==prev[k]):STORE_KEYS.slice();if(!dirty.length)return;saveAll(s,dirty,prev||{}).then(failed=>{const snap={...(lastSaved.current||{})};dirty.forEach(k=>{if(!(failed||[]).includes(k))snap[k]=s[k];});lastSaved.current=snap;if(failed&&failed.length)d({type:"TOAST",d:{msg:"⚠ Couldn't save changes — check your connection",t:Date.now()}});});},500);return()=>clearTimeout(t);},[s.customers,s.jobs,s.quotes,s.inventory,s.invoices,s.schedule,s.employees,s.expenses,s.leads,s.social,s.campaigns,s.contentCalendar,s.cores,s.shipments,s.commsLog,s.purchaseOrders,s.warranties,s.parts,s.timeEntries,s.wins,s.activity,s.settings,loading,authed,loadErr]);
   // Live sync: quietly re-pull the shop's data on window focus and every 60s
   // (cloud only, never while a modal is open or local changes are unsaved),
   // so a tab left open overnight can't overwrite the crew's newer work.
-  useEffect(()=>{if(!usingCloud||!authed||loading)return;let busy=false;const refresh=async()=>{const cur=sRef.current;const prev=lastSaved.current;if(busy||document.hidden||!prev||cur.modal)return;if(STORE_KEYS.some(k=>cur[k]!==prev[k]))return;busy=true;try{const data=await loadAll();lastSaved.current=data;d({type:"LOAD",d:data});}catch(e){}busy=false;};const iv=setInterval(refresh,60000);window.addEventListener("focus",refresh);return()=>{clearInterval(iv);window.removeEventListener("focus",refresh);};},[authed,loading]);
+  useEffect(()=>{if(!usingCloud||!authed||loading)return;let busy=false;const refresh=async()=>{const before=sRef.current;const prev=lastSaved.current;if(busy||document.hidden||!prev||before.modal)return;if(STORE_KEYS.some(k=>before[k]!==prev[k]))return;busy=true;try{const data=await loadAll();const cur=sRef.current;if(!data.__loadError&&!cur.modal&&!STORE_KEYS.some(k=>cur[k]!==before[k])){lastSaved.current=data;d({type:"LOAD",d:data});}}catch(e){}finally{busy=false;}};const iv=setInterval(refresh,60000);window.addEventListener("focus",refresh);return()=>{clearInterval(iv);window.removeEventListener("focus",refresh);};},[authed,loading]);
   useEffect(()=>{const t=setInterval(()=>setTime(new Date()),60000);return()=>clearInterval(t);},[]);
   useEffect(()=>{if(s.toast){const t=setTimeout(()=>d({type:"TOAST",d:null}),s.toast.undo?5000:2200);return()=>clearTimeout(t);}},[s.toast]);
   const tabs=[{k:"overview",l:"Overview"},{k:"customers",l:"Customers"},{k:"quotes",l:"Quotes"},{k:"inventory",l:"Inventory"},{k:"parts",l:"Parts"},{k:"invoices",l:"Invoicing"},{k:"operations",l:"Operations"},{k:"social",l:"Marketing"},{k:"schedule",l:"Schedule"},{k:"employees",l:"Team"},{k:"reports",l:"Reports"}];
   const splash=(<div className="rc-root" style={{display:"flex",alignItems:"center",justifyContent:"center",minHeight:"100vh"}}><style>{CSS}</style><div style={{textAlign:"center"}}><div className="rc-hi" style={{width:50,height:50,fontSize:24,margin:"0 auto 12px"}}>RC</div><div style={{fontFamily:"var(--fd)",fontSize:16,letterSpacing:2,textTransform:"uppercase",color:"#8a8579"}}>Loading...</div></div></div>);
   if(usingCloud&&!authReady)return splash;
   if(usingCloud&&!session)return <Login onAuthed={setSession}/>;
+  if(usingCloud&&loadErr)return (<div className="rc-root" style={{display:"flex",alignItems:"center",justifyContent:"center",minHeight:"100vh",padding:20}}><style>{CSS}</style><div style={{textAlign:"center",maxWidth:360}}><div className="rc-hi" style={{width:50,height:50,fontSize:24,margin:"0 auto 12px"}}>RC</div><div style={{fontFamily:"var(--fd)",fontSize:18,letterSpacing:1,textTransform:"uppercase",color:"#ff8a72",marginBottom:8}}>Couldn't reach the server</div><div style={{fontSize:12,color:"#8a8579",marginBottom:16,lineHeight:1.6}}>Your shop data didn't load, so editing is paused to protect it — nothing will be saved over your cloud data until a clean load succeeds. Check your connection and retry.</div><button className="rc-ba" onClick={()=>window.location.reload()}>↻ Retry</button></div></div>);
   if(loading)return splash;
   return (<div className="rc-root"><style>{CSS}</style>
     <header className="rc-hdr"><div className="rc-hl"><div className="rc-hi">RC</div><div><div className="rc-hn">Rollin Coal</div><div className="rc-hs">Diesel Engine Specialists</div></div></div><div className="rc-hr"><div className="rc-dot"/><span>Medicine Hat, AB</span><span>·</span><span>{time.toLocaleDateString("en-US",{weekday:"short",month:"short",day:"numeric"})}</span><span>·</span><button className="rc-bs" onClick={()=>exportBackup(s)} style={{fontSize:8,color:"#5a5650"}} title="Download a JSON backup of all shop data">Backup</button><span>·</span><button className="rc-bs" onClick={()=>d({type:"MODAL",v:"confirm-reset"})} style={{fontSize:8,color:"#5a5650"}}>Reset</button>{usingCloud&&session&&<><span>·</span><span style={{color:"#8a8579",maxWidth:150,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{session.user&&session.user.email}</span><button className="rc-bs" onClick={async()=>{await signOut();setSession(null);}} style={{fontSize:8,color:"#5a5650"}}>Sign Out</button></>}</div></header>
