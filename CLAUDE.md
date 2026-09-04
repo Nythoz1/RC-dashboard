@@ -6,7 +6,7 @@ Guidance for Claude Code (and any agent) working on this repo. Read this fully b
 
 React + Vite single-page app for **Rollin Coal — Canada's Diesel Engine Specialists**, a diesel engine sales & service business in **Medicine Hat, Alberta**. Rollin Coal buys, remanufactures, and sells diesel engines Canada-wide, plus does HD service work.
 
-- ~80 engines in inventory (Caterpillar, Cummins, Detroit, International, Paccar, Mercedes, Mack, etc.)
+- ~20 engines in live inventory (Caterpillar, Cummins, Detroit, International, Paccar, Mercedes, Mack, etc.) — the 80-row seed in `EMPTY` is only for fresh/local installs
 - Phone 1-587-863-0505 · rollin-coal.ca · 2040 11th Ave NW, Medicine Hat, AB
 - Brand: industrial dark theme, matte black (`#0a0a0a`) + burnt orange (`#d4581a`); Barlow Condensed (display) + IBM Plex Mono (mono)
 
@@ -21,7 +21,8 @@ index.html
 .env.example                     copy to .env
 src/
   main.jsx                       entry (no StrictMode — avoids double storage effects)
-  RollinCoalDashboard.jsx        the entire app (~606 lines, one file by design)
+  RollinCoalDashboard.jsx        the entire app (one file by design)
+  issuesSeed.js                  starter rows for the common-issues knowledge base (ISSUE_SEED)
   lib/
     storage.js                   db adapter: Supabase app_state table ⇄ localStorage fallback
     ai.js                        askClaude() → calls the Supabase Edge Function (sends the user's token)
@@ -45,18 +46,18 @@ Single file, intentionally. React with `useReducer`. Approximate map (search by 
 - Helpers — `$$, $K, invTot, stk, cn`, engine helpers (`isEngine, engStatus, costBasis, trueMargin, marginPct, engLinks`), `CHANNELS`, `compressImg`
 - `saveAll / loadAll / clearAll` — call `db` from `lib/storage`. `loadAll` seeds `EMPTY` only for keys that were **never persisted**; a stored empty list stays empty (deleting every row no longer re-seeds it).
 - Shared UI — `Badge, Stat, SH, Fil, Empty, Tbl, BtnRow`
-- Views — `Overview, Customers, Quotes, Inv, Parts, Invoicing, Operations, Marketing, Schedule, Emps, Reports`
+- Views — `Overview, Customers, Quotes, Inv, Parts, Issues, Invoicing, Operations, Marketing, Schedule, Emps, Reports`
 - `function Modals` — every add/edit/detail modal; helpers `F, CS, ES, TS, PH, FM, EFM, LI, W, X, C`
 - `const CSS` — full stylesheet string injected via `<style>`
 - `export default function App` — load/save effects, tab routing, toast UI
 
 ### State shape (`STORE_KEYS`, all arrays)
-`customers, jobs, timeEntries, quotes, inventory, invoices, schedule, employees, expenses, leads, social, campaigns, contentCalendar, cores, shipments, commsLog, purchaseOrders, warranties, parts`
+`customers, jobs, timeEntries, quotes, inventory, invoices, schedule, employees, expenses, leads, social, campaigns, contentCalendar, cores, shipments, commsLog, purchaseOrders, warranties, parts, wins, activity, settings, diagnoses, issues`
 
 Transient state (NOT persisted): `tab, modal, md, toast, lastDel`. `saveAll` only writes `STORE_KEYS`, so these never hit the DB.
 
 ### Tabs
-Overview · Customers · Quotes · Inventory · Parts · Invoicing · Operations · Marketing · Schedule · Team · Reports
+Overview · Customers · Quotes · Inventory · Parts · Issues · Invoicing · Operations · Marketing · Schedule · Team · Reports
 
 ## Key domain concepts (important — this is an engine shop, not a parts store)
 
@@ -65,6 +66,9 @@ Overview · Customers · Quotes · Inventory · Parts · Invoicing · Operations
 - **True margin.** `costBasis(i)` sums the breakdown (falls back to flat `cost`); `trueMargin`/`marginPct` use it. A returned core can erase margin — keep cost basis honest.
 - **Linked records.** Invoices, cores, warranties, shipments may carry `engineId` pointing at the inventory item. `engLinks(s, id)` resolves them; the passport renders them. The "Sell Engine" button in the passport opens a pre-filled invoice and flips the engine to `sold`.
 - **Labor / time tracking.** `timeEntries` (`{id, jobId, tech, date, hours, rate, notes}`) logs labor against a work order, linked by `jobId` (a separate list, not embedded on the job). The Work Order modal (`job-detail`) shows logged time + hour/$ totals, with **Log Time** (→ `add-time`; the tech picker prefills `rate` from the employee) and **Bill Labor** (→ pre-filled invoice, one line per entry). Reports rolls it up as *Labor by Technician* (hours + billable $). `rate` is snapshotted onto each entry so historical labor cost survives employee rate changes.
+- **Diagnosis history.** `diagnoses` (`{id, engineId, date, tech, symptoms:[], codes, findings, fix, outcome(open/monitoring/resolved), hours, rate, parts:[{d,v}], jobId, issueId, notes}`) is the per-engine record of what was found and done. The passport renders it (section *Diagnosis history*, modals `add-dx / edit-dx / dx-detail`); the Issues tab has a shop-wide *Diagnosis log*. Diagnosis `hours × rate` and `parts` are folded into the engine by `syncLabor` (→ `laborLogged` and `dxParts`) and counted by `costBasis` — never copy them into `partsLog`/`timeEntries` or they'd double-count. `dxMatches(s, eng, symptoms)` gives the "seen N× before on this family" count. **AI**: *Suggest causes* in the diagnosis form calls `askClaude` with symptoms/codes/findings + the matching known issues + prior family diagnoses as context.
+- **Common-issues knowledge base.** `issues` (`{id, models:[], title, symptoms:[], severity(high/medium/low), causes, confirm, fix, parts, notes, source(seed/shop)}`) is seeded from `issuesSeed.js` on first load. `models` are match tokens compared against the *normalized engine name* (`normM` strips everything but A–Z0–9; `issueFits(issue, engine)`), so `ISX` matches every ISX and `[]` means every engine. `familyKey(engine)` picks the engine's family from `FAMILIES` (longest tokens first — ISX15 before ISX, DD13 before D13); `famLabel` prettifies a few. The passport shows *known issues for this family*; the diagnosis detail has **Add to common issues** (prefills an issue from the findings and links the diagnosis via `issueId`). Browse in the Issues tab by model or by symptom (`SYMPTOMS` is the shared tag list for both records).
+- **Cost basis rule** (`fixedCost` + `costBasis`): the breakdown (`costCore/costFreight/costParts/costLabor`) or, when none was entered, the flat `cost`, **plus** itemized `partsLog`, `dxParts` and `laborLogged`. The flat cost is the acquisition cost — adding a $50 part never makes the basis $50.
 - **Advertising channels** (`CHANNELS`): facebook, kijiji, marketbook. Each engine has `listedOn: []`. The **1-Post Funnel** (Marketing tab) generates platform-tailored listings via AI, opens all three posting pages, and stamps `listedOn`. Inventory shows channel chips + a "Not Listed" filter.
 
 ## Conventions (follow these — they prevent regressions)
@@ -109,4 +113,5 @@ Goal: move each list from a single JSON blob in `app_state` into its own real ta
 2. Make the change; keep to existing patterns above.
 3. `npm run build` must succeed.
 4. Verify persistence (reload), and undo/toast still work for any list you touched.
-5. If you added a `STORE_KEY`, add it to `STORE_KEYS`, `EMPTY`, and the save-effect dependency array in `App`.
+5. If you added a `STORE_KEY`, add it to `STORE_KEYS`, `EMPTY`, and the save-effect dependency array in `App`. If the list affects an engine's cost, add it to `LABOR_LISTS` and fold it in `syncLabor`.
+6. `node smoke.mjs` (after `npm run build`; needs `playwright` installed locally) walks the diagnosis/issues flow in localStorage mode and reports console/page errors.
