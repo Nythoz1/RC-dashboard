@@ -84,7 +84,7 @@ Overview · Customers · Quotes · Inventory · Parts · Issues · Invoicing · 
 
 ## Backend
 
-- **Storage** (`lib/storage.js`): if `VITE_SUPABASE_*` set → Supabase. Else → localStorage. The component is unaware which; it just calls `db.getItem/setItem/removeItem`. Most lists are one JSON blob per key in `app_state`; lists that have graduated to a real table (see `TABLE_ADAPTERS`) route there instead — currently **`rc:inventory` → the `inventory` table** (per-row: a `data` jsonb the app reads verbatim + projected typed columns + a real `id` PK). localStorage mode always uses the blob path (the cloud adapter is dead-code-eliminated when no Supabase env is set).
+- **Storage** (`lib/storage.js`): if `VITE_SUPABASE_*` set → Supabase. Else → localStorage. The component is unaware which; it just calls `db.getAll/getItem/setItem/removeItem`. `loadAll` uses `getAll`: every list in ~one round trip (one `IN(...)` query for the app_state blobs + one per table adapter, in parallel), and any failure marks the whole load untrusted (`__loadError`) instead of seeding over real data. Most lists are one JSON blob per key in `app_state`; lists that have graduated to a real table (see `TABLE_ADAPTERS`) route there instead — currently **`rc:inventory` → the `inventory` table** (per-row: a `data` jsonb the app reads verbatim + projected typed columns + a real `id` PK). localStorage mode always uses the blob path (the cloud adapter is dead-code-eliminated when no Supabase env is set).
 - **AI** (`lib/ai.js` + `supabase/functions/ai`): `askClaude(prompt)` POSTs to the Edge Function, which calls Anthropic with the server-side key. Model via `ANTHROPIC_MODEL` secret (default `claude-sonnet-4-6`).
 
 ## Auth & security (implemented — P0)

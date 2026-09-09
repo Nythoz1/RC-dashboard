@@ -114,6 +114,32 @@ export const db = {
     return data ? JSON.stringify(data.value) : null;
   },
 
+  // Batched load: every requested key in ~one round trip instead of one
+  // request per list. Blob keys come back from a single IN(...) query on
+  // app_state; table-backed keys fan out to their adapters, all in parallel.
+  // Returns { key: valueString | null } with the same per-key semantics as
+  // getItem (null = never stored, "[]" = stored empty). Throws on any error so
+  // the caller can refuse a partial load rather than seed over real data.
+  async getAll(keys) {
+    const out = {};
+    if (!supabase) {
+      keys.forEach((k) => { out[k] = localStorage.getItem(k); });
+      return out;
+    }
+    const blobKeys = keys.filter((k) => !TABLE_ADAPTERS[k]);
+    const tableKeys = keys.filter((k) => TABLE_ADAPTERS[k]);
+    const [blobRes, ...tableVals] = await Promise.all([
+      blobKeys.length
+        ? supabase.from(TABLE).select("key,value").in("key", blobKeys)
+        : Promise.resolve({ data: [], error: null }),
+      ...tableKeys.map((k) => tableGet(TABLE_ADAPTERS[k])),
+    ]);
+    if (blobRes.error) throw blobRes.error;
+    const byKey = new Map((blobRes.data || []).map((r) => [r.key, r.value]));
+    blobKeys.forEach((k) => { out[k] = byKey.has(k) ? JSON.stringify(byKey.get(k)) : null; });
+    tableKeys.forEach((k, i) => { out[k] = tableVals[i]; });
+    return out;
+  },
   async setItem(key, valueString, prevString) {
     if (!supabase) {
       localStorage.setItem(key, valueString);
