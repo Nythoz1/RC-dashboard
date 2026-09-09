@@ -41,8 +41,8 @@ Run: `npm install` → `npm run dev`. Build: `npm run build`. See README.md for 
 Single file, intentionally. React with `useReducer`. Approximate map (search by the landmark strings, don't trust line numbers — they drift):
 
 - `const FONTS` / `const EMPTY` — initial state, incl. 80-engine inventory seed + injector `parts` seed
-- `const STORE_KEYS` — the 19 persisted lists (see below)
-- `function reducer` — actions: `TAB, MODAL, CLOSE, LOAD, ADD, UPDATE, DELETE, UNDO, TOAST, RESET`
+- `const STORE_KEYS` — the persisted lists (see below)
+- `function reducer` — actions: `TAB, MODAL, BACK, CLOSE, LOAD, ADD, UPDATE, DELETE, UNDO, TOAST, SPLASH, RESET`. Modals keep a back stack in `mstack`: `MODAL` pushes the current modal (re-opening the same modal only refreshes `md`; opening one already in the stack unwinds to it; opening from no modal starts a fresh chain), `BACK` pops, `CLOSE`/`TAB` clear. The modal wrapper `W` shows a Back button when there is history.
 - Helpers — `$$, $K, invTot, stk, cn`, engine helpers (`isEngine, engStatus, costBasis, trueMargin, marginPct, engLinks`), `CHANNELS`, `compressImg`
 - `saveAll / loadAll / clearAll` — call `db` from `lib/storage`. `loadAll` seeds `EMPTY` only for keys that were **never persisted**; a stored empty list stays empty (deleting every row no longer re-seeds it).
 - Shared UI — `Badge, Stat, SH, Fil, Empty, Tbl, BtnRow`
@@ -54,14 +54,14 @@ Single file, intentionally. React with `useReducer`. Approximate map (search by 
 ### State shape (`STORE_KEYS`, all arrays)
 `customers, jobs, timeEntries, quotes, inventory, invoices, schedule, employees, expenses, leads, social, campaigns, contentCalendar, cores, shipments, commsLog, purchaseOrders, warranties, parts, wins, activity, settings, diagnoses, issues`
 
-Transient state (NOT persisted): `tab, modal, md, toast, lastDel`. `saveAll` only writes `STORE_KEYS`, so these never hit the DB.
+Transient state (NOT persisted): `tab, modal, md, mstack, toast, lastDel, soldSplash`. `saveAll` only writes `STORE_KEYS`, so these never hit the DB.
 
 ### Tabs
-Overview · Customers · Quotes · Inventory · Parts · Issues · Invoicing · Operations · Marketing · Schedule · Team · Reports
+7 nav groups (`GROUPS` in `App`): Overview · Inventory (Engines / Parts / Marketing) · Issues · Ops (Customers & Jobs / Operations / Schedule) · Money (Quotes / Invoicing) · Team · Reports. Multi-view groups render a sub-nav pill row. The underlying tab keys (`s.tab`: overview, inventory, parts, social, issues, customers, operations, schedule, quotes, invoices, employees, reports) are unchanged, so `TAB` dispatches still target individual views.
 
 ## Key domain concepts (important — this is an engine shop, not a parts store)
 
-- **Engine unit record (the "passport").** Each engine in `inventory` with `cat==="Complete Engine"` (or `"Core"`) is a serialized unit. Fields: `serial`/`esn`, `cpl`, `arrangement`, `year`, `ratedHp`, `oilCap`, `sourceCore`, `status`, `photo`, `listedOn`, and a cost-basis breakdown (`costCore, costFreight, costParts, costLabor`). Opening an engine shows the full passport (in `Modals`, `s.modal==="part-detail"`).
+- **Engine unit record (the "passport").** Each engine in `inventory` with `cat==="Complete Engine"` (or `"Core"`) is a serialized unit. Fields: `serial`/`esn`, `cpl`, `arrangement`, `year`, `ratedHp`, `oilCap`, `sourceCore`, `status`, `photo`, `listedOn`, and a cost-basis breakdown (`costCore, costFreight, costParts, costLabor`). Opening an engine shows the full passport (in `Modals`, `s.modal==="part-detail"`), laid out as four tabs — Overview (identity, total-in/list/margin strip, lifecycle, notes) · Costs (cost basis + pricing, parts log, reman labor) · Diagnosis (history + known issues) · Sell (channels, linked records) — with header/photo/underwater banner/actions always visible. Tab state is `ptab` in `Modals`; it persists across re-renders and Back for the same engine, and callers can land on a tab by passing `ptab` on the modal payload (e.g. `{...eng, ptab:"diagnosis"}`).
 - **Lifecycle status** (`ENG_STATUSES`): `core → in-reman → available → on-hold → sold`. Use `engStatus(i)` (reads `i.status`; falls back to "available", or "core" for cores). Don't store status as free text in `notes`. Engine availability/stock derives from `status`, **never `qty`** — `qty`/`reorder`/`stk()` are parts-only. The **Reman Board** (Inventory tab → toggle, `view==="board"` in `Inv`) is a kanban of the five stages: drag a card or use ←/→ to set `status`, click a card to open its passport, and the header surfaces WIP capital (cost basis tied up in `core`/`in-reman`/`on-hold`). Reuses the `rc-bcol`/`rc-bh`/`rc-jc` board classes plus `rc-rboard` (5-col).
 - **True margin.** `costBasis(i)` sums the breakdown (falls back to flat `cost`); `trueMargin`/`marginPct` use it. A returned core can erase margin — keep cost basis honest.
 - **Linked records.** Invoices, cores, warranties, shipments may carry `engineId` pointing at the inventory item. `engLinks(s, id)` resolves them; the passport renders them. The "Sell Engine" button in the passport opens a pre-filled invoice and flips the engine to `sold`.
