@@ -27,11 +27,14 @@ src/
     storage.js                   db adapter: Supabase app_state table ⇄ localStorage fallback
     ai.js                        askClaude() → calls the Supabase Edge Function (sends the user's token)
     auth.js                      email/password auth + login gate (Supabase); no-op on localStorage
+    brief.js                     requestBriefNow() → calls the brief Edge Function (Overview "Send now")
 supabase/
   functions/ai/index.ts          Deno function; holds ANTHROPIC_API_KEY, requires a logged-in user
   migrations/0001_init.sql       app_state key-value table + RLS
   migrations/0002_auth.sql       swaps anon access for an authenticated-only RLS policy
   migrations/0003_inventory_table.sql  P4 phase 1: inventory → its own table (data jsonb + columns)
+  functions/brief/index.ts       Morning Brief: computes + emails the daily brief; stores it as app_state rc:brief
+  migrations/0008_morning_brief_cron.sql  pg_cron hourly trigger + Vault-only shared secret + brief_secret() RPC
 ```
 
 Run: `npm install` → `npm run dev`. Build: `npm run build`. See README.md for Supabase setup.
@@ -52,9 +55,9 @@ Single file, intentionally. React with `useReducer`. Approximate map (search by 
 - `export default function App` — load/save effects, tab routing, toast UI
 
 ### State shape (`STORE_KEYS`, all arrays)
-`customers, jobs, timeEntries, quotes, inventory, invoices, schedule, employees, expenses, leads, social, campaigns, contentCalendar, cores, shipments, commsLog, purchaseOrders, warranties, parts, wins, activity, settings, diagnoses, issues`
+`customers, jobs, timeEntries, quotes, inventory, invoices, schedule, employees, expenses, leads, social, campaigns, contentCalendar, cores, shipments, commsLog, purchaseOrders, warranties, parts, wins, activity, settings, diagnoses, issues, brief`
 
-Transient state (NOT persisted): `tab, modal, md, mstack, toast, lastDel, soldSplash`. `saveAll` only writes `STORE_KEYS`, so these never hit the DB.
+Transient state (NOT persisted): `tab, modal, md, mstack, toast, lastDel, soldSplash`. `saveAll` only writes `STORE_KEYS`, so these never hit the DB. `brief` is the one `STORE_KEY` the app never mutates (server-written by the brief function), so it is never dirty and never saved by the client.
 
 ### Tabs
 7 nav groups (`GROUPS` in `App`): Overview · Inventory (Engines / Parts / Marketing) · Issues · Ops (Customers & Jobs / Operations / Schedule) · Money (Quotes / Invoicing) · Team · Reports. Multi-view groups render a sub-nav pill row. The underlying tab keys (`s.tab`: overview, inventory, parts, social, issues, customers, operations, schedule, quotes, invoices, employees, reports) are unchanged, so `TAB` dispatches still target individual views.
@@ -70,6 +73,11 @@ Transient state (NOT persisted): `tab, modal, md, mstack, toast, lastDel, soldSp
 - **Common-issues knowledge base.** `issues` (`{id, models:[], title, symptoms:[], severity(high/medium/low), causes, confirm, fix, parts, notes, source(seed/shop)}`) is seeded from `issuesSeed.js` on first load. `models` are match tokens compared against the *normalized engine name* (`normM` strips everything but A–Z0–9; `issueFits(issue, engine)`), so `ISX` matches every ISX and `[]` means every engine. `familyKey(engine)` picks the engine's family from `FAMILIES` (longest tokens first — ISX15 before ISX, DD13 before D13); `famLabel` prettifies a few. The passport shows *known issues for this family*; the diagnosis detail has **Add to common issues** (prefills an issue from the findings and links the diagnosis via `issueId`). Browse in the Issues tab by model or by symptom (`SYMPTOMS` is the shared tag list for both records).
 - **Cost basis rule** (`fixedCost` + `costBasis`): the breakdown (`costCore/costFreight/costParts/costLabor`) or, when none was entered, the flat `cost`, **plus** itemized `partsLog`, `dxParts` and `laborLogged`. The flat cost is the acquisition cost — adding a $50 part never makes the basis $50.
 - **Advertising channels** (`CHANNELS`): facebook, kijiji, marketbook. Each engine has `listedOn: []`. The **1-Post Funnel** (Marketing tab) generates platform-tailored listings via AI, opens all three posting pages, and stamps `listedOn`. Inventory shows channel chips + a "Not Listed" filter.
+
+## Autonomy — Morning Brief & event automations
+
+- **Morning Brief** (`supabase/functions/brief/index.ts`): a scheduled Edge Function that computes yesterday (sales, hours, parts into builds, remans completed, diagnoses), today's attention list (underwater/stale engines, overdue invoices, unlisted engines, cores pending, missing cost basis, open diagnoses), the shop-level Daily 3 and month-vs-goal, then emails it via Resend to `MAIL_TO` (default wayne@rollin-coal.ca) and stores it in `app_state` as `rc:brief`. `0008_morning_brief_cron.sql` enables pg_cron/pg_net, generates a shared secret **in Vault only** (`brief_secret` — never in the repo or an env var), exposes it to the function through the service-role-only RPC `public.brief_secret()`, and schedules an hourly `net.http_post`; the function applies the real gate (07:00 America/Edmonton, once per day, DST-proof). Accepted callers: cron (`x-brief-secret`), the service role, or a signed-in user (`?force=1`, any time — the Overview **Send now** button via `lib/brief.js`). Secrets: `RESEND_API_KEY` (until set, the brief is generated + stored but not emailed and the reason shows in-app), optional `MAIL_FROM`, `DASHBOARD_URL`. Deploy with `--no-verify-jwt` (in-function auth, same as `ai`). Its mirrored helpers (`costBasis`, `uwLevel`, `daily3`) must be kept in sync with the dashboard.
+- **Event automations** (reducer, `UPDATE` on inventory): engine → `sold` auto-creates an active **warranty** (`settings.warrantyMonths`, default 12; customer from the linked invoice if any; skipped if the engine already has one); engine → `in-reman` auto-opens a **reman work order** linked by `engineId` (skipped if an open one exists); any edit that pushes a WIP engine across the 75% / 90% cost-to-list thresholds logs an **underwater escalation** and toasts. Automation records carry `auto:true` and appear in the Shop Log as user `auto`.
 
 ## Conventions (follow these — they prevent regressions)
 

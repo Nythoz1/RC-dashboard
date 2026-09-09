@@ -2,6 +2,7 @@ import React, { useState, useReducer, useEffect, useRef } from "react";
 import { db } from "./lib/storage";
 import { uploadPhoto, deletePhoto } from "./lib/photos";
 import { askClaude } from "./lib/ai";
+import { requestBriefNow } from "./lib/brief";
 import { usingCloud, getSession, signIn, signOut, onAuthChange } from "./lib/auth";
 import { ISSUE_SEED } from "./issuesSeed";
 const FONTS="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap";
@@ -16,7 +17,8 @@ const EMPTY={
   tab:"overview",modal:null,md:null,mstack:[],
   wins:[],       // {id,ts,user,kind:"sale",name,sku,price,cost} — permanent wins feed
   activity:[],   // {id,ts,user,type,msg} — auto-captured shop log (capped)
-  settings:[],   // single row: {id,monthlyGoal,soundOn}
+  settings:[],   // single row: {id,monthlyGoal,soundOn,warrantyMonths}
+  brief:null,    // latest Morning Brief — written by the brief Edge Function, read-only in the app
   customers:[],jobs:[],quotes:[],
   inventory:[
 {id:1,name:"Caterpillar 3116 (1997)",sku:"BH-001",cat:"Complete Engine",cost:4500,price:5850,qty:1,reorder:0,condition:"Good - Runner",serial:"",status:"available"},
@@ -128,7 +130,7 @@ const EMPTY={
   ],
 };
 
-const STORE_KEYS=["customers","jobs","timeEntries","quotes","inventory","invoices","schedule","employees","expenses","leads","social","campaigns","contentCalendar","cores","shipments","commsLog","purchaseOrders","warranties","parts","wins","activity","settings","diagnoses","issues"];
+const STORE_KEYS=["customers","jobs","timeEntries","quotes","inventory","invoices","schedule","employees","expenses","leads","social","campaigns","contentCalendar","cores","shipments","commsLog","purchaseOrders","warranties","parts","wins","activity","settings","diagnoses","issues","brief"];
 
 // ── Shop activity log (who-did-what, auto-captured as a byproduct of work) ──
 let CURRENT_USER="shop";
@@ -174,17 +176,21 @@ function reducer(s,a){switch(a.type){
     const msg=describeAdd(a.list,d0||{});
     const stA={...s,[a.list]:[...(s[a.list]||[]),{id:Date.now(),...d0}],activity:msg?pushAct(s,"add",msg):s.activity,modal:null,md:null,toast:{msg:(a.label||"Added"),t:Date.now()}};
     return LABOR_LISTS.includes(a.list)?syncLabor(stA):stA;}
-  case "UPDATE":{let d2=a.d,act=null,wins=s.wins,splash=s.soldSplash;
+  case "UPDATE":{let d2=a.d,act=null,wins=s.wins,splash=s.soldSplash,extra={},autos=[],toast=s.toast;
     const it=(s[a.list]||[]).find(x=>x.id===a.id);
     if(a.list==="inventory"&&it&&a.d.status&&isEngine(it)&&engStatus(it)!==a.d.status){
       d2={...a.d,stageDate:nowIso(),stageLog:[...(it.stageLog||[]),{st:a.d.status,ts:nowIso()}],...(a.d.status==="sold"?{soldDate:isoToday()}:{})};
       act="🔧 "+(it.name||it.sku||"Engine")+" → "+engStatusLabel(a.d.status);
       if(a.d.status==="sold"){const w={id:Date.now(),ts:nowIso(),user:CURRENT_USER,kind:"sale",name:it.name||it.sku||"Engine",sku:it.sku||"",price:+it.price||0,cost:costBasis(it)};wins=[w,...(s.wins||[])];splash=w;act="💰 SOLD: "+w.name+" — $"+w.price.toLocaleString();}
+      if(a.d.status==="sold"&&!(s.warranties||[]).some(w=>+w.engineId===it.id)){const inv0=(s.invoices||[]).find(v=>+v.engineId===it.id);const months=+getSet(s).warrantyMonths||12;const sd=isoToday();const ed=new Date(sd+"T12:00:00");ed.setMonth(ed.getMonth()+months);const wr={id:Date.now()+1,engineId:it.id,custId:inv0?(+inv0.custId||0):0,invoiceId:inv0?inv0.id:null,engineName:it.name||it.sku||"Engine",warrantyPeriod:months+" months",startDate:sd,expiryDate:ed.toISOString().slice(0,10),status:"active",claimNotes:"",auto:true};extra.warranties=[...(s.warranties||[]),wr];autos.push("🛡 Warranty auto-started: "+wr.engineName+" · "+wr.warrantyPeriod+" (to "+wr.expiryDate+")");}
+      if(a.d.status==="in-reman"&&!(s.jobs||[]).some(j=>+j.engineId===it.id&&j.status!=="complete")){const nj={id:Date.now()+2,engineId:it.id,custId:0,vehicle:it.sku||"",service:"Reman — "+(it.name||it.sku||"engine"),type:"Reman",tech:"Unassigned",due:"",priority:"medium",status:"in-progress",notes:"Auto-opened when the engine entered reman.",auto:true};extra.jobs=[...(s.jobs||[]),nj];autos.push("🛠 Reman work order auto-opened: "+nj.service);}
     }else if(a.list==="inventory"&&it&&a.d.photo&&it.photo!==a.d.photo){act="📷 Photo added: "+(it.name||it.sku||"");}
     else if(a.list==="inventory"&&it&&a.d.partsLog&&(a.d.partsLog||[]).length>(it.partsLog||[]).length){const np=a.d.partsLog[(a.d.partsLog||[]).length-1]||{};act="🧩 Part into "+(it.name||it.sku||"engine")+": "+(np.d||"part")+" — $"+(+np.v||0).toLocaleString();}
     else if(a.list==="invoices"&&it&&a.d.status==="paid"&&it.status!=="paid"){act="💰 Invoice paid: "+(it.invNum||a.id);}
     else if(a.list==="jobs"&&it&&a.d.status&&it.status!==a.d.status){act="🛠 Job → "+a.d.status+(it.service?" ("+it.service+")":"");}
-    const stU={...s,activity:act?pushAct(s,"update",act):s.activity,wins,soldSplash:splash,[a.list]:(s[a.list]||[]).map(x=>x.id===a.id?{...x,...d2}:x)};
+    if(a.list==="inventory"&&it&&isEngine(it)){const rk=v=>v==="crit"?2:v==="warn"?1:0;const af={...it,...d2};const b0=rk(uwLevel(it)),a0=rk(uwLevel(af));if(a0>b0){const pct=Math.round((uwRatio(af)||0)*100);const nm=it.name||it.sku||"Engine";autos.push("⚠ "+nm+" is at "+pct+"% of expected sale — "+(a0===2?"UNDERWATER":"margin risk"));toast={msg:"⚠ "+nm+" crossed "+pct+"% of list — decide before the next dollar goes in",t:Date.now()};}}
+    const act0=act?pushAct(s,"update",act):s.activity;const activity=autos.length?[...autos.map((m,k)=>({id:Date.now()+Math.random()+k,ts:nowIso(),user:"auto",type:"auto",msg:m})),...act0].slice(0,400):act0;
+    const stU={...s,activity,wins,soldSplash:splash,toast,...extra,[a.list]:(s[a.list]||[]).map(x=>x.id===a.id?{...x,...d2}:x)};
     return LABOR_LISTS.includes(a.list)?syncLabor(stU):stU;}
   case "DELETE":{const item=(s[a.list]||[]).find(x=>x.id===a.id);const stD={...s,[a.list]:(s[a.list]||[]).filter(x=>x.id!==a.id),lastDel:item?{list:a.list,item}:null,activity:item?pushAct(s,"delete","🗑 Deleted: "+(item.name||item.sku||item.invNum||item.service||item.title||(item.symptoms&&item.symptoms.join(", "))||a.list)):s.activity,toast:{msg:"Deleted",undo:!!item,t:Date.now()}};
     return LABOR_LISTS.includes(a.list)?syncLabor(stD):stD;}
@@ -373,6 +379,8 @@ function BtnRow({children}){return (<div style={{display:"flex",gap:4,flexWrap:"
 // OVERVIEW
 // ═══════════════════════════════════════════════════════════════
 function Overview({s,d}){
+  const[briefBusy,setBriefBusy]=useState(false);const[showBrief,setShowBrief]=useState(false);const[justSent,setJustSent]=useState(null);
+  const sendBrief=async()=>{if(briefBusy)return;setBriefBusy(true);const r=await requestBriefNow();setBriefBusy(false);if(!r||r.error){d({type:"TOAST",d:{msg:"⚠ Brief failed: "+(r&&r.error||"unknown"),t:Date.now()}});return;}setJustSent(r);setShowBrief(true);d({type:"TOAST",d:{msg:r.sent?"✉ Brief emailed to "+(r.to||"you"):"☀️ Brief generated — email not configured yet",t:Date.now()}});};
   const aj=s.jobs.filter(j=>j.status!=="complete").length;const ec=s.inventory.filter(i=>isEngine(i)&&engStatus(i)==="available").length;
   const aq=(s.quotes||[]).filter(q=>q.status==="sent"||q.status==="draft").length;
   const pi=s.invoices.filter(i=>i.status==="pending"||i.status==="overdue");const pa=pi.reduce((a,inv)=>a+invTot(inv),0);
@@ -423,6 +431,10 @@ function Overview({s,d}){
       <div className="rc-goal-bar"><div className="rc-goal-fill" style={{width:pct+"%",background:pct>=100?"linear-gradient(90deg,#3fae5a,#5ed07a)":"var(--grad)"}}/>{bePct!=null&&bePct<100&&<div className="rc-goal-mark" style={{left:bePct+"%"}} title={"break-even "+$K(fixedMo)}/>}</div>
       <div className="rc-goal-sub">{mWins.length} engine{mWins.length===1?"":"s"} sold this month · {pct.toFixed(0)}% of goal{fixedMo>0?(<span> · break-even {$K(fixedMo)}{beEng?` ≈ ${beEng} engine${beEng>1?"s":""}`:""}{mRev>=fixedMo?" ✓ cleared":""}</span>):(<span style={{color:"#3a3a3a"}}> · add monthly expenses to see your break-even line</span>)}</div>
     </div>
+    {(()=>{const b=justSent&&justSent.text?{date:isoToday(),text:justSent.text,sent:justSent.sent,to:justSent.to,reason:justSent.reason}:(s.brief&&s.brief.date?s.brief:null);return(<div className="rc-card" style={{padding:"12px 16px",marginBottom:16}}>
+      <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}><span className="rc-sl" style={{margin:0,fontSize:10,letterSpacing:2}}>☀️ MORNING BRIEF</span>{b?(<span style={{fontSize:10,color:b.sent?"#6fd98a":"#c49a2a"}}>{b.date} · {b.sent?"emailed to "+(b.to||"you"):"generated, not emailed"+(b.reason?" — "+b.reason:"")}</span>):(<span style={{fontSize:10,color:"#5a5650"}}>lands in your inbox at 7am · runs by itself</span>)}<span style={{flex:1}}/>{b&&<button className="rc-fb" onClick={()=>setShowBrief(v=>!v)}>{showBrief?"Hide":"Read"}</button>}{usingCloud&&<button className="rc-bs" disabled={briefBusy} onClick={sendBrief}>{briefBusy?"⏳ Working…":"✉ Send now"}</button>}</div>
+      {b&&showBrief&&<pre style={{whiteSpace:"pre-wrap",fontSize:11,lineHeight:1.65,color:"#e8e4de",marginTop:10,fontFamily:"var(--fm)",background:"#101113",border:"1px solid #2a2a2a",borderRadius:9,padding:"10px 12px",maxHeight:360,overflowY:"auto"}}>{b.text}</pre>}
+    </div>);})()}
     <div className="rc-card" style={{padding:"12px 16px",marginBottom:16}}>
       <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:8,flexWrap:"wrap"}}><span className="rc-sl" style={{margin:0,fontSize:10,letterSpacing:2}}>TODAY'S 3 — SHIFT CARD</span>{d3streak>0&&<span style={{fontSize:10,color:"#f0c14a",fontWeight:700}}>🔥 {d3streak}-day streak</span>}<span style={{flex:1}}/>{allDone&&<span className="rc-lm-full" style={{fontSize:11}}>✅ SHIFT COMPLETE</span>}</div>
       {!d3||d3.length===0?(<div style={{fontSize:11,color:"#6fd98a"}}>🏁 Lot's clean — nothing urgent today. Go sell something.</div>):d3.map((t,x)=>(<div key={x} onClick={()=>!d3done[x]&&d3open(t)} style={{display:"flex",gap:9,alignItems:"center",padding:"6px 0",borderBottom:x<d3.length-1?"1px solid #212327":"none",fontSize:12,cursor:d3done[x]?"default":"pointer",opacity:d3done[x]?.55:1}}><span style={{width:16,textAlign:"center",color:d3done[x]?"#6fd98a":"#5a5650",fontWeight:700}}>{d3done[x]?"✓":x+1}</span><span style={{flex:1,textDecoration:d3done[x]?"line-through":"none"}}>{t.l}</span>{!d3done[x]&&<span style={{fontSize:9,color:"#5a5650"}}>tap to open →</span>}</div>))}
@@ -1025,7 +1037,7 @@ export default function App(){
   useEffect(()=>{if(!s.soldSplash)return;if(getSet(s).soundOn!==false)horn();const t=setTimeout(()=>d({type:"SPLASH",d:null}),6500);return()=>clearTimeout(t);},[s.soldSplash]);
   // Load data once authenticated (immediately in localStorage mode). Never loads/saves while logged out.
   useEffect(()=>{if(!authed){setLoading(false);return;}let off=false;setLoading(true);setLoadErr(false);(async()=>{try{const data=await loadAll();if(off)return;if(data.__loadError){setLoadErr(true);setLoading(false);return;}lastSaved.current=data;d({type:"LOAD",d:data});}catch(e){if(!off)setLoadErr(true);}if(!off)setLoading(false);})();return()=>{off=true;};},[authed]);
-  useEffect(()=>{if(loading||!authed||loadErr||!lastSaved.current)return;const t=setTimeout(()=>{const prev=lastSaved.current;const dirty=prev?STORE_KEYS.filter(k=>s[k]!==prev[k]):STORE_KEYS.slice();if(!dirty.length)return;saveAll(s,dirty,prev||{}).then(failed=>{const snap={...(lastSaved.current||{})};dirty.forEach(k=>{if(!(failed||[]).includes(k))snap[k]=s[k];});lastSaved.current=snap;if(failed&&failed.length)d({type:"TOAST",d:{msg:"⚠ Couldn't save changes — check your connection",t:Date.now()}});});},500);return()=>clearTimeout(t);},[s.customers,s.jobs,s.quotes,s.inventory,s.invoices,s.schedule,s.employees,s.expenses,s.leads,s.social,s.campaigns,s.contentCalendar,s.cores,s.shipments,s.commsLog,s.purchaseOrders,s.warranties,s.parts,s.timeEntries,s.wins,s.activity,s.settings,s.diagnoses,s.issues,loading,authed,loadErr]);
+  useEffect(()=>{if(loading||!authed||loadErr||!lastSaved.current)return;const t=setTimeout(()=>{const prev=lastSaved.current;const dirty=prev?STORE_KEYS.filter(k=>s[k]!==prev[k]):STORE_KEYS.slice();if(!dirty.length)return;saveAll(s,dirty,prev||{}).then(failed=>{const snap={...(lastSaved.current||{})};dirty.forEach(k=>{if(!(failed||[]).includes(k))snap[k]=s[k];});lastSaved.current=snap;if(failed&&failed.length)d({type:"TOAST",d:{msg:"⚠ Couldn't save changes — check your connection",t:Date.now()}});});},500);return()=>clearTimeout(t);},[s.customers,s.jobs,s.quotes,s.inventory,s.invoices,s.schedule,s.employees,s.expenses,s.leads,s.social,s.campaigns,s.contentCalendar,s.cores,s.shipments,s.commsLog,s.purchaseOrders,s.warranties,s.parts,s.timeEntries,s.wins,s.activity,s.settings,s.diagnoses,s.issues,s.brief,loading,authed,loadErr]);
   // Live sync: quietly re-pull the shop's data on window focus and every 60s
   // (cloud only, never while a modal is open or local changes are unsaved),
   // so a tab left open overnight can't overwrite the crew's newer work.
