@@ -1,5 +1,6 @@
 -- ─────────────────────────────────────────────────────────────
--- Morning Brief: autonomous daily email at 07:00 America/Edmonton.
+-- Morning Brief: autonomous daily email at 07:00 America/Edmonton (the function
+-- retries at 08:00/09:00 only if that day's email did not go out).
 -- pg_cron fires the 'brief' Edge Function every hour; the function applies the
 -- real gate (7am local, once per day — DST-proof) and does the work.
 -- Auth between cron and the function is a shared secret that lives ONLY in
@@ -7,8 +8,8 @@
 -- paste), read by the cron job for the request header and by the function via
 -- the service-role-only RPC public.brief_secret().
 -- ─────────────────────────────────────────────────────────────
-create extension if not exists pgcrypto;
-create extension if not exists pg_net;
+create extension if not exists pgcrypto with schema extensions;
+create extension if not exists pg_net with schema extensions;  -- keep it out of public (lint 0014)
 create extension if not exists pg_cron;
 
 -- one-time random shared secret (no-op if it already exists)

@@ -4,7 +4,8 @@
 // Computes the shop's daily brief from live data (inventory table + app_state
 // blobs) and emails it. Runs autonomously: pg_cron calls this hourly (see
 // migrations/0008_morning_brief_cron.sql); the function only acts at 07:00
-// America/Edmonton (DST-proof) and once per calendar day. The dashboard can also
+// America/Edmonton (DST-proof) once per calendar day, retrying at 08:00/09:00
+// only if that day's email did not go out. The dashboard can also
 // call it on demand ("Send now") with a logged-in user's token.
 //
 // Auth (any one): x-brief-secret header matching the Vault secret 'brief_secret'
@@ -51,6 +52,7 @@ const uwRatio = (i: Any) => { const p = +i.price||0, cb = costBasis(i); return p
 const uwLevel = (i: Any) => { if (!WIP.includes(engStatus(i))) return null; const r = uwRatio(i); return r == null ? null : r >= .9 ? "crit" : r >= .75 ? "warn" : null; };
 const $ = (n: number) => "$" + Math.round(+n||0).toLocaleString("en-US");
 const $K = (n: number) => { n = +n||0; return n >= 10000 ? "$" + (n/1000).toFixed(1) + "k" : $(n); };
+const label = (i: Any) => i.name && i.sku && i.name !== i.sku ? `${i.name} (${i.sku})` : (i.name || i.sku || "Engine");
 const STAGE: Record<string,string> = { core:"Core", "in-reman":"In Reman", available:"Available", "on-hold":"On Hold", sold:"Sold" };
 
 function local(d: Date) {
@@ -91,8 +93,8 @@ function compute(s: Any, now: Date) {
     + dxY.reduce((a: number, x: Any) => a + (+x.hours||0), 0);
   const yActs = (s.activity||[]).filter((x: Any) => ymdOf(x.ts) === y);
   const yAvail = yActs.filter((x: Any) => /→ Available/.test(x.msg||"")).length;
-  const uw = E.filter((i: Any) => uwLevel(i)).map((i: Any) => ({ name: i.name||i.sku, pct: Math.round((uwRatio(i)||0)*100), lv: uwLevel(i) })).sort((a: Any, b: Any) => b.pct - a.pct);
-  const stale = E.filter((i: Any) => WIP.includes(engStatus(i)) && i.stageDate && days(i.stageDate) > 7).map((i: Any) => ({ name: i.name||i.sku, d: days(i.stageDate), st: STAGE[engStatus(i)] })).sort((a: Any, b: Any) => b.d - a.d);
+  const uw = E.filter((i: Any) => uwLevel(i)).map((i: Any) => ({ name: label(i), pct: Math.round((uwRatio(i)||0)*100), lv: uwLevel(i) })).sort((a: Any, b: Any) => b.pct - a.pct);
+  const stale = E.filter((i: Any) => WIP.includes(engStatus(i)) && i.stageDate && days(i.stageDate) > 7).map((i: Any) => ({ name: label(i), d: days(i.stageDate), st: STAGE[engStatus(i)] })).sort((a: Any, b: Any) => b.d - a.d);
   const avail = E.filter((i: Any) => engStatus(i) === "available");
   const unlisted = avail.filter((i: Any) => !(i.listedOn||[]).length).length;
   const noCost = E.filter((i: Any) => costBasis(i) <= 0).length;
@@ -121,7 +123,7 @@ function render(c: Any) {
   if (c.noCost) att.push(`💲 ${c.noCost} engine${c.noCost > 1 ? "s" : ""} with no cost basis (margins are fiction until entered)`);
   if (c.openDx) att.push(`🩺 ${c.openDx} open diagnos${c.openDx > 1 ? "es" : "is"}`);
   const yest: string[] = [
-    (c.yWins.length ? "🏆 " + c.yWins.length + " sold · " + $(yRev) + " — " + c.yWins.map((w: Any) => w.name).join(", ") : "No sales"),
+    (c.yWins.length ? "🏆 " + c.yWins.length + " sold · " + $(yRev) + " — " + c.yWins.map((w: Any) => label(w)).join(", ") : "No sales"),
     `⏱ ${c.yHours}h wrenching · 🧩 ${$(c.yParts)} parts into builds · 🔧 ${c.yAvail} reman${c.yAvail === 1 ? "" : "s"} completed`,
     `🩺 ${c.yDx} diagnos${c.yDx === 1 ? "is" : "es"} logged · 📜 ${c.yActs} actions in the shop log`,
   ];
@@ -134,7 +136,7 @@ function render(c: Any) {
     ``, `MONTH SO FAR`,
     `  ${$(c.mRev)} of ${$(c.goal)} goal (${pct}%) · ${c.mWins.length} engine${c.mWins.length === 1 ? "" : "s"} sold` + (c.fixedMo > 0 ? ` · break-even ${$(c.fixedMo)}${c.mRev >= c.fixedMo ? " ✓ cleared" : ""}` : ""),
     `  Lot: ${c.E} engines · ${c.avail} available · ${c.wip} in WIP holding ${$K(c.wipCost)}`,
-    ``, DASH ? `Open the dashboard: ${DASH}` : ``, `Sent automatically by your Rollin Coal dashboard.`,
+    ``, ...(DASH ? [`Open the dashboard: ${DASH}`, ``] : []), `Sent automatically by your Rollin Coal dashboard.`,
   ].join("\n");
   const li = (a: string[]) => a.map(x => `<li style="margin:4px 0">${esc(x)}</li>`).join("");
   const html = `<!doctype html><html><body style="margin:0;background:#f4f2ef;font-family:Helvetica,Arial,sans-serif;color:#1b1b1b">
@@ -199,9 +201,11 @@ Deno.serve(async (req) => {
   const by = new Map((blobs.data || []).map((r: Any) => [r.key, r.value]));
   BLOBS.forEach(k => { const v = by.get("rc:" + k); s[k] = Array.isArray(v) ? v : []; });
   const last = (prev.data?.value as Any) || null;
-  // ── gate (scheduled calls only): 07:00 local, once per day ──
+  // ── gate (scheduled calls only): 07:00 local, once per day. If the email
+  //    did not go out (Resend hiccup / key not set yet) the 08:00 and 09:00
+  //    runs retry; a sent brief for today short-circuits them. ──
   if (!force) {
-    if (t.hour !== 7) return json({ skipped: "outside 07:00 " + TZ, localHour: t.hour, date: t.ymd });
+    if (t.hour < 7 || t.hour > 9) return json({ skipped: "outside 07:00-09:00 " + TZ, localHour: t.hour, date: t.ymd });
     if (last && last.date === t.ymd && last.sent) return json({ skipped: "already sent today", date: t.ymd });
   }
   // ── compute → email → store ──
