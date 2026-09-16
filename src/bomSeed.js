@@ -20,12 +20,16 @@
 export const BOM_SEED = [
   {
     id: 80001,
-    label: "Cummins ISX15 · CM2350",
+    label: "Cummins ISX15 / X15 · CM2350",
     family: "ISX15",
     model: "CM2350",
     rev: "3.0",
     // Match tokens, compared against the engine's normalized name. [] = every engine.
-    match: ["ISX15"],
+    // "X15" is the token on purpose: it catches both the older ISX15 and the
+    // 2017+ X15, which is the same 15L family and the same CM2350-era ECM. It
+    // does NOT catch the CM870/871 ISX — different fuel system, clone this
+    // worksheet for those rather than stretching this one over them.
+    match: ["X15"],
     note: "Single overhead cam · XPI common rail · EGR + DPF + SCR/DEF",
     rule: "Tier 2 reuse is allowed only if the number is measured, in spec, and written on the measurement sheet. \"It looked fine\" is not a measurement. If nobody wrote a number, it gets replaced.",
     watch: "On a CM2350 specifically: the cam lobes, the 12 followers, the EGR cooler, the injector cups and the high-pressure fuel pump are the five that come back as warranty if they get waved through. Metal out of a failed HP pump goes everywhere — if you find it, the rail, lines and injectors all go.",
