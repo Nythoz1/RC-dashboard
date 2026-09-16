@@ -195,7 +195,7 @@ function reducer(s,a){switch(a.type){
     const act0=act?pushAct(s,"update",act):s.activity;const activity=autos.length?[...autos.map((m,k)=>({id:Date.now()+Math.random()+k,ts:nowIso(),user:"auto",type:"auto",msg:m})),...act0].slice(0,400):act0;
     const stU={...s,activity,wins,soldSplash:splash,toast,...extra,[a.list]:(s[a.list]||[]).map(x=>x.id===a.id?{...x,...d2}:x)};
     return LABOR_LISTS.includes(a.list)?syncLabor(stU):stU;}
-  case "DELETE":{const item=(s[a.list]||[]).find(x=>x.id===a.id);const stD={...s,[a.list]:(s[a.list]||[]).filter(x=>x.id!==a.id),lastDel:item?{list:a.list,item}:null,activity:item?pushAct(s,"delete","🗑 Deleted: "+(item.name||item.sku||item.invNum||item.service||item.title||(item.symptoms&&item.symptoms.join(", "))||a.list)):s.activity,toast:{msg:"Deleted",undo:!!item,t:Date.now()}};
+  case "DELETE":{const item=(s[a.list]||[]).find(x=>x.id===a.id);const stD={...s,[a.list]:(s[a.list]||[]).filter(x=>x.id!==a.id),lastDel:item?{list:a.list,item}:null,activity:item?pushAct(s,"delete","🗑 Deleted: "+(item.name||item.sku||item.invNum||item.service||item.title||item.engName||(item.symptoms&&item.symptoms.join(", "))||a.list)):s.activity,toast:{msg:"Deleted",undo:!!item,t:Date.now()}};
     return LABOR_LISTS.includes(a.list)?syncLabor(stD):stD;}
   case "UNDO":{if(!s.lastDel)return s;const stR={...s,[s.lastDel.list]:[...(s[s.lastDel.list]||[]),s.lastDel.item],lastDel:null,toast:{msg:"Restored",t:Date.now()}};
     return LABOR_LISTS.includes(s.lastDel.list)?syncLabor(stR):stR;}
@@ -605,7 +605,7 @@ function Boms({s,d}){
         <div className="rc-3c"><div><div className="rc-ml">Lines</div><div className="rc-mv">{ls.length}</div></div><div><div className="rc-ml">Always repl</div><div className="rc-mv" style={{color:"#ff905c"}}>{t1}</div></div><div><div className="rc-ml">Measure</div><div className="rc-mv" style={{color:"#f0c14a"}}>{t2}</div></div></div>
         <div style={{fontSize:12,color:"#8a8579",marginTop:9}}>{fits.length} on the lot · {mine.length} sheet{mine.length===1?"":"s"} started</div>
       </div>);})}</div>)}
-    {shs.length>0&&<><SH title="Worksheets In Progress"/><Tbl headers={["Engine","Worksheet","Progress","Missing","Replace","Machine",""]}>{shs.map(r=>(<tr key={r.x.id}><td className="rc-tn">{r.e.name||r.e.sku}</td><td style={{color:"#8a8579"}}>{r.b.label}</td><td>{r.st.done}/{r.st.total}<div style={{height:4,width:64,background:"#101113",borderRadius:3,overflow:"hidden",marginTop:3}}><div style={{height:"100%",width:(r.st.total?Math.round(r.st.done/r.st.total*100):0)+"%",background:"var(--grad)"}}/></div></td><td style={{color:"#ff8a72"}}>{r.st.miss}</td><td style={{color:"#ff905c"}}>{r.st.repl}</td><td style={{color:"#6aa9e0"}}>{r.st.mach}</td><td><button className="rc-bs" onClick={()=>d({type:"MODAL",v:"part-detail",d:{...r.e,ptab:"bom"}})}>Open</button></td></tr>))}</Tbl></>}
+    {shs.length>0&&<><SH title="Worksheets In Progress"/><Tbl headers={["Engine","Worksheet","Progress","Missing","Replace","Machine",""]}>{shs.map(r=>(<tr key={r.x.id}><td className="rc-tn">{r.e.name||r.e.sku}</td><td style={{color:"#8a8579"}}>{r.b.label}</td><td>{r.st.done}/{r.st.total}<div style={{height:4,width:64,background:"#101113",borderRadius:3,overflow:"hidden",marginTop:3}}><div style={{height:"100%",width:(r.st.total?Math.round(r.st.done/r.st.total*100):0)+"%",background:"var(--grad)"}}/></div></td><td style={{color:"#ff8a72"}}>{r.st.miss}</td><td style={{color:"#ff905c"}}>{r.st.repl}</td><td style={{color:"#6aa9e0"}}>{r.st.mach}</td><td><BtnRow><button className="rc-bs" onClick={()=>d({type:"MODAL",v:"part-detail",d:{...r.e,ptab:"bom"}})}>Open</button><button className="rc-bs rc-bsr" title="Take this worksheet off the engine — undo from the toast" onClick={()=>d({type:"DELETE",list:"bomSheets",id:r.x.id})}>✕</button></BtnRow></td></tr>))}</Tbl></>}
     {(()=>{const rows=[];(s.bomSheets||[]).forEach(x=>{const b=bomById(s,x.bomId);const e=engById(s,x.engineId);if(!b||!e)return;(b.lines||[]).forEach(l=>{const r=sheetRow(x,l.id);if(r.d)rows.push({l,r,e,b});});});
       if(!rows.length)return null;
       const cnt=k=>rows.filter(z=>z.r.d===k).length;
@@ -633,7 +633,7 @@ function Boms({s,d}){
     <SH title={bm.label}>
       <button className="rc-bs" onClick={()=>setSel(null)}>← All worksheets</button>
       <button className="rc-bs" onClick={()=>d({type:"MODAL",v:"edit-bom",d:bm})}>✎ Details</button>
-      <button className="rc-bs" onClick={()=>d({type:"MODAL",v:"add-bom",d:{cloneOf:bm.id}})}>⧉ Clone for another family</button>
+      <button className="rc-bs" onClick={()=>{d({type:"MODAL",v:"add-bom",d:{cloneOf:bm.id}});setSel(null);}}>⧉ Clone for another family</button>
       <button className="rc-ba" onClick={()=>d({type:"MODAL",v:"add-bomline",d:{bomId:bm.id,sec:secs[0]||""}})}>+ Line</button>
     </SH>
     {(()=>{const engs=(s.inventory||[]).filter(isEngine);const hit=engs.filter(e=>bomFits(bm,e));const rest=engs.filter(e=>!bomFits(bm,e));
@@ -1002,9 +1002,18 @@ function Modals({s,d}){
     const st=bm?bomStats(bm,sh):null;
     return W(<div><div className="rc-mt" style={{marginBottom:3}}>Worksheet</div>
       <div style={{fontSize:12,color:"#5a5650",letterSpacing:1,marginBottom:12}}>{eng.name||eng.sku} · {bm?bm.label:""}{st?" · "+st.done+"/"+st.total+" ticked":""}</div>
+      {(()=>{const others=(s.boms||[]).filter(b=>+b.id!==+sh.bomId);if(!others.length)return null;
+        const swap=nid=>{const nb=bomById(s,nid);if(!nb)return;const ob=bomById(s,sh.bomId);
+          const byName=new Map();((ob&&ob.lines)||[]).forEach(l=>{const r=(sh.rows||{})[l.id];if(r&&r.d)byName.set(normM(l.part),r);});
+          const rows={};let kept=0;(nb.lines||[]).forEach(l=>{const r=byName.get(normM(l.part));if(r){rows[l.id]={...r};kept++;}else if(l.tier===1)rows[l.id]={d:"repl"};});
+          d({type:"UPDATE",list:"bomSheets",id:sh.id,d:{bomId:nb.id,rows}});
+          d({type:"TOAST",d:{msg:"⇄ Now on "+nb.label+(kept?" · "+kept+" tick"+(kept===1?"":"s")+" carried over":""),t:Date.now()}});d({type:"BACK"});};
+        return(<div className="rc-fg"><label className="rc-fl">Wrong worksheet? Swap it</label>
+          <select className="rc-fi" value="" onChange={e=>{if(e.target.value)swap(e.target.value);}} style={{appearance:"none"}}><option value="">Keep {bm?bm.label:"this one"}</option>{others.map(b=>(<option key={b.id} value={b.id}>Switch to {b.label}</option>))}</select>
+          <div style={{fontSize:11,color:"#5a5650",marginTop:4}}>Ticks on parts that appear on both worksheets come with you. Anything else starts fresh, with the always-replace lines pre-ticked.</div></div>);})()}
       {F("bsWo","Job / WO #")}{F("bsTech","Tech")}{F("bsDate","Date in")}{F("bsDone","Date complete")}{F("bsCore","Core source")}
       {TA("bsNotes","Notes",3)}
-      <div className="rc-fa">{X}<button className="rc-bs rc-bsr" onClick={()=>{d({type:"DELETE",list:"bomSheets",id:sh.id,label:"Worksheet deleted"});}}>Delete worksheet</button><button className="rc-ba" onClick={()=>{d({type:"UPDATE",list:"bomSheets",id:sh.id,d:{wo:f.bsWo||"",tech:f.bsTech||"",date:f.bsDate||"",dateDone:f.bsDone||"",coreSource:f.bsCore||"",notes:f.bsNotes||""}});d({type:"BACK"});}}>Save</button></div>
+      <div className="rc-fa">{X}<button className="rc-bs rc-bsr" onClick={()=>{d({type:"DELETE",list:"bomSheets",id:sh.id});d({type:"BACK"});}}>✕ Remove worksheet</button><button className="rc-ba" onClick={()=>{d({type:"UPDATE",list:"bomSheets",id:sh.id,d:{wo:f.bsWo||"",tech:f.bsTech||"",date:f.bsDate||"",dateDone:f.bsDone||"",coreSource:f.bsCore||"",notes:f.bsNotes||""}});d({type:"BACK"});}}>Save</button></div>
     </div>);}
   // ADD forms
   if(s.modal==="add-cust")return FM("Add Customer",[["name","Name"],["phone","Phone"],["email","Email"],["type","Type (Individual/Fleet)"],["province","Province"],["vehicles","Vehicles (comma sep)"],["notes","Notes"],["tags","Tags (comma sep)"]],()=>f.name&&d({type:"ADD",list:"customers",d:{...f,spent:0,visits:0,last:today(),vehicles:(f.vehicles||"").split(",").map(v=>v.trim()).filter(Boolean),tags:(f.tags||"").split(",").map(t=>t.trim()).filter(Boolean)}}));
@@ -1082,6 +1091,7 @@ function Modals({s,d}){
             <button className="rc-bs" onClick={()=>d({type:"MODAL",v:"bom-shop",d:{engineId:i.id}})}>🛒 Shopping list{st.repl?" · "+st.repl:""}</button>
             <button className="rc-bs" onClick={()=>d({type:"MODAL",v:"bom-mach",d:{engineId:i.id}})}>⚙ Machine shop{st.mach?" · "+st.mach:""}</button>
             <button className="rc-bs" onClick={()=>d({type:"MODAL",v:"bom-sheet",d:{engineId:i.id}})}>✎ Sheet info</button>
+            <button className="rc-bs rc-bsr" title="Take this worksheet off the engine — undo from the toast" onClick={()=>d({type:"DELETE",list:"bomSheets",id:sh.id})}>✕ Remove worksheet</button>
           </div>
         </div>
         <div style={{display:"flex",gap:5,flexWrap:"wrap",marginBottom:8}}>{[["all","All "+st.total],["todo","Not ticked "+(st.total-st.done)],["miss","Missing "+st.miss],["repl","Replace "+st.repl],["mach","Machine "+st.mach],["reuse","Reuse "+st.reuse]].map(([k,l])=>(<button key={k} className={"rc-fb"+(fil===k?" on":"")} onClick={()=>set("bfil",k)}>{l}</button>))}</div>
