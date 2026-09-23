@@ -245,13 +245,21 @@ const engById=(s,id)=>(s.inventory||[]).find(x=>x.id===+id);
 // Prior diagnoses on the same engine family that share at least one symptom
 const dxMatches=(s,eng,symptoms,exceptId)=>{if(!eng||!(symptoms||[]).length)return[];const fk=familyKey(eng);return(s.diagnoses||[]).filter(x=>x.id!==exceptId&&(x.symptoms||[]).some(y=>symptoms.includes(y))).filter(x=>{const e=engById(s,x.engineId);return e&&familyKey(e)===fk;});};
 const sevCol=v=>v==="high"?"#c43a2a":v==="low"?"#3a9a4f":"#c49a2a";
-// ── Bill of materials: the per-family teardown + parts worksheet ──
-// A template (s.boms) is the shop's paper form for an engine family; a sheet
-// (s.bomSheets, one per engine) is that form filled in for one core. Every line
-// gets one tick: MISS (not with the core) · REUSE (measured, in spec) · REPL
-// (order it) · MACH (machine shop). Tier 1 lines are pre-ticked REPL because
-// they are never inspected; tier 2 may only be reused with a measurement.
-const DISPO=[["miss","MISS","#c43a2a"],["reuse","REUSE","#3a9a4f"],["repl","REPL","#d4581a"],["mach","MACH","#2a7ac4"]];
+// ── Bill of materials: the long block parts order + decision sheet ──
+// A template (s.boms) is the shop's paper form for one engine family; a sheet
+// (s.bomSheets, one per engine) is that form filled in for one core. Two kinds
+// of line, mirroring the form's two pages:
+//   order  — always new, ordered the day the job opens, never ticked. Struck
+//            out (d:"skip") when it is not going on this job.
+//   decide — REUSE (measured, in spec, number written down) · MISS (not there
+//            when opened — money back on the core) · MACH (machine shop).
+//            Blank means REPLACE once the tech signs the sheet off
+//            (sh.decidedAt); until then a blank is simply undecided.
+// Older tier-based templates read as tier 1 → order, anything else → decide,
+// and a legacy d:"repl" reads as blank.
+const DISPO=[["reuse","REUSE","#3a9a4f"],["miss","MISS","#c43a2a"],["mach","MACH","#2a7ac4"]];
+const WHY={order:["ORDER","#ff905c"],repl:["REPLACE","#f0c14a"],miss:["MISSING","#ff8a72"]};
+const lineKind=l=>(l&&l.kind)||(l&&l.tier===1?"order":"decide");
 const dispoCol=v=>(DISPO.find(x=>x[0]===v)||[])[2]||"#5a5650";
 const dispoLabel=v=>(DISPO.find(x=>x[0]===v)||[])[1]||"";
 const bomFits=(b,i)=>{const ms=b.match||[];if(!ms.length)return true;const n=normM(i&&i.name);return ms.some(m=>m&&n.includes(normM(m)));};
@@ -259,14 +267,20 @@ const bomsFor=(s,i)=>(s.boms||[]).filter(b=>bomFits(b,i));
 const bomById=(s,id)=>(s.boms||[]).find(b=>b.id===+id);
 const sheetFor=(s,id)=>(s.bomSheets||[]).find(x=>+x.engineId===+id);
 const sheetRow=(sh,lid)=>((sh&&sh.rows)||{})[lid]||{};
-const newRows=b=>{const r={};(b.lines||[]).forEach(l=>{if(l.tier===1)r[l.id]={d:"repl"};});return r;};
-const bomStats=(b,sh)=>{const ls=(b&&b.lines)||[];const c={miss:0,reuse:0,repl:0,mach:0,done:0,total:ls.length};ls.forEach(l=>{const v=sheetRow(sh,l.id).d;if(v){c.done++;if(c[v]!=null)c[v]++;}});return c;};
-const bomPick=(b,sh,v)=>((b&&b.lines)||[]).filter(l=>sheetRow(sh,l.id).d===v);
+const rowD=(sh,l)=>{const v=sheetRow(sh,l.id).d||"";return v==="repl"?"":v;};
+// Nothing is pre-ticked: order lines are ordered by default, and a decision
+// left blank means replace once the sheet is signed off.
+const newRows=()=>({});
+const bomStats=(b,sh)=>{const ls=(b&&b.lines)||[];const c={order:0,skip:0,decide:0,reuse:0,miss:0,mach:0,repl:0,open:0,total:ls.length,signed:!!(sh&&sh.decidedAt),ordered:!!(sh&&sh.orderedDate)};ls.forEach(l=>{const v=rowD(sh,l);if(lineKind(l)==="order"){if(v==="skip")c.skip++;else c.order++;}else{c.decide++;if(v==="reuse")c.reuse++;else if(v==="miss")c.miss++;else if(v==="mach")c.mach++;else if(c.signed)c.repl++;else c.open++;}});c.ticked=c.reuse+c.miss+c.mach;return c;};
+const bomPick=(b,sh,v)=>((b&&b.lines)||[]).filter(l=>lineKind(l)==="decide"&&rowD(sh,l)===v);
+// Everything to buy for one engine, tagged with why: the day-one order, what
+// was missing from the core, and what the signed-off decision sheet left blank.
+const bomBuy=(b,sh)=>{const out=[];const signed=!!(sh&&sh.decidedAt);((b&&b.lines)||[]).forEach(l=>{const v=rowD(sh,l);if(lineKind(l)==="order"){if(v!=="skip")out.push({l,why:"order"});}else if(v==="miss")out.push({l,why:"miss"});else if(!v&&signed)out.push({l,why:"repl"});});return out;};
 const bomSecs=b=>[...new Set(((b&&b.lines)||[]).map(l=>l.sec))];
 // Search string for a buy link: a known part number beats the family name.
 const buyQ=(b,l,pn)=>{const nm=String(l.part||"").replace(/[—–]/g," ").replace(/\s+/g," ").trim();const t=String(pn||"").trim();return encodeURIComponent(t?t+" "+nm:(b?((b.family||"")+" "+(b.model||"")+" ").replace(/\s+/g," "):"")+nm);};
 const buyUrl=(v,q)=>String(v.search||"").replace("{q}",q);
-const bomCost=(b,sh)=>bomPick(b,sh,"repl").reduce((a,l)=>a+(+sheetRow(sh,l.id).cost||0),0);
+const bomCost=(b,sh)=>bomBuy(b,sh).reduce((a,z)=>a+(+sheetRow(sh,z.l.id).cost||0),0);
 // Underwater build detection: cost creeping up on the expected sale price (WIP stages only)
 const UW_WARN=.75,UW_CRIT=.9;
 const uwRatio=i=>{const p=+i.price||0,cb=costBasis(i);return p>0&&cb>0?cb/p:null;};
@@ -589,7 +603,7 @@ function Parts({s,d}){
 // ISSUES — Common-issues knowledge base + shop-wide diagnosis log
 // ═══════════════════════════════════════════════════════════════
 function Boms({s,d}){
-  const[sel,setSel]=useState(null);const[need,setNeed]=useState("repl");
+  const[sel,setSel]=useState(null);const[need,setNeed]=useState("buy");
   // Start (or reopen) the worksheet for one engine, then jump to its passport.
   const startOn=(b,eng)=>{if(!b||!eng)return;if(!sheetFor(s,eng.id))d({type:"ADD",list:"bomSheets",d:{engineId:eng.id,bomId:b.id,engName:eng.name||eng.sku||"",date:isoToday(),tech:"",wo:"",coreSource:eng.sourceCore||"",rows:newRows(b),notes:""},label:"Worksheet started on "+(eng.name||eng.sku||"engine")});d({type:"MODAL",v:"part-detail",d:{...eng,ptab:"bom"}});};
   const bms=s.boms||[];const bm=bms.find(b=>b.id===sel);
@@ -597,44 +611,46 @@ function Boms({s,d}){
   if(!bm){const shs=(s.bomSheets||[]).map(x=>{const b=bomById(s,x.bomId);const e=engById(s,x.engineId);return{x,b,e,st:b?bomStats(b,x):null};}).filter(r=>r.b&&r.e);
     return(<>
     <SH title="Bill of Materials"><button className="rc-bs" onClick={()=>d({type:"MODAL",v:"add-vendor"})}>+ Vendor</button><button className="rc-ba" onClick={()=>d({type:"MODAL",v:"add-bom"})}>+ New Worksheet</button></SH>
-    <div style={{fontSize:13,color:"#5a5650",marginBottom:14,lineHeight:1.55,maxWidth:780}}>One parts &amp; disposition worksheet per engine family, because no two families take the same parts. When a core lands, open its passport, go to BOM and start a sheet: every line gets ticked MISS, REUSE, REPL or MACH. What you tick REPL becomes a shopping list with buy links; what you tick MACH becomes the machine shop list.</div>
-    {bms.length===0?<Empty icon="📋" title="No Worksheets Yet" sub="Build the parts list for a family once, then use it on every core that comes in" action={()=>d({type:"MODAL",v:"add-bom"})} label="+ New Worksheet"/>:(<div className="rc-gc">{bms.map(b=>{const ls=b.lines||[];const t1=ls.filter(l=>l.tier===1).length;const t2=ls.filter(l=>l.tier===2).length;const fits=(s.inventory||[]).filter(i=>isEngine(i)&&bomFits(b,i));const mine=(s.bomSheets||[]).filter(x=>+x.bomId===+b.id);
+    <div style={{fontSize:13,color:"#5a5650",marginBottom:14,lineHeight:1.55,maxWidth:780}}>One long block worksheet per engine family, in two parts like the paper form. The <b style={{color:"#e8e4de",fontWeight:500}}>parts order</b> goes out the day the job opens. The <b style={{color:"#e8e4de",fontWeight:500}}>decision sheet</b> gets worked through teardown: each line is reuse, missing or machine shop, and anything left blank gets replaced once the tech signs it off.</div>
+    {bms.length===0?<Empty icon="📋" title="No Worksheets Yet" sub="Build the parts list for a family once, then use it on every core that comes in" action={()=>d({type:"MODAL",v:"add-bom"})} label="+ New Worksheet"/>:(<div className="rc-gc">{bms.map(b=>{const ls=b.lines||[];const nO=ls.filter(l=>lineKind(l)==="order").length;const fits=(s.inventory||[]).filter(i=>isEngine(i)&&bomFits(b,i));const mine=(s.bomSheets||[]).filter(x=>+x.bomId===+b.id);
       return(<div key={b.id} className="rc-cc" onClick={()=>setSel(b.id)}>
         <div className="rc-ccn">{b.label}</div>
         <div style={{fontSize:12,color:"#5a5650",marginBottom:9}}>rev {b.rev||"1.0"}{b.note?" · "+b.note:""}</div>
-        <div className="rc-3c"><div><div className="rc-ml">Lines</div><div className="rc-mv">{ls.length}</div></div><div><div className="rc-ml">Always repl</div><div className="rc-mv" style={{color:"#ff905c"}}>{t1}</div></div><div><div className="rc-ml">Measure</div><div className="rc-mv" style={{color:"#f0c14a"}}>{t2}</div></div></div>
+        <div className="rc-3c"><div><div className="rc-ml">Lines</div><div className="rc-mv">{ls.length}</div></div><div><div className="rc-ml">Order</div><div className="rc-mv" style={{color:"#ff905c"}}>{nO}</div></div><div><div className="rc-ml">Decide</div><div className="rc-mv" style={{color:"#f0c14a"}}>{ls.length-nO}</div></div></div>
         <div style={{fontSize:12,color:"#8a8579",marginTop:9}}>{fits.length} on the lot · {mine.length} sheet{mine.length===1?"":"s"} started</div>
       </div>);})}</div>)}
-    {shs.length>0&&<><SH title="Worksheets In Progress"/><Tbl headers={["Engine","Worksheet","Progress","Missing","Replace","Machine",""]}>{shs.map(r=>(<tr key={r.x.id}><td className="rc-tn">{r.e.name||r.e.sku}</td><td style={{color:"#8a8579"}}>{r.b.label}</td><td>{r.st.done}/{r.st.total}<div style={{height:4,width:64,background:"#101113",borderRadius:3,overflow:"hidden",marginTop:3}}><div style={{height:"100%",width:(r.st.total?Math.round(r.st.done/r.st.total*100):0)+"%",background:"var(--grad)"}}/></div></td><td style={{color:"#ff8a72"}}>{r.st.miss}</td><td style={{color:"#ff905c"}}>{r.st.repl}</td><td style={{color:"#6aa9e0"}}>{r.st.mach}</td><td><BtnRow><button className="rc-bs" onClick={()=>d({type:"MODAL",v:"part-detail",d:{...r.e,ptab:"bom"}})}>Open</button><button className="rc-bs rc-bsr" title="Take this worksheet off the engine — undo from the toast" onClick={()=>d({type:"DELETE",list:"bomSheets",id:r.x.id})}>✕</button></BtnRow></td></tr>))}</Tbl></>}
-    {(()=>{const rows=[];(s.bomSheets||[]).forEach(x=>{const b=bomById(s,x.bomId);const e=engById(s,x.engineId);if(!b||!e)return;(b.lines||[]).forEach(l=>{const r=sheetRow(x,l.id);if(r.d)rows.push({l,r,e,b});});});
-      if(!rows.length)return null;
-      const cnt=k=>rows.filter(z=>z.r.d===k).length;
-      const list=rows.filter(z=>z.r.d===need).sort((a,b2)=>String(a.l.part).localeCompare(String(b2.l.part)));
+    {shs.length>0&&<><SH title="Worksheets In Progress"/><Tbl headers={["Engine","Worksheet","Parts order","Decisions","Missing","Machine",""]}>{shs.map(r=>(<tr key={r.x.id}><td className="rc-tn">{r.e.name||r.e.sku}</td><td style={{color:"#8a8579"}}>{r.b.label}</td><td style={{color:r.st.ordered?"#6fd98a":"#f0c14a"}}>{r.st.ordered?"✓ "+r.x.orderedDate:"not ordered"}</td><td style={{color:r.st.signed?"#6fd98a":"#e8e4de"}}>{r.st.signed?"✓ signed off":r.st.ticked+" ticked · open"}</td><td style={{color:"#ff8a72"}}>{r.st.miss}</td><td style={{color:"#6aa9e0"}}>{r.st.mach}</td><td><BtnRow><button className="rc-bs" onClick={()=>d({type:"MODAL",v:"part-detail",d:{...r.e,ptab:"bom"}})}>Open</button><button className="rc-bs rc-bsr" title="Take this worksheet off the engine — undo from the toast" onClick={()=>d({type:"DELETE",list:"bomSheets",id:r.x.id})}>✕</button></BtnRow></td></tr>))}</Tbl></>}
+    {(()=>{const all=[];(s.bomSheets||[]).forEach(x=>{const b=bomById(s,x.bomId);const e=engById(s,x.engineId);if(b&&e)all.push({x,b,e});});
+      if(!all.length)return null;
+      const buyRows=[];all.forEach(({x,b,e})=>bomBuy(b,x).forEach(z=>buyRows.push({l:z.l,why:z.why,r:sheetRow(x,z.l.id),e})));
+      const pick=k=>{const out=[];all.forEach(({x,b,e})=>bomPick(b,x,k).forEach(l=>out.push({l,r:sheetRow(x,l.id),e})));return out;};
+      const lists={buy:buyRows,miss:pick("miss"),mach:pick("mach"),reuse:pick("reuse")};
+      const list=(lists[need]||[]).slice().sort((a,b2)=>String(a.l.part).localeCompare(String(b2.l.part)));
       const tot=list.reduce((a,z)=>a+(+z.r.cost||0),0);
       return(<><SH title="What The Shop Needs"/>
-      <div style={{fontSize:13,color:"#5a5650",marginBottom:12,lineHeight:1.55,maxWidth:780}}>Every ticked line from every worksheet on the floor, in one place. REPLACE is what has to be bought, MISSING is what the core showed up without, MACHINE is what goes out. Click any row to open that engine's worksheet.</div>
-      <div style={{display:"flex",gap:5,flexWrap:"wrap",marginBottom:12}}>{[["repl","Needs replacing "+cnt("repl")],["miss","Missing from the core "+cnt("miss")],["mach","To the machine shop "+cnt("mach")],["reuse","Reusing "+cnt("reuse")]].map(([k,l])=>(<button key={k} className={"rc-fb"+(need===k?" on":"")} onClick={()=>setNeed(k)}>{l}</button>))}</div>
-      {list.length===0?(<div className="rc-card" style={{padding:14,fontSize:13,color:"#5a5650"}}>Nothing ticked {dispoLabel(need)} on any worksheet yet.</div>):(<Tbl headers={["Qty","Part","Engine","Section",need==="repl"?"Cost":"Note",""]}>{list.map((z,x)=>(<tr key={z.e.id+"-"+z.l.id+"-"+x}>
-        <td style={{color:"#5a5650",width:40}}>{z.l.qty}</td>
-        <td className="rc-tn">{z.l.part}{z.l.tier===1?<span style={{color:"#ff905c",fontSize:12,marginLeft:5}}>×</span>:null}{z.r.pn?<div style={{fontSize:11,color:"#6fd98a"}}>PN {z.r.pn}</div>:null}</td>
+      <div style={{fontSize:13,color:"#5a5650",marginBottom:12,lineHeight:1.55,maxWidth:780}}>Every worksheet on the floor in one place. TO BUY is each engine's parts order, plus anything missing from the core, plus whatever a signed-off decision sheet left blank. Click any row to open that engine's worksheet.</div>
+      <div style={{display:"flex",gap:5,flexWrap:"wrap",marginBottom:12}}>{[["buy","To buy "+lists.buy.length],["miss","Missing from the core "+lists.miss.length],["mach","To the machine shop "+lists.mach.length],["reuse","Reusing "+lists.reuse.length]].map(([k,l])=>(<button key={k} className={"rc-fb"+(need===k?" on":"")} onClick={()=>setNeed(k)}>{l}</button>))}</div>
+      {list.length===0?(<div className="rc-card" style={{padding:14,fontSize:13,color:"#5a5650"}}>Nothing here on any worksheet yet.</div>):(<Tbl headers={["Qty","Part","Engine",need==="buy"?"Why":"Measurement / note",need==="buy"?"Cost":"",""]}>{list.map((z,x)=>(<tr key={z.e.id+"-"+z.l.id+"-"+x}>
+        <td style={{color:"#5a5650",width:48}}>{z.l.qty}</td>
+        <td className="rc-tn">{z.l.part}{z.r.pn?<div style={{fontSize:11,color:"#6fd98a"}}>PN {z.r.pn}</div>:null}</td>
         <td style={{color:"#8a8579"}}>{z.e.name||z.e.sku}</td>
-        <td style={{color:"#5a5650",fontSize:12}}>{z.l.sec}</td>
-        <td style={{color:need==="repl"?"#f0c14a":"#8a8579",fontSize:12}}>{need==="repl"?((+z.r.cost||0)>0?$$(+z.r.cost):"—"):(z.r.meas||z.l.note||"")}</td>
+        <td style={{fontSize:12}}>{need==="buy"?<span style={{color:(WHY[z.why]||[])[1],letterSpacing:.5}}>{(WHY[z.why]||[])[0]}</span>:<span style={{color:z.r.meas?"#6fd98a":"#8a8579"}}>{z.r.meas||z.l.note||""}</span>}</td>
+        <td style={{color:"#f0c14a",fontSize:12}}>{need==="buy"?((+z.r.cost||0)>0?$$(+z.r.cost):"—"):""}</td>
         <td><button className="rc-bs" onClick={()=>d({type:"MODAL",v:"part-detail",d:{...z.e,ptab:"bom"}})}>Open</button></td>
       </tr>))}</Tbl>)}
-      {need==="repl"&&list.length>0&&<div style={{display:"flex",justifyContent:"space-between",fontSize:14,fontWeight:700,margin:"10px 3px 20px"}}><span style={{color:"#8a8579"}}>{list.length} parts to buy across {new Set(list.map(z=>z.e.id)).size} engine(s)</span><span style={{color:"#f0c14a"}}>{$$(tot)}</span></div>}
+      {need==="buy"&&list.length>0&&<div style={{display:"flex",justifyContent:"space-between",fontSize:14,fontWeight:700,margin:"10px 3px 20px"}}><span style={{color:"#8a8579"}}>{list.length} lines to buy across {new Set(list.map(z=>z.e.id)).size} engine(s)</span><span style={{color:"#f0c14a"}}>{$$(tot)}</span></div>}
       </>);})()}
     <SH title="Where To Buy"><button className="rc-bs" onClick={()=>d({type:"MODAL",v:"add-vendor"})}>+ Vendor</button></SH>
     <div style={{fontSize:13,color:"#5a5650",marginBottom:12,lineHeight:1.55,maxWidth:780}}>Every part line gets a one-tap search at each of these. The ones without a stable search URL of their own go through a Google search locked to that supplier's site, which never breaks. When you find the right part, save the link and part number on the line and it becomes a one-tap reorder.</div>
     {(s.vendors||[]).length===0?<Empty icon="🛒" title="No Suppliers" sub="Add the places you actually buy from" action={()=>d({type:"MODAL",v:"add-vendor"})} label="+ Vendor"/>:(<Tbl headers={["Supplier","What for","Search URL",""]}>{(s.vendors||[]).map(v=>(<tr key={v.id}><td className="rc-tn">{v.name}</td><td style={{color:"#8a8579"}}>{v.note||""}</td><td style={{color:"#5a5650",fontSize:12,maxWidth:260,overflow:"hidden",textOverflow:"ellipsis"}}>{v.search||""}</td><td><BtnRow><button className="rc-bs" onClick={()=>d({type:"MODAL",v:"edit-vendor",d:v})}>✎</button><button className="rc-bs rc-bsr" onClick={()=>d({type:"DELETE",list:"vendors",id:v.id,label:"Supplier removed"})}>×</button></BtnRow></td></tr>))}</Tbl>)}
     </>);}
-  const ls=bm.lines||[];const secs=bomSecs(bm);
+  const ls=bm.lines||[];const secs=bomSecs(bm);const nO=ls.filter(l=>lineKind(l)==="order").length;
   return(<>
     <SH title={bm.label}>
       <button className="rc-bs" onClick={()=>setSel(null)}>← All worksheets</button>
       <button className="rc-bs" onClick={()=>d({type:"MODAL",v:"edit-bom",d:bm})}>✎ Details</button>
       <button className="rc-bs" onClick={()=>{d({type:"MODAL",v:"add-bom",d:{cloneOf:bm.id}});setSel(null);}}>⧉ Clone for another family</button>
-      <button className="rc-ba" onClick={()=>d({type:"MODAL",v:"add-bomline",d:{bomId:bm.id,sec:secs[0]||""}})}>+ Line</button>
+      <button className="rc-ba" onClick={()=>d({type:"MODAL",v:"add-bomline",d:{bomId:bm.id,sec:secs[secs.length-1]||"",kind:"decide"}})}>+ Line</button>
     </SH>
     {(()=>{const engs=(s.inventory||[]).filter(isEngine);const hit=engs.filter(e=>bomFits(bm,e));const rest=engs.filter(e=>!bomFits(bm,e));
       return(<div className="rc-card" style={{padding:12,marginBottom:16,display:"flex",gap:10,alignItems:"center",flexWrap:"wrap"}}>
@@ -645,28 +661,28 @@ function Boms({s,d}){
           {rest.length>0&&<option value="" disabled>──── does not match {(bm.match||[]).join(", ")||"—"} ────</option>}
           {rest.map(e=>(<option key={e.id} value={e.id}>{(e.sku?e.sku+" · ":"")+(e.name||"")}{sheetFor(s,e.id)?" ✓ started":""}</option>))}
         </select>
-        <span style={{fontSize:12,color:"#5a5650"}}>Opens its passport on the BOM tab, where every line gets ticked missing, reuse, replace or machine shop.</span>
+        <span style={{fontSize:12,color:"#5a5650"}}>Opens its passport on the BOM tab. The parts order is ready straight away; the decision sheet gets worked through teardown.</span>
       </div>);})()}
-    <div className="rc-g4">
-      <Stat label="Lines" value={ls.length}/>
-      <Stat label="Always Replace" value={ls.filter(l=>l.tier===1).length} sub="ordered without inspection"/>
-      <Stat label="Measure Or Replace" value={ls.filter(l=>l.tier===2).length} sub="number on the sheet or it goes"/>
-      <Stat label="Sections" value={secs.length}/>
-    </div>
     {(()=>{const fits=(s.inventory||[]).filter(i=>isEngine(i)&&bomFits(bm,i));const toks=(bm.match||[]);
       return(<div className="rc-card" style={{padding:12,marginBottom:16}}><div className="rc-fl" style={{marginBottom:6}}>Matches {toks.length?toks.join(", "):"every engine"}</div>
       {fits.length===0?(<div style={{fontSize:13,color:"#c43a2a",lineHeight:1.5}}>Nothing on the lot matches this. The tokens are compared against the engine's name — check how the engines are actually named and widen the token in Details.</div>):(<div style={{display:"flex",gap:5,flexWrap:"wrap"}}>{fits.map(e=>(<button key={e.id} className="rc-fb" onClick={()=>d({type:"MODAL",v:"part-detail",d:{...e,ptab:"bom"}})}>{e.name||e.sku}</button>))}</div>)}</div>);})()}
+    <div className="rc-g4">
+      <Stat label="Lines" value={ls.length}/>
+      <Stat label="Parts Order" value={nO} sub="always new, ordered day one"/>
+      <Stat label="Decision Sheet" value={ls.length-nO} sub="blank means replace"/>
+      <Stat label="Rev" value={bm.rev||"1.0"}/>
+    </div>
     {bm.watch&&<div className="rc-card" style={{padding:12,marginBottom:16,fontSize:13,color:"#c49a2a",lineHeight:1.55}}>⚠ {bm.watch}</div>}
-    {secs.map(sec=>(<div key={sec} style={{marginBottom:16}}>
-      <SH title={sec}><button className="rc-bs" onClick={()=>d({type:"MODAL",v:"add-bomline",d:{bomId:bm.id,sec}})}>+ Line</button></SH>
-      <Tbl headers={["Qty","Part","Tier","Note",""]}>{ls.filter(l=>l.sec===sec).map(l=>(<tr key={l.id}>
-        <td style={{color:"#5a5650",width:40}}>{l.qty}</td>
+    {secs.map(sec=>{const sl=ls.filter(l=>l.sec===sec);const k0=sl.length&&lineKind(sl[0])==="order"?"order":"decide";return(<div key={sec} style={{marginBottom:16}}>
+      <SH title={sec}><button className="rc-bs" onClick={()=>d({type:"MODAL",v:"add-bomline",d:{bomId:bm.id,sec,kind:k0}})}>+ Line</button></SH>
+      <Tbl headers={["Qty","Part","Page",k0==="order"?"Note":"What to check",""]}>{sl.map(l=>(<tr key={l.id}>
+        <td style={{color:"#5a5650",width:48}}>{l.qty}</td>
         <td className="rc-tn">{l.part}{l.mach?<span style={{color:"#6aa9e0",fontSize:11,marginLeft:6}}>MACH</span>:null}</td>
-        <td>{l.tier===1?<span style={{color:"#ff905c",fontSize:12}}>× always</span>:l.tier===2?<span style={{color:"#f0c14a",fontSize:12}}>◐ measure</span>:<span style={{color:"#5a5650",fontSize:12}}>inspect</span>}</td>
+        <td>{lineKind(l)==="order"?<span style={{color:"#ff905c",fontSize:12}}>order · always new</span>:<span style={{color:"#f0c14a",fontSize:12}}>decide</span>}</td>
         <td style={{color:"#8a8579",fontSize:12}}>{l.note||""}</td>
         <td><BtnRow><button className="rc-bs" onClick={()=>d({type:"MODAL",v:"edit-bomline",d:{...l,bomId:bm.id}})}>✎</button><button className="rc-bs rc-bsr" onClick={()=>setLines(bm,ls.filter(x=>x.id!==l.id))}>×</button></BtnRow></td>
       </tr>))}</Tbl>
-    </div>))}
+    </div>);})}
     {bm.rule&&<div className="rc-card" style={{padding:12,fontSize:13,color:"#8a8579",lineHeight:1.6}}>{bm.rule}</div>}
   </>);
 }
@@ -908,7 +924,7 @@ function Modals({s,d}){
   const sRef2=useRef(s);sRef2.current=s;
   const[f,sf]=useState({});const[lines,setLines]=useState([{d:"",q:1,r:0}]);const[ptab,setPtab]=useState("overview");const lastEng=useRef(null);const[uploading,setUploading]=useState(false);
   const set=(k,v)=>sf(p=>({...p,[k]:v}));
-  useEffect(()=>{if(!s.modal)lastEng.current=null;if(s.modal==="bom-note"&&s.md){const e0=(sRef2.current.inventory||[]).find(x=>x.id===+s.md.engineId);const sh0=(sRef2.current.bomSheets||[]).find(x=>+x.engineId===+((e0&&e0.id)||0));const r0=((sh0&&sh0.rows)||{})[s.md.lineId]||{};sf(pp=>({...pp,bnMeas:r0.meas||"",bnPn:r0.pn||"",bnUrl:r0.url||""}));}if(s.modal==="edit-bom"&&s.md){const b0=s.md;sf(pp=>({...pp,bmLabel:b0.label||"",bmFamily:b0.family||"",bmModel:b0.model||"",bmMatch:(b0.match||[]).join(", "),bmRev:b0.rev||"",bmNote:b0.note||"",bmWatch:b0.watch||"",bmRule:b0.rule||""}));}if(s.modal==="add-bom"&&s.md&&s.md.cloneOf){const b1=(sRef2.current.boms||[]).find(x=>x.id===+s.md.cloneOf);if(b1)sf(pp=>({...pp,bmLabel:"",bmFamily:"",bmModel:"",bmMatch:"",bmRev:b1.rev||"1.0",bmNote:b1.note||""}));}if(s.modal==="add-bomline"&&s.md){sf(pp=>({...pp,blSec:s.md.sec||"",blQty:"1",blPart:"",blNote:"",blTier:"0",blMach:false}));}if(s.modal==="edit-bomline"&&s.md){const l0=s.md;sf(pp=>({...pp,blSec:l0.sec||"",blQty:l0.qty||"1",blPart:l0.part||"",blNote:l0.note||"",blTier:String(l0.tier||0),blMach:!!l0.mach}));}if(s.modal==="bom-sheet"&&s.md){const sh1=(sRef2.current.bomSheets||[]).find(x=>+x.engineId===+s.md.engineId);if(sh1)sf(pp=>({...pp,bsWo:sh1.wo||"",bsTech:sh1.tech||"",bsDate:sh1.date||"",bsDone:sh1.dateDone||"",bsCore:sh1.coreSource||"",bsNotes:sh1.notes||""}));}if(s.modal==="part-detail"){const eid=s.md&&s.md.id;if(s.md&&s.md.ptab)setPtab(s.md.ptab);else if(eid!==lastEng.current)setPtab("overview");lastEng.current=eid;}if(s.modal&&s.modal.startsWith("edit-")&&s.md){const item={...s.md};if(Array.isArray(item.vehicles))item.vehicles=item.vehicles.join(", ");if(Array.isArray(item.tags))item.tags=item.tags.join(", ");if(Array.isArray(item.specialties))item.specialties=item.specialties.join(", ");if(Array.isArray(item.certs))item.certs=item.certs.join(", ");if(Array.isArray(item.models))item.models=item.models.join(", ");Object.keys(item).forEach(k=>{if(k!=="id"&&typeof item[k]==="number")item[k]=String(item[k]);});sf(item);}else{const m=s.md||{};sf({...(m.cat?{cat:m.cat}:{}),...(m.status?{status:m.status}:{}),...(m.custId?{custId:String(m.custId)}:{}),...(m.engineId?{engineId:m.engineId,engineName:m.engineName}:{}),...(m.prefill||{})});}setLines(s.md&&Array.isArray(s.md.prefillItems)&&s.md.prefillItems.length?s.md.prefillItems:[{d:"",q:1,r:0}]);},[s.modal]);
+  useEffect(()=>{if(!s.modal)lastEng.current=null;if(s.modal==="bom-note"&&s.md){const e0=(sRef2.current.inventory||[]).find(x=>x.id===+s.md.engineId);const sh0=(sRef2.current.bomSheets||[]).find(x=>+x.engineId===+((e0&&e0.id)||0));const r0=((sh0&&sh0.rows)||{})[s.md.lineId]||{};sf(pp=>({...pp,bnMeas:r0.meas||"",bnPn:r0.pn||"",bnUrl:r0.url||""}));}if(s.modal==="edit-bom"&&s.md){const b0=s.md;sf(pp=>({...pp,bmLabel:b0.label||"",bmFamily:b0.family||"",bmModel:b0.model||"",bmMatch:(b0.match||[]).join(", "),bmRev:b0.rev||"",bmNote:b0.note||"",bmWatch:b0.watch||"",bmRule:b0.rule||""}));}if(s.modal==="add-bom"&&s.md&&s.md.cloneOf){const b1=(sRef2.current.boms||[]).find(x=>x.id===+s.md.cloneOf);if(b1)sf(pp=>({...pp,bmLabel:"",bmFamily:"",bmModel:"",bmMatch:"",bmRev:b1.rev||"1.0",bmNote:b1.note||""}));}if(s.modal==="add-bomline"&&s.md){const k0=s.md.kind||"decide";sf(pp=>({...pp,blSec:s.md.sec||"",blQty:k0==="order"?"1":"",blPart:"",blNote:"",blKind:k0,blMach:false}));}if(s.modal==="edit-bomline"&&s.md){const l0=s.md;sf(pp=>({...pp,blSec:l0.sec||"",blQty:l0.qty||"1",blPart:l0.part||"",blNote:l0.note||"",blKind:lineKind(l0),blMach:!!l0.mach}));}if(s.modal==="bom-sheet"&&s.md){const sh1=(sRef2.current.bomSheets||[]).find(x=>+x.engineId===+s.md.engineId);if(sh1)sf(pp=>({...pp,bsWo:sh1.wo||"",bsTech:sh1.tech||"",bsDate:sh1.date||"",bsDone:sh1.dateDone||"",bsCore:sh1.coreSource||"",bsNotes:sh1.notes||""}));}if(s.modal==="part-detail"){const eid=s.md&&s.md.id;if(s.md&&s.md.ptab)setPtab(s.md.ptab);else if(eid!==lastEng.current)setPtab("overview");lastEng.current=eid;}if(s.modal&&s.modal.startsWith("edit-")&&s.md){const item={...s.md};if(Array.isArray(item.vehicles))item.vehicles=item.vehicles.join(", ");if(Array.isArray(item.tags))item.tags=item.tags.join(", ");if(Array.isArray(item.specialties))item.specialties=item.specialties.join(", ");if(Array.isArray(item.certs))item.certs=item.certs.join(", ");if(Array.isArray(item.models))item.models=item.models.join(", ");Object.keys(item).forEach(k=>{if(k!=="id"&&typeof item[k]==="number")item[k]=String(item[k]);});sf(item);}else{const m=s.md||{};sf({...(m.cat?{cat:m.cat}:{}),...(m.status?{status:m.status}:{}),...(m.custId?{custId:String(m.custId)}:{}),...(m.engineId?{engineId:m.engineId,engineName:m.engineName}:{}),...(m.prefill||{})});}setLines(s.md&&Array.isArray(s.md.prefillItems)&&s.md.prefillItems.length?s.md.prefillItems:[{d:"",q:1,r:0}]);},[s.modal]);
   if(!s.modal)return null;
   const W=(ch,cls)=>(<div className={"rc-ov"+(cls?" "+cls:"")} onClick={()=>d({type:"CLOSE"})}><div className="rc-mod" onClick={e=>e.stopPropagation()}>{(s.mstack||[]).length>0&&<button className="rc-fb" onClick={()=>d({type:"BACK"})} style={{marginBottom:10}}>← Back</button>}{ch}</div></div>);
   const DATEKEYS=["date","dueDate","shipDate","estDelivery","expiryDate","startDate","orderDate","eta","followUp"];
@@ -945,72 +961,99 @@ function Modals({s,d}){
       <div className="rc-fa">{X}<button className="rc-bs rc-bsr" onClick={()=>d({type:"DELETE",list:"boms",id:b.id,label:"Worksheet deleted"})}>Delete</button><button className="rc-ba" onClick={()=>{d({type:"UPDATE",list:"boms",id:b.id,d:{label:(f.bmLabel||"").trim()||b.label,family:(f.bmFamily||"").trim(),model:(f.bmModel||"").trim(),match:(f.bmMatch||"").split(",").map(x=>x.trim()).filter(Boolean),rev:(f.bmRev||"").trim(),note:(f.bmNote||"").trim(),watch:f.bmWatch||"",rule:f.bmRule||""}});d({type:"CLOSE"});}}>Save Changes</button></div>
     </div>);}
   if(s.modal==="add-bomline"||s.modal==="edit-bomline"){const ed=s.modal==="edit-bomline";const b=bomById(s,s.md&&s.md.bomId);if(!b)return W(<div><div className="rc-mt">No worksheet</div><div className="rc-fa">{C}</div></div>);
-    const tier=f.blTier===undefined?String((s.md&&s.md.tier)||0):f.blTier;
+    const kind=f.blKind||lineKind(s.md||{});
     return W(<div><div className="rc-mt">{ed?"Edit Line":"Add Line"}</div>
-      {F("blSec","Section")}{F("blQty","Qty (a number, or - for as needed)")}{F("blPart","Part")}
-      <div className="rc-fg"><label className="rc-fl">Disposition rule</label><select className="rc-fi" value={tier} onChange={e=>set("blTier",e.target.value)} style={{appearance:"none"}}><option value="0">Inspect and decide</option><option value="1">× Always replace — no inspection</option><option value="2">◐ Replace unless measured in spec</option></select></div>
-      {F("blNote","Note (what to measure, why it matters)")}
-      <div className="rc-fg"><label className="rc-fl" style={{display:"flex",alignItems:"center",gap:7,cursor:"pointer"}}><input type="checkbox" checked={!!f.blMach} onChange={e=>set("blMach",e.target.checked)}/> Goes to the machine shop</label></div>
-      <div className="rc-fa">{X}<button className="rc-ba" onClick={()=>{const part=(f.blPart||"").trim();if(!part)return;const row={sec:(f.blSec||"").trim()||"General",qty:(f.blQty||"1").trim(),part,tier:+tier||0,note:(f.blNote||"").trim(),mach:f.blMach?1:0};const ls=b.lines||[];d({type:"UPDATE",list:"boms",id:b.id,d:{lines:ed?ls.map(l=>l.id===s.md.id?{...l,...row}:l):[...ls,{id:Date.now(),...row}]}});d({type:"CLOSE"});}}>{ed?"Save Changes":"Add"}</button></div>
+      {F("blSec","Section")}{F("blQty","Qty (a number, set, or blank)")}{F("blPart","Part")}
+      <div className="rc-fg"><label className="rc-fl">Which page</label><select className="rc-fi" value={kind} onChange={e=>set("blKind",e.target.value)} style={{appearance:"none"}}><option value="order">Parts order — always new, ordered the day the job opens</option><option value="decide">Decision sheet — reuse, missing or machine; blank means replace</option></select></div>
+      {F("blNote","What to check (e.g. bore / counterbore)")}
+      <div className="rc-fg"><label className="rc-fl" style={{display:"flex",alignItems:"center",gap:7,cursor:"pointer"}}><input type="checkbox" checked={!!f.blMach} onChange={e=>set("blMach",e.target.checked)}/> Usually goes to the machine shop</label></div>
+      <div className="rc-fa">{X}<button className="rc-ba" onClick={()=>{const part=(f.blPart||"").trim();if(!part)return;const row={sec:(f.blSec||"").trim()||(kind==="order"?"Parts order — always new":"Decision sheet"),qty:(f.blQty||"").trim(),part,kind,note:(f.blNote||"").trim(),mach:f.blMach?1:0};const ls=b.lines||[];d({type:"UPDATE",list:"boms",id:b.id,d:{lines:ed?ls.map(l=>l.id===s.md.id?{...l,...row}:l):[...ls,{id:Date.now(),...row}]}});d({type:"CLOSE"});}}>{ed?"Save Changes":"Add"}</button></div>
     </div>);}
   if(s.modal==="add-vendor")return FM("Add Supplier",[["vnName","Name"],["vnSite","Site (e.g. paiindustries.com)"],["vnSearch","Search URL — use {q} where the part goes"],["vnNote","What you buy there"]],()=>{const n=(f.vnName||"").trim();if(!n)return;const site=(f.vnSite||"").trim().replace(/^https?:\/\//,"").replace(/\/$/,"");d({type:"ADD",list:"vendors",d:{name:n,site,search:(f.vnSearch||"").trim()||("https://www.google.com/search?q=site%3A"+site+"+{q}"),note:(f.vnNote||"").trim()},label:"Supplier added"});});
   if(s.modal==="edit-vendor")return EFM("Edit Supplier","vendors",[["name","Name"],["site","Site"],["search","Search URL — {q} is the part"],["note","What you buy there"]]);
-  // ── BOM worksheet: shopping list · machine shop list · line note · sheet info ──
-  if(s.modal==="bom-shop"||s.modal==="bom-mach"){const mach=s.modal==="bom-mach";
+  // ── BOM worksheet: parts order · machine shop list · line detail · sheet info ──
+  if(s.modal==="bom-shop"){
     const eng=engById(s,s.md&&s.md.engineId)||{};const sh=sheetFor(s,eng.id);const bm=sh?bomById(s,sh.bomId):null;
     if(!bm)return W(<div><div className="rc-mt">No worksheet</div><div style={{fontSize:13,color:"#5a5650"}}>Start one from the engine's BOM tab first.</div><div className="rc-fa">{C}</div></div>);
     const setRow=(lid,patch)=>{const rows={...(sh.rows||{})};rows[lid]={...(rows[lid]||{}),...patch};d({type:"UPDATE",list:"bomSheets",id:sh.id,d:{rows}});};
-    let ls=bomPick(bm,sh,mach?"mach":"repl");
-    if(mach){const seen=new Set();ls=ls.filter(l=>{const k=String(l.part||"").toLowerCase();if(seen.has(k))return false;seen.add(k);return true;});}
+    const setSh=p=>d({type:"UPDATE",list:"bomSheets",id:sh.id,d:p});
+    const st=bomStats(bm,sh);const buy=bomBuy(bm,sh);
     const vens=(s.vendors||[]);const ven=vens.find(v=>String(v.id)===String(f.bven))||vens[0];
-    const tot=ls.reduce((a,l)=>a+(+sheetRow(sh,l.id).cost||0),0);
-    const unlogged=ls.filter(l=>{const r=sheetRow(sh,l.id);return(+r.cost||0)>0&&!r.logged;});
-    const logSum=unlogged.reduce((a,l)=>a+(+sheetRow(sh,l.id).cost||0),0);
+    const tot=buy.reduce((a,z)=>a+(+sheetRow(sh,z.l.id).cost||0),0);
+    const unlogged=buy.filter(z=>{const r=sheetRow(sh,z.l.id);return(+r.cost||0)>0&&!r.logged;});
+    const logSum=unlogged.reduce((a,z)=>a+(+sheetRow(sh,z.l.id).cost||0),0);
+    const inp=(k,ph,w)=>(<input className="rc-fi" placeholder={ph} value={sh[k]||""} onChange={e=>setSh({[k]:e.target.value})} style={{flex:w||1,minWidth:110,padding:"7px 9px",fontSize:13}}/>);
+    const SECS=[["order","Order the day the job opens","Always new, no inspection. Strike anything not going on this job from the engine's BOM tab."],["miss","Missing from the core","Wasn't there when it was opened. Buy it, and claim it back on the core."],["repl","Replace — from the decision sheet","Left blank when the decision sheet was signed off."]];
     return W(<div>
-      <div className="rc-mt" style={{marginBottom:3}}>{mach?"Machine Shop — What Goes Out":"Shopping List"}</div>
-      <div style={{fontSize:12,color:"#5a5650",letterSpacing:1,marginBottom:12}}>{eng.name||eng.sku} · {bm.label}{eng.serial||eng.esn?" · ESN "+(eng.serial||eng.esn):""}</div>
-      {!mach&&vens.length>0&&<div className="rc-noprint" style={{display:"flex",gap:5,flexWrap:"wrap",marginBottom:10,alignItems:"center"}}><span style={{fontSize:11,color:"#8a8579",letterSpacing:1,textTransform:"uppercase"}}>Search at</span>{vens.map(v=>(<button key={v.id} className={"rc-fb"+(ven&&ven.id===v.id?" on":"")} onClick={()=>set("bven",String(v.id))}>{v.name}</button>))}</div>}
-      {ls.length===0?(<div style={{fontSize:13,color:"#5a5650",padding:"14px 0"}}>Nothing ticked {mach?"MACH":"REPL"} yet. Tick the lines on the engine's BOM tab and they land here.</div>):(<div className="rc-card" style={{padding:"8px 11px",marginBottom:12}}>
-        {ls.map(l=>{const r=sheetRow(sh,l.id);return(<div key={l.id} style={{padding:"6px 0",borderBottom:"1px solid #212327"}}>
-          <div style={{display:"flex",gap:7,alignItems:"center",flexWrap:"wrap"}}>
-            <span style={{width:20,textAlign:"right",fontSize:11,color:"#5a5650",flexShrink:0}}>{l.qty}</span>
-            <span style={{flex:1,minWidth:120,fontSize:13}}>{l.part}{l.tier===1&&<span style={{color:"#d4581a",fontSize:12,marginLeft:5,fontWeight:700}}>×</span>}</span>
-            {!mach&&<input className="rc-fi" type="number" placeholder="$" value={r.cost||""} onChange={e=>setRow(l.id,{cost:e.target.value})} style={{width:78,padding:"5px 8px",fontSize:12.5}}/>}
-            {!mach&&ven&&<a className="rc-fb rc-noprint" href={buyUrl(ven,buyQ(bm,l,r.pn))} target="_blank" rel="noopener noreferrer" style={{textDecoration:"none"}}>🔎 {ven.name}</a>}
-            {!mach&&r.url&&<a className="rc-fb rc-noprint" href={r.url} target="_blank" rel="noopener noreferrer" style={{textDecoration:"none",borderColor:"#3a9a4f",color:"#6fd98a"}}>🔗 Saved</a>}
-            <button className="rc-fb rc-noprint" onClick={()=>d({type:"MODAL",v:"bom-note",d:{engineId:eng.id,lineId:l.id,part:l.part}})} style={{fontSize:10,padding:"3px 6px"}}>✎</button>
-          </div>
-          {(r.pn||r.meas||l.note)&&<div style={{fontSize:11,color:(r.pn||r.meas)?"#6fd98a":"#5a5650",paddingLeft:27,marginTop:2}}>{[r.pn&&("PN "+r.pn),r.meas||l.note].filter(Boolean).join(" · ")}</div>}
-          {!mach&&r.logged&&<div style={{fontSize:11,color:"#3a9a4f",paddingLeft:27,marginTop:2}}>✓ in the cost basis</div>}
+      <div className="rc-mt" style={{marginBottom:3}}>Long Block Parts Order</div>
+      <div style={{fontSize:12,color:"#5a5650",letterSpacing:1,marginBottom:12}}>{eng.name||eng.sku} · {bm.label} · rev {bm.rev}{(eng.serial||eng.esn)?" · ESN "+(eng.serial||eng.esn):""}{eng.cpl?" · CPL "+eng.cpl:""}{sh.wo?" · WO "+sh.wo:""}</div>
+      <div style={{display:"flex",gap:7,flexWrap:"wrap",marginBottom:8}}>{inp("supplier","Supplier",1.4)}{inp("po","PO #",1)}</div>
+      <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap",marginBottom:12,fontSize:13}}>
+        {st.ordered?(<><span style={{color:"#6fd98a"}}>✓ Ordered {sh.orderedDate}{sh.orderedBy?" by "+sh.orderedBy:""}</span><button className="rc-bs rc-noprint" onClick={()=>setSh({orderedDate:"",orderedBy:""})}>Not ordered yet</button></>):(<><span style={{color:"#f0c14a"}}>Not ordered yet</span><button className="rc-ba rc-noprint" style={{padding:"6px 12px",fontSize:13}} onClick={()=>{setSh({orderedDate:isoToday(),orderedBy:CURRENT_USER});d({type:"TOAST",d:{msg:"🛒 Order marked placed"+(sh.po?" · PO "+sh.po:""),t:Date.now()}});}}>✓ Mark ordered</button></>)}
+      </div>
+      {vens.length>0&&<div className="rc-noprint" style={{display:"flex",gap:5,flexWrap:"wrap",marginBottom:10,alignItems:"center"}}><span style={{fontSize:11,color:"#8a8579",letterSpacing:1,textTransform:"uppercase"}}>Search at</span>{vens.map(v=>(<button key={v.id} className={"rc-fb"+(ven&&ven.id===v.id?" on":"")} onClick={()=>set("bven",String(v.id))}>{v.name}</button>))}</div>}
+      {SECS.map(([why,title,sub])=>{const ls=buy.filter(z=>z.why===why);
+        if(why==="repl"&&!st.signed)return(<div key={why} className="rc-card" style={{padding:"10px 12px",marginBottom:10}}><div className="rc-fl" style={{marginBottom:4}}>{title}</div><div style={{fontSize:13,color:"#8a8579",lineHeight:1.5}}>Decision sheet still open — {st.open} line{st.open===1?"":"s"} blank. Whatever is still blank when the tech signs it off lands here.</div></div>);
+        if(!ls.length)return null;
+        return(<div key={why} className="rc-card" style={{padding:"8px 11px",marginBottom:10}}>
+          <div className="rc-fl" style={{marginBottom:2}}>{title} · {ls.length}</div>
+          <div style={{fontSize:11,color:"#5a5650",marginBottom:4}}>{sub}</div>
+          {ls.map(({l})=>{const r=sheetRow(sh,l.id);return(<div key={l.id} style={{padding:"6px 0",borderBottom:"1px solid #212327"}}>
+            <div style={{display:"flex",gap:7,alignItems:"center",flexWrap:"wrap"}}>
+              <span style={{width:30,textAlign:"right",fontSize:11,color:"#5a5650",flexShrink:0}}>{l.qty}</span>
+              <span style={{flex:1,minWidth:130,fontSize:13}}>{l.part}</span>
+              <input className="rc-fi" type="number" placeholder="$" value={r.cost||""} onChange={e=>setRow(l.id,{cost:e.target.value})} style={{width:84,padding:"5px 8px",fontSize:12.5}}/>
+              {ven&&<a className="rc-fb rc-noprint" href={buyUrl(ven,buyQ(bm,l,r.pn))} target="_blank" rel="noopener noreferrer" style={{textDecoration:"none"}}>🔎 {ven.name}</a>}
+              {r.url&&<a className="rc-fb rc-noprint" href={r.url} target="_blank" rel="noopener noreferrer" style={{textDecoration:"none",borderColor:"#3a9a4f",color:"#6fd98a"}}>🔗 Saved</a>}
+              <button className="rc-fb rc-noprint" onClick={()=>d({type:"MODAL",v:"bom-note",d:{engineId:eng.id,lineId:l.id,part:l.part}})} style={{fontSize:10,padding:"3px 7px"}}>✎</button>
+            </div>
+            {(r.pn||r.meas||(why!=="order"&&l.note))&&<div style={{fontSize:11,color:(r.pn||r.meas)?"#6fd98a":"#5a5650",paddingLeft:37,marginTop:2}}>{[r.pn&&("PN "+r.pn),r.meas||(why!=="order"?l.note:"")].filter(Boolean).join(" · ")}</div>}
+            {r.logged&&<div style={{fontSize:11,color:"#3a9a4f",paddingLeft:37,marginTop:2}}>✓ in the cost basis</div>}
+          </div>);})}
+        </div>);})}
+      <div className="rc-fg"><label className="rc-fl">Backorders + ETA</label><textarea className="rc-fi" rows={2} placeholder="What's on backorder and when it lands" value={sh.backorders||""} onChange={e=>setSh({backorders:e.target.value})} style={{resize:"vertical",lineHeight:1.5}}/></div>
+      <div style={{display:"flex",justifyContent:"space-between",fontSize:14,fontWeight:700,margin:"4px 3px 12px"}}><span style={{color:"#8a8579"}}>{buy.length} line{buy.length===1?"":"s"} to buy</span><span style={{color:"#f0c14a"}}>{$$(tot)}</span></div>
+      <div className="rc-fa rc-noprint">{C}<button className="rc-bs" onClick={()=>window.print()}>🖨 Print</button>{unlogged.length>0&&<button className="rc-ba" onClick={()=>{const add=unlogged.map(z=>({d:z.l.part,v:+sheetRow(sh,z.l.id).cost||0,date:isoToday()}));const nl=[...(eng.partsLog||[]),...add];const rows={...(sh.rows||{})};unlogged.forEach(z=>{rows[z.l.id]={...(rows[z.l.id]||{}),logged:1};});d({type:"UPDATE",list:"inventory",id:eng.id,d:{partsLog:nl}});d({type:"UPDATE",list:"bomSheets",id:sh.id,d:{rows}});d({type:"TOAST",d:{msg:"🧩 "+add.length+" parts → cost basis · "+$$(logSum),t:Date.now()}});}}>Log {unlogged.length} to cost basis · {$$(logSum)}</button>}</div>
+    </div>,"rc-pmod");}
+  if(s.modal==="bom-mach"){
+    const eng=engById(s,s.md&&s.md.engineId)||{};const sh=sheetFor(s,eng.id);const bm=sh?bomById(s,sh.bomId):null;
+    if(!bm)return W(<div><div className="rc-mt">No worksheet</div><div style={{fontSize:13,color:"#5a5650"}}>Start one from the engine's BOM tab first.</div><div className="rc-fa">{C}</div></div>);
+    const ls=bomPick(bm,sh,"mach");
+    return W(<div>
+      <div className="rc-mt" style={{marginBottom:3}}>Machine Shop — What Goes Out</div>
+      <div style={{fontSize:12,color:"#5a5650",letterSpacing:1,marginBottom:12}}>{eng.name||eng.sku} · {bm.label}{(eng.serial||eng.esn)?" · ESN "+(eng.serial||eng.esn):""}{eng.cpl?" · CPL "+eng.cpl:""}{sh.wo?" · WO "+sh.wo:""}</div>
+      {ls.length===0?(<div style={{fontSize:13,color:"#5a5650",padding:"14px 0"}}>Nothing ticked MACH yet. Tick it on the engine's decision sheet and it lands here.</div>):(<div className="rc-card" style={{padding:"8px 11px",marginBottom:12}}>
+        {ls.map(l=>{const r=sheetRow(sh,l.id);return(<div key={l.id} style={{padding:"7px 0",borderBottom:"1px solid #212327"}}>
+          <div style={{display:"flex",gap:7,alignItems:"baseline",flexWrap:"wrap"}}><span style={{width:30,textAlign:"right",fontSize:11,color:"#5a5650",flexShrink:0}}>{l.qty}</span><span style={{flex:1,fontSize:13}}>{l.part}</span><span style={{fontSize:11,color:"#5a5650"}}>{l.note||""}</span></div>
+          {r.meas&&<div style={{fontSize:11,color:"#6fd98a",paddingLeft:37,marginTop:2}}>{r.meas}</div>}
         </div>);})}
       </div>)}
-      {!mach&&ls.length>0&&<div style={{display:"flex",justifyContent:"space-between",fontSize:14,fontWeight:700,marginBottom:12,padding:"0 3px"}}><span style={{color:"#8a8579"}}>{ls.length} parts to buy</span><span style={{color:"#f0c14a"}}>{$$(tot)}</span></div>}
-      {mach&&ls.length>0&&<div style={{fontSize:12,color:"#8a8579",marginBottom:12,lineHeight:1.5}}>Hand this list to the machine shop with the parts. Anything ticked MACH anywhere on the worksheet shows up here.</div>}
-      <div className="rc-fa rc-noprint">{C}<button className="rc-bs" onClick={()=>window.print()}>🖨 Print</button>{!mach&&unlogged.length>0&&<button className="rc-ba" onClick={()=>{const add=unlogged.map(l=>({d:l.part,v:+sheetRow(sh,l.id).cost||0,date:isoToday()}));const nl=[...(eng.partsLog||[]),...add];const rows={...(sh.rows||{})};unlogged.forEach(l=>{rows[l.id]={...(rows[l.id]||{}),logged:1};});d({type:"UPDATE",list:"inventory",id:eng.id,d:{partsLog:nl}});d({type:"UPDATE",list:"bomSheets",id:sh.id,d:{rows}});d({type:"TOAST",d:{msg:"🧩 "+add.length+" parts → cost basis · "+$$(logSum),t:Date.now()}});}}>Log {unlogged.length} to cost basis · {$$(logSum)}</button>}</div>
+      {ls.length>0&&<div style={{fontSize:12,color:"#8a8579",marginBottom:12,lineHeight:1.5}}>Hand this to the machine shop with the parts. The green line under each part is what the tech measured.</div>}
+      <div className="rc-fa rc-noprint">{C}<button className="rc-bs" onClick={()=>window.print()}>🖨 Print</button></div>
     </div>,"rc-pmod");}
-  if(s.modal==="bom-note"){const eng=engById(s,s.md&&s.md.engineId)||{};const sh=sheetFor(s,eng.id);const lid=s.md&&s.md.lineId;const bm=sh?bomById(s,sh.bomId):null;const line=bm&&(bm.lines||[]).find(l=>l.id===+lid);const r=sheetRow(sh,lid);
+  if(s.modal==="bom-note"){const eng=engById(s,s.md&&s.md.engineId)||{};const sh=sheetFor(s,eng.id);const lid=s.md&&s.md.lineId;const bm=sh?bomById(s,sh.bomId):null;const line=bm&&(bm.lines||[]).find(l=>l.id===+lid);
     return W(<div><div className="rc-mt" style={{marginBottom:3}}>Line detail</div>
       <div style={{fontSize:13,color:"#e8e4de",marginBottom:2}}>{(s.md&&s.md.part)||""}</div>
-      <div style={{fontSize:11,color:"#5a5650",marginBottom:12}}>{line&&line.tier===1?"Always replace — no inspection":line&&line.tier===2?"Reuse only with a measurement":"Inspect and decide"}{line&&line.note?" · "+line.note:""}</div>
-      {F("bnMeas","Measurement / what you found")}
+      <div style={{fontSize:11,color:"#5a5650",marginBottom:12}}>{line&&lineKind(line)==="order"?"Parts order — always new, ordered the day the job opens":"Decision sheet — reuse only with the number written down; blank means replace"}{line&&line.note?" · "+line.note:""}</div>
+      {line&&lineKind(line)==="decide"&&F("bnMeas","Measurement / what you found")}
       {F("bnPn","Part number")}
       {F("bnUrl","Direct buy link")}
       {(s.vendors||[]).length>0&&line&&bm&&<div className="rc-fg"><label className="rc-fl">Find it</label><div style={{display:"flex",gap:5,flexWrap:"wrap"}}>{(s.vendors||[]).map(v=>(<a key={v.id} className="rc-fb" href={buyUrl(v,buyQ(bm,line,f.bnPn))} target="_blank" rel="noopener noreferrer" style={{textDecoration:"none"}}>{v.name}</a>))}</div></div>}
-      <div className="rc-fa">{X}<button className="rc-ba" onClick={()=>{const rows={...((sh&&sh.rows)||{})};rows[lid]={...(rows[lid]||{}),meas:(f.bnMeas||"").trim(),pn:(f.bnPn||"").trim(),url:(f.bnUrl||"").trim()};d({type:"UPDATE",list:"bomSheets",id:sh.id,d:{rows}});d({type:"BACK"});}}>Save</button></div>
+      <div className="rc-fa">{X}<button className="rc-ba" onClick={()=>{if(!sh)return;const rows={...(sh.rows||{})};rows[lid]={...(rows[lid]||{}),meas:(f.bnMeas||"").trim(),pn:(f.bnPn||"").trim(),url:(f.bnUrl||"").trim()};d({type:"UPDATE",list:"bomSheets",id:sh.id,d:{rows}});d({type:"BACK"});}}>Save</button></div>
     </div>);}
   if(s.modal==="bom-sheet"){const eng=engById(s,s.md&&s.md.engineId)||{};const sh=sheetFor(s,eng.id);const bm=sh?bomById(s,sh.bomId):null;if(!sh)return W(<div><div className="rc-mt">No worksheet</div><div className="rc-fa">{C}</div></div>);
     const st=bm?bomStats(bm,sh):null;
     return W(<div><div className="rc-mt" style={{marginBottom:3}}>Worksheet</div>
-      <div style={{fontSize:12,color:"#5a5650",letterSpacing:1,marginBottom:12}}>{eng.name||eng.sku} · {bm?bm.label:""}{st?" · "+st.done+"/"+st.total+" ticked":""}</div>
+      <div style={{fontSize:12,color:"#5a5650",letterSpacing:1,marginBottom:12}}>{eng.name||eng.sku} · {bm?bm.label:""}{st?" · "+(st.ordered?"ordered":"not ordered")+" · "+(st.signed?"signed off":"decisions open"):""}</div>
       {(()=>{const others=(s.boms||[]).filter(b=>+b.id!==+sh.bomId);if(!others.length)return null;
         const swap=nid=>{const nb=bomById(s,nid);if(!nb)return;const ob=bomById(s,sh.bomId);
-          const byName=new Map();((ob&&ob.lines)||[]).forEach(l=>{const r=(sh.rows||{})[l.id];if(r&&r.d)byName.set(normM(l.part),r);});
-          const rows={};let kept=0;(nb.lines||[]).forEach(l=>{const r=byName.get(normM(l.part));if(r){rows[l.id]={...r};kept++;}else if(l.tier===1)rows[l.id]={d:"repl"};});
+          const byName=new Map();((ob&&ob.lines)||[]).forEach(l=>{const r=(sh.rows||{})[l.id];if(r&&(r.d||r.meas||r.pn||r.url||r.cost))byName.set(normM(l.part),r);});
+          const rows={};let kept=0;(nb.lines||[]).forEach(l=>{const r=byName.get(normM(l.part));if(r){const v=r.d==="repl"?"":(r.d||"");const ok=lineKind(l)==="order"?(v===""||v==="skip"):(v===""||DISPO.some(x=>x[0]===v));rows[l.id]={...r,d:ok?v:""};kept++;}});
           d({type:"UPDATE",list:"bomSheets",id:sh.id,d:{bomId:nb.id,rows}});
-          d({type:"TOAST",d:{msg:"⇄ Now on "+nb.label+(kept?" · "+kept+" tick"+(kept===1?"":"s")+" carried over":""),t:Date.now()}});d({type:"BACK"});};
+          d({type:"TOAST",d:{msg:"⇄ Now on "+nb.label+(kept?" · "+kept+" line"+(kept===1?"":"s")+" carried over":""),t:Date.now()}});d({type:"BACK"});};
         return(<div className="rc-fg"><label className="rc-fl">Wrong worksheet? Swap it</label>
           <select className="rc-fi" value="" onChange={e=>{if(e.target.value)swap(e.target.value);}} style={{appearance:"none"}}><option value="">Keep {bm?bm.label:"this one"}</option>{others.map(b=>(<option key={b.id} value={b.id}>Switch to {b.label}</option>))}</select>
-          <div style={{fontSize:11,color:"#5a5650",marginTop:4}}>Ticks on parts that appear on both worksheets come with you. Anything else starts fresh, with the always-replace lines pre-ticked.</div></div>);})()}
+          <div style={{fontSize:12,color:"#5a5650",marginTop:4}}>Measurements, part numbers and ticks on parts that appear on both worksheets come with you. Everything else starts fresh.</div></div>);})()}
       {F("bsWo","Job / WO #")}{F("bsTech","Tech")}{F("bsDate","Date in")}{F("bsDone","Date complete")}{F("bsCore","Core source")}
       {TA("bsNotes","Notes",3)}
       <div className="rc-fa">{X}<button className="rc-bs rc-bsr" onClick={()=>{d({type:"DELETE",list:"bomSheets",id:sh.id});d({type:"BACK"});}}>✕ Remove worksheet</button><button className="rc-ba" onClick={()=>{d({type:"UPDATE",list:"bomSheets",id:sh.id,d:{wo:f.bsWo||"",tech:f.bsTech||"",date:f.bsDate||"",dateDone:f.bsDone||"",coreSource:f.bsCore||"",notes:f.bsNotes||""}});d({type:"BACK"});}}>Save</button></div>
@@ -1026,7 +1069,7 @@ function Modals({s,d}){
     return W(<div><div className="rc-mt" style={{marginBottom:4}}>Engine Unit Record</div><div style={{fontSize:12,color:"#5a5650",letterSpacing:1,marginBottom:12}}>{i.sku}</div>
       <div style={{display:"flex",gap:12,marginBottom:14}}>{i.photo?<img src={i.photo} alt="" style={{width:84,height:84,objectFit:"cover",borderRadius:6,border:"1px solid #2a2a2a",flexShrink:0}}/>:<div onClick={()=>d({type:"MODAL",v:"edit-part",d:i})} style={{width:84,height:84,borderRadius:6,border:"1px dashed #2a2a2a",display:"flex",alignItems:"center",justifyContent:"center",fontSize:22,color:"#3a3a3a",flexShrink:0,cursor:"pointer"}}>📷</div>}<div style={{flex:1}}><div style={{fontFamily:"var(--fd)",fontWeight:800,fontSize:21,lineHeight:1.05}}>{i.name}</div><div style={{fontSize:13,color:"#8a8579",margin:"3px 0 7px"}}>ESN {i.serial||i.esn||"—"}{i.cpl?` · CPL ${i.cpl}`:""}</div><Badge s={cur}/></div></div>
       {(()=>{const lv=uwLevel(i);if(!lv)return null;const r=Math.round(uwRatio(i)*100);return(<div style={{border:"1px solid "+(lv==="crit"?"#c43a2a":"#c49a2a"),background:lv==="crit"?"rgba(196,58,42,.12)":"rgba(196,154,42,.1)",color:lv==="crit"?"#ff8a72":"#f0c14a",borderRadius:9,padding:"9px 12px",fontSize:13,marginBottom:12,fontWeight:600,lineHeight:1.5}}>⚠ {lv==="crit"?"UNDERWATER":"MARGIN RISK"} — cost is {r}% of the {$$(+i.price)} expected sale. Finish, part out, or sell as-is — decide before the next dollar goes in.</div>);})()}
-      {(()=>{const dxN=dxFor(s,i.id).length;const bsh=sheetFor(s,i.id);const bbm=bsh?bomById(s,bsh.bomId):null;const bst=bbm?bomStats(bbm,bsh):null;return(<div style={{display:"flex",gap:6,marginBottom:12,paddingBottom:10,borderBottom:"1px solid #2a2a2a",flexWrap:"wrap"}}>{[["overview","Overview"],["costs","Costs · "+$K(cb)],["bom","BOM"+(bst?" · "+bst.done+"/"+bst.total:"")],["diagnosis","Diagnosis"+(dxN?" · "+dxN:"")],["sell","Sell"]].map(([k,l])=>(<button key={k} className={"rc-fb"+(ptab===k?" on":"")} onClick={()=>setPtab(k)}>{l}</button>))}</div>);})()}
+      {(()=>{const dxN=dxFor(s,i.id).length;const bsh=sheetFor(s,i.id);const bbm=bsh?bomById(s,bsh.bomId):null;const bst=bbm?bomStats(bbm,bsh):null;return(<div style={{display:"flex",gap:6,marginBottom:12,paddingBottom:10,borderBottom:"1px solid #2a2a2a",flexWrap:"wrap"}}>{[["overview","Overview"],["costs","Costs · "+$K(cb)],["bom","BOM"+(bst?(bst.ordered&&bst.signed?" · ✓":" · open"):"")],["diagnosis","Diagnosis"+(dxN?" · "+dxN:"")],["sell","Sell"]].map(([k,l])=>(<button key={k} className={"rc-fb"+(ptab===k?" on":"")} onClick={()=>setPtab(k)}>{l}</button>))}</div>);})()}
       {ptab==="overview"&&(<>
       <div className="rc-fl" style={{marginBottom:6}}>Engine identity</div>
       <div className="rc-card" style={{marginBottom:12,padding:12}}><div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:"12px 8px"}}><div><div className="rc-ml">Arrangement</div><div style={{fontSize:14}}>{i.arrangement||"—"}</div></div><div><div className="rc-ml">Year</div><div style={{fontSize:14}}>{i.year||"—"}</div></div><div><div className="rc-ml">Rated HP</div><div style={{fontSize:14}}>{i.ratedHp||"—"}</div></div><div><div className="rc-ml">Oil Cap</div><div style={{fontSize:14}}>{i.oilCap||"—"}</div></div><div><div className="rc-ml">Condition</div><div style={{fontSize:14}}>{i.condition||"—"}</div></div><div><div className="rc-ml">Source Core</div><div style={{fontSize:14,color:"#8a8579"}}>{i.sourceCore||"—"}</div></div></div></div>
@@ -1069,42 +1112,48 @@ function Modals({s,d}){
       </>)}
       {ptab==="bom"&&(()=>{const sh=sheetFor(s,i.id);const bm=sh?bomById(s,sh.bomId):null;
         if(!sh||!bm){const cands=bomsFor(s,i);return(<>
-          <div className="rc-fl" style={{marginBottom:6}}>Parts & disposition worksheet</div>
+          <div className="rc-fl" style={{marginBottom:6}}>Long block worksheet</div>
           <div className="rc-card" style={{marginBottom:12,padding:12}}>
-            <div style={{fontSize:13,color:"#5a5650",marginBottom:10,lineHeight:1.5}}>Tear the core down against the list for this family. Every line gets one tick — MISS, REUSE, REPL or MACH. Nothing gets ordered until every line has a tick.</div>
-            {(()=>{const start=b=>{d({type:"ADD",list:"bomSheets",d:{engineId:i.id,bomId:b.id,engName:i.name||i.sku||"",date:isoToday(),tech:"",wo:"",coreSource:i.sourceCore||"",rows:newRows(b),notes:""},label:"Worksheet started — always-replace lines pre-ticked"});d({type:"MODAL",v:"part-detail",d:{...i,ptab:"bom"}});};
+            <div style={{fontSize:13,color:"#5a5650",marginBottom:10,lineHeight:1.5}}>Two pages, same as the paper form. The parts order goes out the day the job opens — no ticking, no waiting on teardown. The decision sheet gets worked through teardown: reuse, missing or machine shop, and anything left blank gets replaced.</div>
+            {(()=>{const start=b=>{d({type:"ADD",list:"bomSheets",d:{engineId:i.id,bomId:b.id,engName:i.name||i.sku||"",date:isoToday(),tech:"",wo:"",coreSource:i.sourceCore||"",rows:newRows(b),notes:""},label:"Worksheet started — parts order ready to go"});d({type:"MODAL",v:"part-detail",d:{...i,ptab:"bom"}});};
               const others=(s.boms||[]).filter(b=>!cands.some(c=>c.id===b.id));
-              if(cands.length)return cands.map(b=>(<button key={b.id} className="rc-ba" style={{padding:"7px 13px",fontSize:13,marginRight:6,marginBottom:6}} onClick={()=>start(b)}>Start {b.label} worksheet →</button>));
-              return(<><div style={{fontSize:13,color:"#c49a2a",marginBottom:9,lineHeight:1.5}}>No worksheet is matched to {familyLabel(i)} yet.{others.length>0?" Start from one of these anyway — you can add or delete lines on the sheet's template — or build one for this family.":""}</div>
+              if(cands.length)return cands.map(b=>(<button key={b.id} className="rc-ba" style={{padding:"7px 13px",fontSize:13,marginRight:6,marginBottom:6}} onClick={()=>start(b)}>Start {b.label} →</button>));
+              return(<><div style={{fontSize:13,color:"#c49a2a",marginBottom:9,lineHeight:1.5}}>No worksheet is matched to {familyLabel(i)} yet.{others.length>0?" Start from one of these anyway, or build one for this family.":""}</div>
                 {others.map(b=>(<button key={b.id} className="rc-bs" style={{marginRight:6,marginBottom:6}} onClick={()=>start(b)}>Use {b.label} anyway →</button>))}
                 <button className="rc-ba" style={{padding:"7px 13px",fontSize:13,marginBottom:6}} onClick={()=>d({type:"TAB",v:"boms"})}>Build one for {familyLabel(i)} →</button></>);})()}
           </div></>);}
-        const st=bomStats(bm,sh);const pct=st.total?Math.round(st.done/st.total*100):0;const fil=f.bfil||"all";
+        const st=bomStats(bm,sh);const fil=f.bfil||"all";
         const setRow=(lid,patch)=>{const rows={...(sh.rows||{})};rows[lid]={...(rows[lid]||{}),...patch};d({type:"UPDATE",list:"bomSheets",id:sh.id,d:{rows}});};
-        const vis=l=>fil==="all"||(fil==="todo"?!sheetRow(sh,l.id).d:sheetRow(sh,l.id).d===fil);
+        const setSh=p=>d({type:"UPDATE",list:"bomSheets",id:sh.id,d:p});
+        const vis=l=>{const k=lineKind(l),v=rowD(sh,l);if(fil==="all")return true;if(fil==="order")return k==="order";if(fil==="decide")return k==="decide";if(fil==="blank")return k==="decide"&&!v;return k==="decide"&&v===fil;};
+        const statusRow=(lab,ok,txt,btn)=>(<div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap",padding:"7px 10px",borderRadius:9,border:"1px solid "+(ok?"#3a9a4f":"#3a3a3a"),background:ok?"rgba(63,174,90,.08)":"transparent"}}><span style={{fontSize:11,letterSpacing:1.4,textTransform:"uppercase",color:"#8a8579",width:92,flexShrink:0}}>{lab}</span><span style={{flex:1,minWidth:150,fontSize:13,color:ok?"#6fd98a":"#e8e4de",lineHeight:1.45}}>{txt}</span>{btn}</div>);
         return(<>
         <div className="rc-card" style={{padding:12,marginBottom:10}}>
-          <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",marginBottom:7,flexWrap:"wrap",gap:6}}><span style={{fontFamily:"var(--fd)",fontWeight:800,fontSize:14.5,letterSpacing:1}}>{bm.label}<span style={{color:"#5a5650",fontSize:12,fontWeight:400,marginLeft:6}}>rev {bm.rev}</span></span><span style={{fontSize:13,color:pct===100?"#6fd98a":"#8a8579"}}>{st.done} of {st.total} ticked{pct===100?" ✓":""}</span></div>
-          <div style={{height:8,background:"#101113",border:"1px solid #2a2a2a",borderRadius:5,overflow:"hidden",marginBottom:9}}><div style={{height:"100%",width:pct+"%",background:pct===100?"linear-gradient(90deg,#3fae5a,#5ed07a)":"var(--grad)",transition:"width .4s"}}/></div>
-          <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>{DISPO.map(([k,lab,col])=>(<span key={k} style={{fontSize:11.5,color:col,border:"1px solid "+col,borderRadius:20,padding:"2px 9px",letterSpacing:.5}}>{lab} {st[k]}</span>))}</div>
+          <div style={{fontFamily:"var(--fd)",fontWeight:800,fontSize:15,letterSpacing:1,marginBottom:9}}>{bm.label}<span style={{color:"#5a5650",fontSize:12,fontWeight:400,marginLeft:6}}>rev {bm.rev}</span></div>
+          <div style={{display:"grid",gap:7}}>
+            {statusRow("Parts order",st.ordered,st.ordered?"✓ Ordered "+sh.orderedDate+(sh.orderedBy?" by "+sh.orderedBy:"")+(sh.po?" · PO "+sh.po:""):<span style={{color:"#f0c14a"}}>Not ordered yet — {st.order} line{st.order===1?"":"s"}, goes out the day the job opens</span>,<button className="rc-bs" onClick={()=>d({type:"MODAL",v:"bom-shop",d:{engineId:i.id}})}>🛒 {st.ordered?"View order":"Open the order"}</button>)}
+            {statusRow("Decisions",st.signed,st.signed?"✓ Signed off "+sh.decidedAt+(sh.decidedBy?" by "+sh.decidedBy:"")+" — "+st.repl+" to replace":st.ticked+" ticked · "+st.open+" still blank — blanks become replacements when you sign off",st.signed?<button className="rc-bs" onClick={()=>setSh({decidedAt:"",decidedBy:""})}>Reopen</button>:<button className="rc-ba" style={{padding:"6px 12px",fontSize:13}} onClick={()=>{setSh({decidedAt:isoToday(),decidedBy:sh.tech||CURRENT_USER});d({type:"TOAST",d:{msg:"✓ Decision sheet signed off — "+st.open+" blank line"+(st.open===1?"":"s")+" go on the order to replace",t:Date.now()}});}}>✓ Sign off</button>)}
+          </div>
+          <div style={{display:"flex",gap:6,flexWrap:"wrap",marginTop:10}}>{DISPO.map(([k,lab,col])=>(<span key={k} style={{fontSize:11.5,color:col,border:"1px solid "+col,borderRadius:20,padding:"2px 9px",letterSpacing:.5}}>{lab} {st[k]}</span>))}<span style={{fontSize:11.5,color:st.signed?"#f0c14a":"#8a8579",border:"1px solid "+(st.signed?"#f0c14a":"#3a3a3a"),borderRadius:20,padding:"2px 9px",letterSpacing:.5}}>{st.signed?"REPLACE "+st.repl:"BLANK "+st.open}</span></div>
           <div style={{display:"flex",gap:6,marginTop:10,flexWrap:"wrap"}}>
-            <button className="rc-bs" onClick={()=>d({type:"MODAL",v:"bom-shop",d:{engineId:i.id}})}>🛒 Shopping list{st.repl?" · "+st.repl:""}</button>
             <button className="rc-bs" onClick={()=>d({type:"MODAL",v:"bom-mach",d:{engineId:i.id}})}>⚙ Machine shop{st.mach?" · "+st.mach:""}</button>
             <button className="rc-bs" onClick={()=>d({type:"MODAL",v:"bom-sheet",d:{engineId:i.id}})}>✎ Sheet info</button>
             <button className="rc-bs rc-bsr" title="Take this worksheet off the engine — undo from the toast" onClick={()=>d({type:"DELETE",list:"bomSheets",id:sh.id})}>✕ Remove worksheet</button>
           </div>
         </div>
-        <div style={{display:"flex",gap:5,flexWrap:"wrap",marginBottom:8}}>{[["all","All "+st.total],["todo","Not ticked "+(st.total-st.done)],["miss","Missing "+st.miss],["repl","Replace "+st.repl],["mach","Machine "+st.mach],["reuse","Reuse "+st.reuse]].map(([k,l])=>(<button key={k} className={"rc-fb"+(fil===k?" on":"")} onClick={()=>set("bfil",k)}>{l}</button>))}</div>
-        {bomSecs(bm).map(sec=>{const ls=(bm.lines||[]).filter(l=>l.sec===sec&&vis(l));if(!ls.length)return null;return(<div key={sec} className="rc-card" style={{marginBottom:9,padding:"9px 11px"}}>
-          <div className="rc-fl" style={{marginBottom:5}}>{sec}</div>
-          {ls.map(l=>{const r=sheetRow(sh,l.id);return(<div key={l.id} style={{display:"flex",gap:5,alignItems:"center",padding:"4px 0",borderBottom:"1px solid #212327",flexWrap:"wrap"}}>
-            <span style={{width:26,flexShrink:0,textAlign:"right",fontSize:11,color:"#5a5650"}}>{l.qty}</span>
-            <span style={{flex:1,minWidth:120}}><span style={{fontSize:13}}>{l.part}</span>{l.tier===1&&<span title="Always replace — no inspection" style={{color:"#d4581a",fontSize:12,marginLeft:5,fontWeight:700}}>×</span>}{l.tier===2&&<span title="Reuse only with a measurement" style={{color:"#c49a2a",fontSize:12,marginLeft:5}}>◐</span>}{(r.meas||r.pn||l.note)&&<div style={{fontSize:11,color:(r.meas||r.pn)?"#6fd98a":"#5a5650",marginTop:1}}>{[r.pn,r.meas||l.note].filter(Boolean).join(" · ")}</div>}</span>
-            {DISPO.map(([k,lab,col])=>(<button key={k} className="rc-fb" onClick={()=>setRow(l.id,{d:r.d===k?"":k})} style={{fontSize:10,padding:"3px 6px",letterSpacing:.5,...(r.d===k?{borderColor:col,color:col,background:col+"22"}:{})}}>{lab}</button>))}
-            <button className="rc-fb" title="Measurement, part number, buy link" onClick={()=>d({type:"MODAL",v:"bom-note",d:{engineId:i.id,lineId:l.id,part:l.part}})} style={{fontSize:10,padding:"3px 6px"}}>✎</button>
+        <div style={{display:"flex",gap:5,flexWrap:"wrap",marginBottom:8}}>{[["all","All "+st.total],["order","Parts order "+(st.order+st.skip)],["decide","Decisions "+st.decide],["reuse","Reuse "+st.reuse],["miss","Missing "+st.miss],["mach","Machine "+st.mach],["blank",(st.signed?"Replace ":"Blank ")+(st.signed?st.repl:st.open)]].map(([k,l])=>(<button key={k} className={"rc-fb"+(fil===k?" on":"")} onClick={()=>set("bfil",k)}>{l}</button>))}</div>
+        {bomSecs(bm).map(sec=>{const ls=(bm.lines||[]).filter(l=>l.sec===sec&&vis(l));if(!ls.length)return null;const isOrd=ls.every(l=>lineKind(l)==="order");return(<div key={sec} className="rc-card" style={{marginBottom:9,padding:"9px 11px"}}>
+          <div className="rc-fl" style={{marginBottom:5,display:"flex",justifyContent:"space-between",gap:8,flexWrap:"wrap"}}><span>{sec}</span><span style={{textTransform:"none",letterSpacing:0,color:"#5a5650"}}>{isOrd?"always new · no ticking · strike what's not on this job":"reuse · missing · machine — blank means replace"}</span></div>
+          {ls.map(l=>{const r=sheetRow(sh,l.id);const v=rowD(sh,l);const ord=lineKind(l)==="order";const off=ord&&v==="skip";return(<div key={l.id} style={{display:"flex",gap:5,alignItems:"center",padding:"4px 0",borderBottom:"1px solid #212327",flexWrap:"wrap",opacity:off?.5:1}}>
+            <span style={{width:30,flexShrink:0,textAlign:"right",fontSize:11,color:"#5a5650"}}>{l.qty}</span>
+            <span style={{flex:1,minWidth:130}}><span style={{fontSize:13,textDecoration:off?"line-through":"none"}}>{l.part}</span>{(r.meas||r.pn||l.note)&&<div style={{fontSize:11,color:(r.meas||r.pn)?"#6fd98a":"#5a5650",marginTop:1}}>{[r.pn&&("PN "+r.pn),r.meas||l.note].filter(Boolean).join(" · ")}</div>}</span>
+            {ord?(<button className="rc-fb" onClick={()=>setRow(l.id,{d:off?"":"skip"})} style={{fontSize:10,padding:"3px 7px",letterSpacing:.5}}>{off?"↺ put back":"✕ not on this job"}</button>):(<>
+              {!v&&<span style={{fontSize:10,letterSpacing:.5,color:st.signed?"#f0c14a":"#5a5650",marginRight:2}}>{st.signed?"→ REPLACE":"blank"}</span>}
+              {DISPO.map(([k,lab,col])=>(<button key={k} className="rc-fb" onClick={()=>setRow(l.id,{d:v===k?"":k})} style={{fontSize:10,padding:"3px 7px",letterSpacing:.5,...(v===k?{borderColor:col,color:col,background:col+"22"}:{})}}>{lab}</button>))}</>)}
+            <button className="rc-fb" title="Measurement, part number, buy link" onClick={()=>d({type:"MODAL",v:"bom-note",d:{engineId:i.id,lineId:l.id,part:l.part}})} style={{fontSize:10,padding:"3px 7px"}}>✎</button>
           </div>);})}
         </div>);})}
-        <div className="rc-card" style={{padding:11,marginBottom:12,fontSize:12,color:"#8a8579",lineHeight:1.55}}><span style={{color:"#d4581a",fontWeight:700}}>×</span> always replace, no inspection · <span style={{color:"#c49a2a"}}>◐</span> reuse only with a measurement written down.{bm.watch&&<div style={{marginTop:6,color:"#c49a2a"}}>{bm.watch}</div>}</div>
+        <div className="rc-card" style={{padding:11,marginBottom:12,fontSize:12,color:"#8a8579",lineHeight:1.6}}>{bm.rule}{bm.watch&&<div style={{marginTop:6,color:"#c49a2a"}}>{bm.watch}</div>}</div>
         </>);})()}
       {ptab==="overview"&&(<>
       <div className="rc-fl" style={{marginBottom:6}}>Lifecycle status</div>
