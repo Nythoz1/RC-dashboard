@@ -8,7 +8,7 @@ React + Vite single-page app for **Rollin Coal — Canada's Diesel Engine Specia
 
 - ~20 engines in live inventory (Caterpillar, Cummins, Detroit, International, Paccar, Mercedes, Mack, etc.) — the 80-row seed in `EMPTY` is only for fresh/local installs
 - Phone 1-587-863-0505 · rollin-coal.ca · 2040 11th Ave NW, Medicine Hat, AB
-- Brand: industrial dark theme, matte black (`#0a0a0a`) + burnt orange (`#d4581a`); Barlow Condensed (display) + IBM Plex Mono (mono)
+- Brand: **Daylight** — light by default (warm off-white `#f3f2ef`, white cards, near-black text) with burnt orange (`#d4581a`) reserved for actions, the active nav item and alerts; a **Night** theme swaps the same tokens for dark surfaces. Public Sans (UI text) + Barlow Condensed (page titles, big numbers)
 
 This was originally a Claude artifact (single `.jsx` using `window.storage` and a keyless Anthropic call). It has been converted to a real Vite project with a Supabase backend. **Do not reintroduce `window.storage`, `localStorage` directly in the component, `confirm()`, `alert()`, or a client-side API key.**
 
@@ -29,6 +29,7 @@ src/
     ai.js                        askClaude() → calls the Supabase Edge Function (sends the user's token)
     auth.js                      email/password auth + login gate (Supabase); no-op on localStorage
     brief.js                     requestBriefNow() → calls the brief Edge Function (Overview "Send now")
+    prefs.js                     getPref/setPref — per-device UI prefs (the colour theme); never shop data
 supabase/
   functions/ai/index.ts          Deno function; holds ANTHROPIC_API_KEY, requires a logged-in user
   migrations/0001_init.sql       app_state key-value table + RLS
@@ -53,15 +54,18 @@ Single file, intentionally. React with `useReducer`. Approximate map (search by 
 - Views — `Overview, Customers, Quotes, Inv, Parts, Issues, Invoicing, Operations, Marketing, Schedule, Emps, Reports`
 - `function Modals` — every add/edit/detail modal; helpers `F, CS, ES, TS, PH, FM, EFM, LI, W, X, C`
 - `const CSS` — full stylesheet string injected via `<style>`
-- `export default function App` — load/save effects, tab routing, toast UI
+- `export default function App` — load/save effects, theme, the shell (sidebar `rc-side` + `rc-main` with the page header `rc-top`), tab routing, toast UI. `ICO`/`Ico` are the sidebar's inline SVG icons; `THEMES` the Day/Night/Auto switch
 
 ### State shape (`STORE_KEYS`, all arrays)
 `customers, jobs, timeEntries, quotes, inventory, invoices, schedule, employees, expenses, leads, social, campaigns, contentCalendar, cores, shipments, commsLog, purchaseOrders, warranties, parts, wins, activity, settings, diagnoses, issues, brief, boms, bomSheets, vendors`
 
 Transient state (NOT persisted): `tab, modal, md, mstack, toast, lastDel, soldSplash`. `saveAll` only writes `STORE_KEYS`, so these never hit the DB. `brief` is the one `STORE_KEY` the app never mutates (server-written by the brief function), so it is never dirty and never saved by the client.
 
-### Tabs
-7 nav groups (`GROUPS` in `App`): Overview · Inventory (Engines / Parts / BOM / Marketing) · Issues · Ops (Customers & Jobs / Operations / Schedule) · Money (Quotes / Invoicing) · Team · Reports. Multi-view groups render a sub-nav pill row. The underlying tab keys (`s.tab`: overview, inventory, parts, boms, social, issues, customers, operations, schedule, quotes, invoices, employees, reports) are unchanged, so `TAB` dispatches still target individual views.
+### Navigation
+A left sidebar (`NAV` in `App`) lists every view, grouped: Overview · **Shop** (Engines, BOM, Parts, Issues) · **Sales** (Marketing, Quotes, Invoicing) · **Operations** (Customers & Jobs, Operations, Schedule) · **Business** (Team, Reports). The page title in `rc-top` comes from `TABL[s.tab]`. At ≤900px the sidebar becomes a slide-out drawer opened by the ☰ button (`navOpen`, `.rc-shell.nav-open`) and closes on navigation or a tap on the scrim. The sidebar footer holds the theme switch, the signed-in email, Backup, Reset and Sign out. Tab keys (`s.tab`: overview, inventory, parts, boms, social, issues, customers, operations, schedule, quotes, invoices, employees, reports) are unchanged, so `TAB` dispatches still target individual views.
+
+### Theme (Daylight + Night)
+All colour comes from CSS custom properties on `.rc-root`: `--bg` page, `--sf`/`--sf2` surfaces, `--in` inputs, `--ln`/`--ln2` borders, `--tx`/`--tx2`/`--mt`/`--ft` text from strongest to faintest, `--ac`/`--act`/`--acs`/`--ach` accent (fill / text / soft background / hover), status pairs `--g/--gs` good, `--w/--ws` warn, `--r/--rs` bad, `--b/--bs` info, `--p/--ps` AI, plus `--sh1`/`--sh2` shadows and `--ov` modal scrim. The bare `.rc-root` block is Day; `.rc-root[data-theme="night"]` redefines the same tokens. `App` computes `theme` from the per-device preference `rc:theme` (`lib/prefs.js`: `day` default, `night`, or `auto` = follow the device's `prefers-color-scheme`) and stamps it on every root (`App`, `Login`, the splash and the load-error screen). Printing always uses Day tokens. The SOLD splash deliberately keeps its own dark backdrop in both themes. The printed engine sheet and the brief email are separate documents with their own fixed styling.
 
 ## Key domain concepts (important — this is an engine shop, not a parts store)
 
@@ -90,8 +94,8 @@ Transient state (NOT persisted): `tab, modal, md, mstack, toast, lastDel, soldSp
 - Customer/tech/engine pickers are `<select>` dropdowns (`CS`, `TS`, `ES`), never raw ID text inputs.
 - Date inputs: the `F` helper auto-renders `type="date"` for date-named keys (`DATEKEYS`). Defaults use `isoToday()`.
 - Photos: `compressImg` (≤480px, JPEG q0.6) before storing; engines also accept an image URL.
-- Type scale: the app was bumped once, globally (inline `fontSize` values and the `CSS` string together, roughly +2px under 12px and +1.5px to 16px, display numerals untouched). Match the current sizes when adding UI — don't reintroduce 9–11px body text.
-- Styling: add to the `CSS` string; reuse existing classes (`rc-card, rc-ba, rc-bs, rc-fi, rc-fg, rc-fl, rc-tn, rc-fb`...). Keep the dark/orange theme. Print rules live in `@media print`.
+- Type: UI text is Public Sans (`var(--fb)`), titles and big numbers Barlow Condensed (`var(--fd)`); numbers in tables use tabular figures. The scale was bumped once, globally (roughly +2px under 12px and +1.5px to 16px). Match the current sizes when adding UI — don't reintroduce 9–11px body text.
+- Styling: add to the `CSS` string; reuse existing classes (`rc-card, rc-ba, rc-bs, rc-fi, rc-fg, rc-fl, rc-tn, rc-fb`...). **Never hard-code a colour in an inline style** — use the tokens (`color:"var(--mt)"`, `border:"1px solid var(--ln)"`), or both themes break. For a translucent fill or border of a status colour use `tint(c, pct)` (a `color-mix`), never a hex+alpha suffix like `col+"22"` — that stops working the moment `c` is a token. Only white text on the orange accent may be a literal (`#fff`). Print rules live in `@media print`.
 - After edits, the build must pass: `npm run build`. Keep brackets balanced (the file is dense single-line JSX).
 
 ## Backend
