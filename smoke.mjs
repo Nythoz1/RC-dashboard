@@ -1,4 +1,4 @@
-// Smoke test: localStorage mode, walks the new diagnosis + issues features.
+// Smoke test: localStorage mode, walks the diagnosis + issues features and an engine sale with a swap.
 import { chromium } from "playwright";
 import { spawn } from "child_process";
 const srv=spawn("npx",["vite","preview","--port","4173","--strictPort"],{stdio:"ignore"});
@@ -59,6 +59,8 @@ await p.click("text=Hard start, Low power");
 await p.waitForSelector("text=Add to common issues");
 await p.click(".rc-mod button:has-text('Add to common issues')");
 await p.waitForSelector("text=Add Common Issue");
+// the form is filled one render after it opens: wait for the value instead of reading the first frame
+await p.waitForFunction(()=>{const el=document.querySelector("input[placeholder^='Title']");return el&&el.value;},null,{timeout:3000}).catch(()=>{});
 const title=await p.inputValue("input[placeholder^='Title']");
 const models=await p.inputValue("input[placeholder^='Engine models']");
 console.log("prefill title:",title,"| models:",models);
@@ -79,5 +81,41 @@ await p.screenshot({path:"shot-log.png"});
 const shopIssues=await p.locator("text=/1 from this shop/").count();
 console.log("shop-sourced issue counted:",shopIssues>0);
 await p.click("table.rc-tbl tbody tr >> nth=0 >> td >> nth=3");await p.waitForSelector("text=Diagnosis");console.log("linked issue survives reload:",await p.locator("text=Linked common issue").count()>0);
+// Services: sell an engine with an engine swap → one invoice carrying the engine + the swap, a swap
+// work order billed on it, and hours logged on the swap stay off the engine's cost basis.
+await p.click(".rc-ov",{position:{x:5,y:5}}).catch(()=>{});
+const LS=k=>p.evaluate(k=>JSON.parse(localStorage.getItem("rc:"+k)||"[]"),k);
+await p.click('.rc-ni:has-text("Team")');
+await p.click('button.rc-ba:has-text("+ Employee")');
+await p.fill(".rc-mod input[placeholder='Name']","Dale");
+await p.fill(".rc-mod input[placeholder='Rate ($/hr)']","40");
+await p.click(".rc-mod .rc-fa .rc-ba");
+await p.click('.rc-ni:has-text("Engines")');
+await p.fill("input.rc-si","ISX-15 (2012)");
+await p.click("table.rc-tbl tbody tr >> nth=0 >> td >> nth=1");
+await p.waitForSelector("text=Engine Unit Record");
+await p.click(".rc-mod .rc-fa button:has-text('Sell Engine')");
+await p.waitForSelector("text=What's going with this engine?");
+await p.fill(".rc-mod input[aria-label^='Charge for Engine swap — install']","6500");
+await p.fill(".rc-mod input[placeholder^='Name — add phone']","Smoke Test Hauling");
+await p.screenshot({path:"shot-sell.png"});
+await p.click(".rc-mod .rc-fa .rc-ba");
+await p.waitForSelector(".rc-splash",{timeout:5000}).then(()=>p.click(".rc-splash")).catch(()=>{});
+await p.waitForTimeout(900);
+const sInv=(await LS("invoices")).find(x=>(x.items||[]).some(l=>l.svcId===85101));
+const sJob=(await LS("jobs")).find(j=>j.svcId===85101);
+console.log("sold with a swap — invoice lines:",sInv?sInv.items.length:0,"| swap work order billed on it:",!!(sInv&&sJob&&sJob.invoiceId===sInv.id));
+const lab0=+((await LS("inventory")).find(x=>sInv&&x.id===sInv.engineId)||{}).laborLogged||0;
+await p.click('.rc-ni:has-text("Customers & Jobs")');
+await p.click("table.rc-tbl tbody tr:has-text('Engine swap') >> td >> nth=0");
+await p.click(".rc-mod button:has-text('+ Log Time')");
+await p.locator(".rc-mod select").first().selectOption("Dale");
+await p.fill(".rc-mod input[placeholder='Hours']","8");
+await p.click(".rc-mod .rc-fa .rc-ba");
+await p.waitForSelector("text=Labour profit");
+console.log("swap work order:",(await p.locator(".rc-mod .rc-3c").innerText()).replace(/\s+/g," "));
+await p.waitForTimeout(900);
+const lab1=+((await LS("inventory")).find(x=>sInv&&x.id===sInv.engineId)||{}).laborLogged||0;
+console.log("swap hours kept off the engine's cost basis:",lab1===lab0);
 console.log("errors:",errs.length?errs:"none");
 await b.close();srv.kill();process.exit(0);
