@@ -1,4 +1,5 @@
-// Smoke test: localStorage mode, walks the diagnosis + issues features and an engine sale with a swap.
+// Smoke test: localStorage mode, walks the diagnosis + issues features, an engine sale with a swap,
+// and an ECM job from intake to invoice (including the emissions block).
 import { chromium } from "playwright";
 import { spawn } from "child_process";
 const srv=spawn("npx",["vite","preview","--port","4173","--strictPort"],{stdio:"ignore"});
@@ -117,5 +118,54 @@ console.log("swap work order:",(await p.locator(".rc-mod .rc-3c").innerText()).r
 await p.waitForTimeout(900);
 const lab1=+((await LS("inventory")).find(x=>sInv&&x.id===sInv.engineId)||{}).laborLogged||0;
 console.log("swap hours kept off the engine's cost basis:",lab1===lab0);
+// ECM: intake to complete. A "No" emissions answer blocks completion; passed checks at both ends plus the
+// customer's sign-off complete it, book the 30/60/90-day follow-ups and bill to an invoice. All of it survives a reload.
+await p.click(".rc-ov",{position:{x:5,y:5}}).catch(()=>{});
+const ecmTab=l=>p.locator(".rc-mod").getByRole("tab",{name:l,exact:true}).click();
+const emis=(sys,when,ans)=>p.click(`.rc-mod button[aria-label="${sys} ${when}: ${ans}"]`);
+const ecmJob=async()=>(await LS("ecmJobs")).find(x=>x.unit==="S-1")||{};
+await p.click('.rc-ni:has-text("ECM")');
+await p.click('button.rc-ba:has-text("+ ECM Job")');
+await p.fill(".rc-mod input[placeholder^='Name — add phone']","Smoke ECM Customer");
+await p.fill(".rc-mod input[placeholder='Unit #']","S-1");
+await p.locator(".rc-mod .rc-fg:has(> label:text-is('Engine family')) select").selectOption("X15");
+await p.click(".rc-mod .rc-fa .rc-ba");
+await p.waitForSelector(".rc-mod [role=tab]");
+await ecmTab("Baseline");
+for(const x of ["EGR","DPF","SCR"])await emis(x,"at intake","Yes");
+await p.click(".rc-mod button:has-text('+ Fault code')");
+await p.locator(".rc-mod input[aria-label='Fault code']").fill("SPN 4364 FMI 18");
+await p.locator(".rc-mod input[type=file]").setInputFiles({name:"trip.csv",mimeType:"text/csv",buffer:Buffer.from("rpm,boost_psi\n1500,30\n")});
+await p.waitForSelector(".rc-mod >> text=trip.csv");
+await ecmTab("Work");
+await p.locator(".rc-mod [aria-label='Job type'] button:has-text('Parameter programming')").click();
+await p.click(".rc-mod button:has-text('+ Max vehicle speed')");
+await p.click(".rc-mod button:has-text('+ Idle shutdown time')");
+await p.locator(".rc-mod input[aria-label='New value']").nth(0).fill("105 km/h");
+await p.locator(".rc-mod input[aria-label='New value']").nth(1).fill("5 min");
+await ecmTab("Verify");
+await emis("EGR","at release","Yes");await emis("DPF","at release","No");await emis("SCR","at release","Yes");
+await p.fill(".rc-mod .rc-fg:has(> label:text-is('Customer name')) input","Smoke Signer");
+await p.locator(".rc-mod input[aria-label='Customer sign-off']").check();
+await p.locator(".rc-mod").getByRole("button",{name:"Complete",exact:true}).click();
+await p.waitForTimeout(900);
+console.log("ECM: release DPF 'No' blocks completion:",(await ecmJob()).status==="on-hold");
+await emis("DPF","at release","Yes");
+await p.locator(".rc-mod .rc-card button:has-text('Complete job')").click();
+await p.waitForTimeout(900);
+const ej1=await ecmJob();
+console.log("ECM: completed:",ej1.status==="complete","| parameter changes:",(ej1.params||[]).length,"| follow-ups booked:",(await LS("schedule")).filter(a=>+a.ecmJobId===ej1.id).length);
+await ecmTab("Work");
+await p.locator(".rc-mod .rc-card button:has-text('Bill this job')").click();
+await p.waitForSelector(".rc-mod >> text=New Invoice");
+await p.click(".rc-mod .rc-fa .rc-ba:has-text('Create')");
+await p.waitForTimeout(900);
+const ej2=await ecmJob();
+console.log("ECM: invoice line exists:",!!ej2.invoiceId&&(await LS("invoices")).some(v=>(v.items||[]).some(l=>l.ecmJobId===ej2.id)));
+await p.screenshot({path:"shot-ecm.png"});
+await p.reload();
+await p.waitForSelector(".rc-side");
+const ej3=await ecmJob();
+console.log("ECM after reload: status",ej3.status,"| fault codes",(ej3.bFaults||[]).length,"| files",(await LS("ecmFiles")).filter(x=>x.jobId===ej3.id).length,"| parameter changes",(ej3.params||[]).length,"| follow-ups",(await LS("schedule")).filter(a=>+a.ecmJobId===ej3.id).length,"| billed",!!ej3.invoiceId);
 console.log("errors:",errs.length?errs:"none");
 await b.close();srv.kill();process.exit(0);

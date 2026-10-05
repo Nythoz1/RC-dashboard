@@ -13,13 +13,17 @@
 //
 // Set VITE_AI_FUNCTION_URL to your deployed function URL, e.g.
 //   https://<project-ref>.functions.supabase.co/ai
+//
+// askClaude(prompt, { system }) — `system` is sent as the model's system prompt
+// (rules the answer must follow). Functions deployed before it existed ignore
+// it, so callers that depend on a rule also state it in the prompt.
 // ─────────────────────────────────────────────────────────────
 import { supabase } from "./storage";
 
 const FN_URL = import.meta.env.VITE_AI_FUNCTION_URL;
 const ANON = import.meta.env.VITE_SUPABASE_ANON_KEY;
 
-export async function askClaude(prompt) {
+export async function askClaude(prompt, opts = {}) {
   if (!FN_URL) {
     return "AI is not configured. Set VITE_AI_FUNCTION_URL to your deployed Supabase Edge Function and try again.";
   }
@@ -37,7 +41,7 @@ export async function askClaude(prompt) {
         ...(ANON ? { apikey: ANON } : {}),
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
       },
-      body: JSON.stringify({ prompt }),
+      body: JSON.stringify({ prompt, ...(opts.system ? { system: String(opts.system) } : {}) }),
     });
     if (r.status === 401) return "AI error: not signed in. Please sign in again and retry.";
     const d = await r.json();

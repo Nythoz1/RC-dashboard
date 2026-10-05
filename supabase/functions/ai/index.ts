@@ -7,6 +7,10 @@
 //           (optional) supabase secrets set ANTHROPIC_MODEL=claude-sonnet-4-6
 //           SUPABASE_URL and SUPABASE_ANON_KEY are injected automatically.
 //
+// Body: { prompt, system? } — `system` (optional, capped at 4,000 chars) is passed
+// to Anthropic as the system prompt, e.g. the ECM review's "explain and flag
+// only" rules.
+//
 // Auth: the caller must send a logged-in user's access token as the Bearer
 // credential. We verify it with supabase.auth.getUser() and reject anything that
 // is not a real user — including the shared anon key (which is itself a valid
@@ -48,8 +52,9 @@ Deno.serve(async (req) => {
 
   if (!KEY) return json({ error: "ANTHROPIC_API_KEY not set" }, 500);
   try {
-    const { prompt } = await req.json();
+    const { prompt, system } = await req.json();
     if (!prompt) return json({ error: "Missing prompt" }, 400);
+    const sys = typeof system === "string" && system.trim() ? system.trim().slice(0, 4000) : null;
     const r = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: {
@@ -60,6 +65,7 @@ Deno.serve(async (req) => {
       body: JSON.stringify({
         model: MODEL,
         max_tokens: 1000,
+        ...(sys ? { system: sys } : {}),
         messages: [{ role: "user", content: prompt }],
       }),
     });
