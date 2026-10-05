@@ -1,6 +1,7 @@
 // Smoke test: localStorage mode, walks the diagnosis + issues features, an engine sale with a swap,
-// an ECM job from intake to invoice (including the emissions block), and the sales research
-// (prospect seeds, a logged visit with a follow-up, convert to customer, route sheet).
+// an ECM job from intake to invoice (including the emissions block), the sales research
+// (prospect seeds, a logged visit with a follow-up, convert to customer, route sheet), and the
+// yard map (an engine gets a spot in the carport, survives a reload, shows in the Engines list).
 import { chromium } from "playwright";
 import { spawn } from "child_process";
 const srv=spawn("npx",["vite","preview","--port","4173","--strictPort"],{stdio:"ignore"});
@@ -210,5 +211,24 @@ const routePages=((await route.pdf({preferCSSPageSize:true})).toString("latin1")
 console.log("route sheet for Brooks: stops",await route.locator("table.rt tbody").count(),"| pages",routePages);
 await route.screenshot({path:"shot-route.png",fullPage:true});
 await route.close();
+// Yard map: give an engine the next free spot in the carport and turn it. After a reload the spot
+// is kept, the map draws it, and the Engines list shows where it is.
+await p.click(".rc-ov",{position:{x:5,y:5}}).catch(()=>{});
+await p.click('.rc-ni:has-text("Yard")');
+await p.waitForSelector(".rc-yard-svg");
+const yRow=p.locator(".rc-ylist .rc-yrow").first();const yTag=(await yRow.locator(".rc-lnk").innerText()).trim();
+await yRow.locator('button:has-text("Next free spot")').click();
+await p.click('.rc-ysel button:has-text("Turn")');
+await p.waitForTimeout(900);
+const ySpot=(await p.locator(".rc-ysel .rc-ywhere").innerText()).replace("📍","").trim();
+await p.reload();
+await p.waitForSelector(".rc-side");
+const yEng=(await LS("inventory")).find(x=>x.sku===yTag)||{};
+await p.click('.rc-ni:has-text("Yard")');
+const yDrawn=await p.locator(`.rc-yeng[aria-label^="${yTag},"]`).count();
+await p.click('.rc-ni:has-text("Engines")');
+await p.fill(".rc-main input.rc-si",yTag);
+const yLoc=(await p.locator(".rc-main table.rc-tbl tbody tr").first().locator(".rc-yloc").innerText()).trim();
+console.log("yard: "+yTag+" at",ySpot,"| after reload: in the carport",(yEng.yard||{}).area==="carport","| turned",(yEng.yard||{}).rot===90,"| on the map",yDrawn===1,"| Engines list says",yLoc);
 console.log("errors:",errs.length?errs:"none");
 await b.close();srv.kill();process.exit(0);
