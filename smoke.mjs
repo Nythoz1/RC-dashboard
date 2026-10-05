@@ -1,13 +1,14 @@
 // Smoke test: localStorage mode, walks the diagnosis + issues features, an engine sale with a swap,
 // an ECM job from intake to invoice (including the emissions block), the sales research
 // (prospect seeds, a logged visit with a follow-up, convert to customer, route sheet), and the
-// yard map (an engine gets a spot in the carport, survives a reload, shows in the Engines list).
+// 3D shop (engines placed by status, give one a spot, reload, the Engines list shows it).
 import { chromium } from "playwright";
 import { spawn } from "child_process";
 const srv=spawn("npx",["vite","preview","--port","4173","--strictPort"],{stdio:"ignore"});
 await new Promise(r=>setTimeout(r,2500));
 const errs=[];
-const b=await chromium.launch({executablePath:"/opt/pw-browsers/chromium"}).catch(()=>chromium.launch());
+// SwiftShader gives headless Chromium WebGL, which the Shop 3D view needs.
+const b=await chromium.launch({executablePath:"/opt/pw-browsers/chromium",args:["--use-angle=swiftshader","--enable-unsafe-swiftshader","--ignore-gpu-blocklist"]}).catch(()=>chromium.launch());
 const p=await b.newPage({viewport:{width:1280,height:900}});
 p.on("pageerror",e=>errs.push("pageerror: "+e.message));
 p.on("console",m=>{if(m.type()==="error")errs.push("console: "+m.text());});
@@ -211,24 +212,25 @@ const routePages=((await route.pdf({preferCSSPageSize:true})).toString("latin1")
 console.log("route sheet for Brooks: stops",await route.locator("table.rt tbody").count(),"| pages",routePages);
 await route.screenshot({path:"shot-route.png",fullPage:true});
 await route.close();
-// Yard map: give an engine the next free spot in the carport and turn it. After a reload the spot
-// is kept, the map draws it, and the Engines list shows where it is.
+// Shop 3D: the shop loads with every engine placed by status. Giving one a spot moves it, the spot
+// survives a reload, and the Engines list shows where it's kept.
 await p.click(".rc-ov",{position:{x:5,y:5}}).catch(()=>{});
-await p.click('.rc-ni:has-text("Yard")');
-await p.waitForSelector(".rc-yard-svg");
-const yRow=p.locator(".rc-ylist .rc-yrow").first();const yTag=(await yRow.locator(".rc-lnk").innerText()).trim();
-await yRow.locator('button:has-text("Next free spot")').click();
-await p.click('.rc-ysel button:has-text("Turn")');
+await p.click('.rc-ni:has-text("Shop 3D")');
+await p.waitForSelector(".s3-canvas",{timeout:60000});
+await p.waitForFunction(()=>!document.querySelector(".rc-s3-load"),null,{timeout:90000});
+const s3Tags=await p.locator(".s3-tag").count();const s3West=await p.locator(".rc-s3-pl",{hasText:"Take-out inventory · West"}).locator("small").innerText();
+await p.click('.rc-s3-pl:has-text("Take-out inventory · West")');
+const s3Row=p.locator(".rc-s3-erow").first();const s3Sku=(await s3Row.locator("b").innerText()).trim();
+await s3Row.click();
+await p.locator("#s3-loc").selectOption("reman");
 await p.waitForTimeout(900);
-const ySpot=(await p.locator(".rc-ysel .rc-ywhere").innerText()).replace("📍","").trim();
+await p.screenshot({path:"shot-shop3d.png"});
 await p.reload();
 await p.waitForSelector(".rc-side");
-const yEng=(await LS("inventory")).find(x=>x.sku===yTag)||{};
-await p.click('.rc-ni:has-text("Yard")');
-const yDrawn=await p.locator(`.rc-yeng[aria-label^="${yTag},"]`).count();
+const s3Eng=(await LS("inventory")).find(x=>x.sku===s3Sku)||{};
 await p.click('.rc-ni:has-text("Engines")');
-await p.fill(".rc-main input.rc-si",yTag);
-const yLoc=(await p.locator(".rc-main table.rc-tbl tbody tr").first().locator(".rc-yloc").innerText()).trim();
-console.log("yard: "+yTag+" at",ySpot,"| after reload: in the carport",(yEng.yard||{}).area==="carport","| turned",(yEng.yard||{}).rot===90,"| on the map",yDrawn===1,"| Engines list says",yLoc);
+await p.fill(".rc-main input.rc-si",s3Sku);
+const s3Loc=(await p.locator(".rc-main table.rc-tbl tbody tr").first().locator(".rc-s3-loc").innerText()).trim();
+console.log("shop 3D: place labels",s3Tags,"| take-out West",s3West,"| "+s3Sku+" given a spot:",s3Eng.loc,"| Engines list says",s3Loc);
 console.log("errors:",errs.length?errs:"none");
 await b.close();srv.kill();process.exit(0);

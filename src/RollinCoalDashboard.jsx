@@ -9,6 +9,7 @@ import { uploadEcmFile, openEcmFile, readEcmText, removeEcmFiles, ecmFileType, e
 import { ISSUE_SEED } from "./issuesSeed";
 import { BOM_SEED, VENDOR_SEED } from "./bomSeed";
 import { SERVICE_SEED, SERVICE_CATS } from "./servicesSeed";
+import { AREA_BY_ID, PLACE_GROUPS, PLACE_ORDER, STORE_IDS, SLOT_CAP, shopLocs, areaTitle } from "./shop3d/areas";
 const FONTS="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700;800&family=Public+Sans:wght@400;500;600;700&display=swap";
 
 // ═══════════════════════════════════════════════════════════════
@@ -22,14 +23,13 @@ const EMPTY={
   boms:BOM_SEED,bomSheets:[],vendors:VENDOR_SEED,services:SERVICE_SEED,
   ecmJobs:[],      // ECM programming jobs — see ecmGuard and CLAUDE.md for the shape and the emissions rule
   ecmFiles:[],     // {id,jobId,path,name,size,type,at} — metadata only; the bytes live in the ecm-files bucket
-  yardFix:[],      // Yard map fixtures: posts, racks, keep-clear zones {id,kind,label,x,y,w,h} in feet (see yardCfg)
   prospects:[],    // trucking fleets to cold-approach — seeded once from src/data/fleet-prospects.json (seedResearch)
   competitors:[],  // Alberta diesel / engine shops — seeded once from src/data/competitors.json
   compare:[],      // the Rollin Coal vs key competitors cheat sheet — seeded once from src/data/competitor-comparison.json
 
   wins:[],       // {id,ts,user,kind:"sale",name,sku,price,cost} — permanent wins feed
   activity:[],   // {id,ts,user,type,msg} — auto-captured shop log (capped)
-  settings:[],   // single row: {id,monthlyGoal,soundOn,warrantyMonths,shopRate,ecmPrices,yard}
+  settings:[],   // single row: {id,monthlyGoal,soundOn,warrantyMonths,shopRate,ecmPrices}
   brief:null,    // latest Morning Brief — written by the brief Edge Function, read-only in the app
   customers:[],jobs:[],quotes:[],
   inventory:[
@@ -142,7 +142,7 @@ const EMPTY={
   ],
 };
 
-const STORE_KEYS=["customers","jobs","timeEntries","quotes","inventory","invoices","schedule","employees","expenses","leads","social","campaigns","contentCalendar","cores","shipments","commsLog","purchaseOrders","warranties","parts","wins","activity","settings","diagnoses","issues","brief","boms","bomSheets","vendors","services","ecmJobs","ecmFiles","prospects","competitors","compare","yardFix"];
+const STORE_KEYS=["customers","jobs","timeEntries","quotes","inventory","invoices","schedule","employees","expenses","leads","social","campaigns","contentCalendar","cores","shipments","commsLog","purchaseOrders","warranties","parts","wins","activity","settings","diagnoses","issues","brief","boms","bomSheets","vendors","services","ecmJobs","ecmFiles","prospects","competitors","compare"];
 
 // ── Shop activity log (who-did-what, auto-captured as a byproduct of work) ──
 let CURRENT_USER="shop";
@@ -219,7 +219,7 @@ function reducer(s,a){switch(a.type){
       if(a.d.status==="in-reman"&&!(s.jobs||[]).some(j=>+j.engineId===it.id&&jobKind(j)==="reman"&&j.status!=="complete")){const nj={id:Date.now()+2,kind:"reman",engineId:it.id,custId:0,vehicle:it.sku||"",service:"Reman — "+(it.name||it.sku||"engine"),type:"Reman",tech:"Unassigned",due:"",priority:"medium",status:"in-progress",notes:"Auto-opened when the engine entered reman.",auto:true};extra.jobs=[...(s.jobs||[]),nj];autos.push("🛠 Reman work order auto-opened: "+nj.service);}
     }else if(a.list==="inventory"&&it&&a.d.photo&&it.photo!==a.d.photo){act="📷 Photo added: "+(it.name||it.sku||"");}
     else if(a.list==="inventory"&&it&&a.d.partsLog&&(a.d.partsLog||[]).length>(it.partsLog||[]).length){const np=a.d.partsLog[(a.d.partsLog||[]).length-1]||{};act="🧩 Part into "+(it.name||it.sku||"engine")+": "+(np.d||"part")+" — $"+(+np.v||0).toLocaleString();}
-    else if(a.list==="inventory"&&it&&a.d.yard!==undefined&&yardWhere(it)!==yardWhere({...it,yard:a.d.yard})){const w=yardWhere({...it,yard:a.d.yard});act="📍 "+engTag(it)+(w?" → "+w:" taken off the yard map");}
+    else if(a.list==="inventory"&&it&&a.d.loc!==undefined&&(it.loc||"")!==(a.d.loc||"")){act="📍 "+(it.sku||it.name||"Engine")+" → "+(a.d.loc?areaTitle(a.d.loc):"placed by status");}
     else if(a.list==="invoices"&&it&&a.d.status==="paid"&&it.status!=="paid"){act="💰 Invoice paid: "+(it.invNum||a.id);}
     else if((a.list==="prospects"||a.list==="competitors")&&it&&Array.isArray(a.d.log)&&a.d.log.length>(it.log||[]).length&&a.d.log[a.d.log.length-1].type!=="note"){const e=a.d.log[a.d.log.length-1];act={visit:"🚚 Visit",call:"📞 Call",email:"✉ Email"}[e.type]+": "+(it.name||"")+(e.outcome?" · "+e.outcome:"");}
     else if((a.list==="prospects"||a.list==="competitors")&&it&&a.d.status!==undefined&&(it.status||"")!==(a.d.status||"")){act="🎯 "+(it.name||"")+" → "+pstOf(a.d.status)[1];}
@@ -231,7 +231,7 @@ function reducer(s,a){switch(a.type){
     const act0=act?pushAct(s,"update",act):s.activity;const activity=autos.length?[...autos.map((m,k)=>({id:Date.now()+Math.random()+k,ts:nowIso(),user:"auto",type:"auto",msg:m})),...act0].slice(0,400):act0;
     const stU={...s,activity,wins,soldSplash:splash,toast,...extra,[a.list]:(s[a.list]||[]).map(x=>x.id===a.id?{...x,...d2}:x)};
     return LABOR_LISTS.includes(a.list)?syncLabor(stU):stU;}
-  case "DELETE":{const item=(s[a.list]||[]).find(x=>x.id===a.id);const stD={...s,[a.list]:(s[a.list]||[]).filter(x=>x.id!==a.id),lastDel:item?{list:a.list,item}:null,activity:item?pushAct(s,"delete","🗑 Deleted: "+((a.list==="ecmJobs"?"ECM job"+(item.unit?" · unit "+item.unit:""):"")||item.name||item.sku||item.invNum||item.service||item.title||item.engName||item.business||item.label||(item.symptoms&&item.symptoms.join(", "))||a.list)):s.activity,toast:{msg:"Deleted",undo:!!item,t:Date.now()}};
+  case "DELETE":{const item=(s[a.list]||[]).find(x=>x.id===a.id);const stD={...s,[a.list]:(s[a.list]||[]).filter(x=>x.id!==a.id),lastDel:item?{list:a.list,item}:null,activity:item?pushAct(s,"delete","🗑 Deleted: "+((a.list==="ecmJobs"?"ECM job"+(item.unit?" · unit "+item.unit:""):"")||item.name||item.sku||item.invNum||item.service||item.title||item.engName||item.business||(item.symptoms&&item.symptoms.join(", "))||a.list)):s.activity,toast:{msg:"Deleted",undo:!!item,t:Date.now()}};
     return LABOR_LISTS.includes(a.list)?syncLabor(stD):stD;}
   case "UNDO":{if(!s.lastDel)return s;const stR={...s,[s.lastDel.list]:[...(s[s.lastDel.list]||[]),s.lastDel.item],lastDel:null,toast:{msg:"Restored",t:Date.now()}};
     return LABOR_LISTS.includes(s.lastDel.list)?syncLabor(stR):stR;}
@@ -286,6 +286,13 @@ const isEngine=i=>i.cat==="Complete Engine"||i.cat==="Core";
 const ENG_STATUSES=["core","in-reman","available","on-hold","sold"];
 const engStatus=i=>i.status||(i.cat==="Core"?"core":"available");
 const engStatusLabel=st=>({core:"Core",["in-reman"]:"In Reman",available:"Available",["on-hold"]:"On Hold",sold:"Sold"}[st]||st);
+// Shop 3D: where each engine is kept. The plan and the placement rule live in src/shop3d/areas.js;
+// an engine's own `loc` (a storage area id) wins over the rule. remanned = it went through reman here.
+const remanned=i=>(i.stageLog||[]).some(x=>x&&x.st==="in-reman")||/reman|rebuilt|overhaul/i.test(String(i.condition||""));
+const SIZE_HD=["MAXXFORCE13","MAXXFORCE11","60SERIES","SERIES60","ISX15","X15","ISX12","ISX","ISM","N14","DD13","DD15","DD16","A26","3406","C15","C13","MX13","MX11","MP7","MP8","VED12","D13","D11"];
+const SIZE_SM=["C33","4JJ1","W04","M53","4034","YANMAR","DEUTZ","PERKINS","KUBOTA","GM65"];
+const sizeClass=i=>{const k=familyKey(i);return SIZE_HD.includes(k)?"hd":SIZE_SM.includes(k)?"sm":"mid";};
+const engLocs=s=>shopLocs((s.inventory||[]).filter(isEngine),{status:engStatus,remanned});
 // Itemized parts bought into an engine during reman: [{d,v,date}] on the record
 const partsSpend=i=>(i.partsLog||[]).reduce((a,p)=>a+(+p.v||0),0);
 // Total landed+reman cost basis: fixed breakdown (or the flat `cost` when no
@@ -514,47 +521,6 @@ function printRoute(stops,title){
   const w=window.open("","_blank","width=920,height=1080");if(!w)return;
   w.document.open();w.document.write(html);w.document.close();
 }
-// ── Yard map: where each engine sits in the carport ──
-// An engine's spot lives on its own record as yard:{area,x,y,rot,l,w}. area
-// "carport" puts it on the map: x runs along the carport's length from the 1 end,
-// y across its width from the row-A side, both in feet to the footprint's top-left
-// corner, and rot 90 turns the engine across the carport. "shop" / "machine" /
-// "outside" mean it's stored somewhere else; no yard (or no area) means no spot yet.
-// l × w (feet) override the footprint guessed from the engine family. The carport's
-// size and side names are settings.yard; posts, racks and keep-clear zones are rows
-// in yardFix. Spot codes like "B3" come from 5 ft bands: letters across the width,
-// numbers along the length.
-const YARD_BAND=5,YARD_STEP=.5,YARD_GAP=1;
-const YARD_AREAS=[["carport","Carport"],["shop","In the shop"],["machine","At the machine shop"],["outside","Outside / on a trailer"]];
-const yardCfg=s=>{const y=getSet(s).yard||{};return{len:Math.min(200,Math.max(10,+y.len||40)),wid:Math.min(200,Math.max(8,+y.wid||25)),edges:y.edges||{}};};
-// Footprint on a pallet or stand, length × width in feet, by engine size.
-const ENG_SIZES={hd:[5,3.5],mid:[4,3],sm:[3,2.5]};
-const SIZE_NAMES=[["sm","Small"],["mid","Mid"],["hd","Big"]];
-const SIZE_HD=["MAXXFORCE13","MAXXFORCE11","60SERIES","SERIES60","ISX15","X15","ISX12","ISX","ISM","N14","DD13","DD15","DD16","A26","3406","C15","C13","MX13","MX11","MP7","MP8","VED12","D13","D11"];
-const SIZE_SM=["C33","4JJ1","W04","M53","4034","YANMAR","DEUTZ","PERKINS","KUBOTA","GM65"];
-const sizeClass=i=>{const k=familyKey(i);return SIZE_HD.includes(k)?"hd":SIZE_SM.includes(k)?"sm":"mid";};
-const engSize=i=>{const y=i.yard||{};return +y.l>0&&+y.w>0?[+y.l,+y.w]:ENG_SIZES[sizeClass(i)];};
-const inCarport=i=>!!(i&&i.yard&&i.yard.area==="carport");
-const yardRect=i=>{if(!inCarport(i))return null;const[l,w]=engSize(i);const r=+i.yard.rot===90;return{x:+i.yard.x||0,y:+i.yard.y||0,w:r?w:l,h:r?l:w};};
-const spotAt=(x,y)=>String.fromCharCode(65+Math.max(0,Math.min(25,Math.floor(y/YARD_BAND))))+(Math.max(0,Math.floor(x/YARD_BAND))+1);
-const yardSpot=i=>{const r=yardRect(i);return r?spotAt(r.x+r.w/2,r.y+r.h/2):"";};
-const yardWhere=i=>{const a=i&&i.yard&&i.yard.area;if(!a)return"";return a==="carport"?"Carport "+yardSpot(i):(YARD_AREAS.find(x=>x[0]===a)||[0,a])[1];};
-const engTag=i=>i.sku||famLabel(familyKey(i))||"Engine";
-const stCol=st=>BC[st]||"var(--tx2)";
-// Two rectangles closer than g feet apart (g=0: actually overlapping; touching is fine).
-const rectsHit=(a,b,g)=>a.x<b.x+b.w+(g||0)&&b.x<a.x+a.w+(g||0)&&a.y<b.y+b.h+(g||0)&&b.y<a.y+a.h+(g||0);
-const FIX_KINDS=[["post","Post",1,1],["rack","Rack / shelf",8,2],["clear","Keep clear",20,6],["other","Other",4,4]];
-const fixRect=f=>({x:+f.x||0,y:+f.y||0,w:+f.w||1,h:+f.h||1});
-// What an engine must stay clear of: the other engines in the carport and every fixture.
-const yardBlocks=(s,exceptId)=>[...(s.inventory||[]).filter(i=>isEngine(i)&&inCarport(i)&&i.id!==exceptId).map(yardRect),...(s.yardFix||[]).map(fixRect)];
-// First free spot for an l × w footprint, scanning from the row-A side and the 1 end,
-// either way round, YARD_GAP feet clear of everything else. null when it won't fit.
-const findSpot=(cfg,blocks,l,w,step)=>{const st=step||YARD_STEP;for(let y=0;y<=cfg.wid;y+=st)for(let x=0;x<=cfg.len;x+=st)for(const rot of[0,90]){const c={x,y,w:rot?w:l,h:rot?l:w};if(c.x+c.w>cfg.len||c.y+c.h>cfg.wid)continue;if(!blocks.some(b=>rectsHit(c,b,YARD_GAP)))return{x,y,rot};}return null;};
-// Rough room left: how many more mid-size engines the free-spot search still fits.
-const yardRoom=(cfg,blocks)=>{const[l,w]=ENG_SIZES.mid;const bs=[...blocks];let n=0;while(n<300){const p=findSpot(cfg,bs,l,w,1);if(!p)break;bs.push({x:p.x,y:p.y,w:p.rot?w:l,h:p.rot?l:w});n++;}return n;};
-// Engines sitting on another engine, on a fixture, or past the carport's edge: {engineId:[reasons]}.
-const yardClashes=(s,cfg)=>{const E=(s.inventory||[]).filter(i=>isEngine(i)&&inCarport(i));const out={};E.forEach(i=>{const r=yardRect(i);const why=[];if(r.x<0||r.y<0||r.x+r.w>cfg.len||r.y+r.h>cfg.wid)why.push("past the edge of the carport");E.forEach(j=>{if(j.id!==i.id&&rectsHit(r,yardRect(j)))why.push("on "+engTag(j));});(s.yardFix||[]).forEach(f=>{if(rectsHit(r,fixRect(f)))why.push(f.kind==="clear"?"in a keep-clear zone":"on the "+String(f.label||"fixture").toLowerCase());});if(why.length)out[i.id]=why;});return out;};
-const bySpot=(a,b)=>{const sa=yardSpot(a),sb=yardSpot(b);return sa.charCodeAt(0)-sb.charCodeAt(0)||(+sa.slice(1))-(+sb.slice(1))||String(engTag(a)).localeCompare(String(engTag(b)));};
 // Underwater build detection: cost creeping up on the expected sale price (WIP stages only)
 const UW_WARN=.75,UW_CRIT=.9;
 const uwRatio=i=>{const p=+i.price||0,cb=costBasis(i);return p>0&&cb>0?cb/p:null;};
@@ -875,7 +841,8 @@ function Quotes({s,d}){
 function Inv({s,d}){
   const[f,sf]=useState("all");const[q,sq]=useState("");const[aiL,setAiL]=useState(null);const[aiR,setAiR]=useState(null);const[view,setView]=useState("list");const[hov,setHov]=useState(null);
   const matchF=i=>f==="all"?true:f==="engines"?isEngine(i):f==="unlisted"?(isEngine(i)&&engStatus(i)!=="sold"&&!((i.listedOn||[]).length)):ENG_STATUSES.includes(f)?(isEngine(i)&&engStatus(i)===f):f==="parts"?!isEngine(i):stk(i)===f;
-  const matchQ=i=>{const t=(q||"").toLowerCase();return !t||[i.name,i.sku,i.serial,i.esn,i.cpl,yardSpot(i)].some(v=>(v||"").toLowerCase().includes(t));};
+  const locs=engLocs(s);
+  const matchQ=i=>{const t=(q||"").toLowerCase();return !t||[i.name,i.sku,i.serial,i.esn,i.cpl,areaTitle(locs.get(i.id))].some(v=>(v||"").toLowerCase().includes(t));};
   const fl=s.inventory.filter(matchF).filter(matchQ);
   const engs=s.inventory.filter(isEngine);
   const avail=engs.filter(i=>engStatus(i)==="available").length;
@@ -894,169 +861,97 @@ function Inv({s,d}){
     <SH title="Inventory"><button className="rc-fb" onClick={()=>setView("board")}>🔧 Reman Board</button><input className="rc-si" placeholder="Search name, SKU, ESN, CPL..." value={q} onChange={e=>sq(e.target.value)}/><button className="rc-ba" onClick={()=>d({type:"MODAL",v:"add-part",d:{cat:"Complete Engine",status:"available"}})}>+ Engine</button><button className="rc-bs" onClick={()=>d({type:"MODAL",v:"add-part"})}>+ Part</button></SH>
     {(()=>{const E=s.inventory.filter(isEngine);if(!E.length)return null;const av=E.filter(i=>engStatus(i)==="available");const M=[["📷 Photos",E.filter(i=>i.photo).length,E.length],["📣 Listed",av.filter(i=>(i.listedOn||[]).length>0).length,av.length],["💲 Cost",E.filter(i=>costBasis(i)>0).length,E.length],["🔢 ESN",E.filter(i=>i.serial||i.esn).length,E.length]];const full=M.every(([l,n,t])=>t===0||n===t);return(<div className="rc-lm">{M.map(([l,n,t],i)=>(<div key={i} className={"rc-lm-c"+(t>0&&n===t?" done":"")}><span className="rc-lm-l">{l}</span><span className="rc-lm-n">{t===0?"—":n+"/"+t}</span><div className="rc-lm-b"><div style={{width:(t>0?n/t*100:0)+"%"}}/></div></div>))}{full&&<span className="rc-lm-full">🏁 FULL LOT</span>}</div>);})()}
     <Fil opts={[["all","All"],["engines","Engines"],["available","Available"],["unlisted","Not Listed"],["in-reman","In Reman"],["on-hold","On Hold"],["sold","Sold"],["parts","Parts"]]} active={f} set={sf}/>
-    {fl.length===0?(<Empty icon="📦" title="No Inventory" sub="Add parts" action={()=>d({type:"MODAL",v:"add-part"})} label="+ Add"/>):(<Tbl headers={["","Engine / Part","SKU","Cost Basis","Sell","Margin","Status",""]}>{fl.map(i=>{const eng=isEngine(i);const m=marginPct(i);return (<tr key={i.id}><td style={{width:92,padding:"4px 6px"}}>{i.photo?(<img src={i.photo} alt="" onClick={()=>d({type:"MODAL",v:"part-detail",d:i})} style={{width:80,height:80,objectFit:"cover",borderRadius:6,border:"1px solid var(--ln)",cursor:"pointer",display:"block"}}/>):(<div onClick={()=>d({type:"MODAL",v:eng?"part-detail":"edit-part",d:i})} style={{width:80,height:80,borderRadius:6,border:"1px dashed var(--ln)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:26,color:"var(--ft)",cursor:"pointer"}} title="Open">{eng?"🔧":"📷"}</div>)}</td><td onClick={()=>eng&&d({type:"MODAL",v:"part-detail",d:i})} style={{cursor:eng?"pointer":"default"}}><div className="rc-tn">{i.name}</div>{eng&&(i.serial||i.esn)&&<div style={{fontSize:11,color:"var(--mt)"}}>ESN {i.serial||i.esn}</div>}{eng&&(yardWhere(i)||engStatus(i)!=="sold")&&<div className="rc-yloc" role="button" tabIndex={0} title="Show on the yard map" onClick={e=>{e.stopPropagation();d({type:"TAB",v:"yard",focus:i.id});}} onKeyDown={e=>{if(e.key==="Enter"||e.key===" "){e.preventDefault();e.stopPropagation();d({type:"TAB",v:"yard",focus:i.id});}}}>📍 {yardWhere(i)||"No yard spot"}</div>}{eng&&(i.listedOn||[]).length>0?<div style={{display:"flex",gap:3,marginTop:2}}>{(i.listedOn||[]).map(ck=>{const c=chan(ck);return <span key={ck} style={{fontSize:10,fontFamily:"var(--fb)",color:c.col,border:`1px solid ${c.col}`,borderRadius:2,padding:"0 3px",letterSpacing:.5}}>{c.ab}</span>;})}</div>:(eng&&engStatus(i)==="available"?<div style={{fontSize:10,color:"var(--mt)",marginTop:2,fontStyle:"italic"}}>not advertised</div>:null)}</td><td style={{color:"var(--mt)",fontSize:13}}>{i.sku}</td><td style={{fontSize:13,color:"var(--tx2)"}}>{$$(costBasis(i))}</td><td style={{color:"var(--ac)",fontWeight:600}}>{i.price>0?$$(i.price):"Core"}</td><td style={{fontSize:13,color:m>40?"var(--g)":m>0?"var(--w)":"var(--r)"}}>{i.price>0?m.toFixed(0)+"%":"—"}</td><td>{eng?(<>{<Badge s={engStatus(i)}/>}{engStatus(i)==="available"&&i.stageDate&&(()=>{const dl=Math.floor((Date.now()-new Date(i.stageDate).getTime())/864e5);return <div style={{fontSize:10,color:dl>=60?"var(--w)":"var(--mt)",marginTop:3}}>{dl}d on lot{dl>=90?" · −10%?":dl>=60?" · −5%?":""}</div>;})()}{uwLevel(i)&&<div style={{fontSize:10,fontWeight:700,color:uwLevel(i)==="crit"?"var(--r)":"var(--w)",marginTop:3}}>⚠ {Math.round(uwRatio(i)*100)}% of list</div>}</>):<><div className="rc-qty" style={{marginBottom:3}}><button className="rc-qb" onClick={()=>d({type:"UPDATE",list:"inventory",id:i.id,d:{qty:Math.max(0,i.qty-1)}})}>−</button><span className="rc-qv">{i.qty}</span><button className="rc-qb" onClick={()=>d({type:"UPDATE",list:"inventory",id:i.id,d:{qty:i.qty+1}})}>+</button></div><Badge s={stk(i)==="ok"?"in-stock":stk(i)}/></>}</td><td><BtnRow>{eng&&engStatus(i)==="available"&&<button className="rc-bs" onClick={()=>genListing(i)} disabled={aiL===i.id} style={{fontSize:11,color:"var(--p)",borderColor:"var(--p)"}}>{aiL===i.id?"⏳":"✨"}</button>}<button className="rc-bs" onClick={()=>d({type:"MODAL",v:"edit-part",d:i})} style={{fontSize:14.5}}>✎</button><button className="rc-bs rc-bsr" onClick={()=>d({type:"DELETE",list:"inventory",id:i.id})} style={{fontSize:14.5}}>×</button></BtnRow></td></tr>);})}</Tbl>)}
+    {fl.length===0?(<Empty icon="📦" title="No Inventory" sub="Add parts" action={()=>d({type:"MODAL",v:"add-part"})} label="+ Add"/>):(<Tbl headers={["","Engine / Part","SKU","Cost Basis","Sell","Margin","Status",""]}>{fl.map(i=>{const eng=isEngine(i);const m=marginPct(i);return (<tr key={i.id}><td style={{width:92,padding:"4px 6px"}}>{i.photo?(<img src={i.photo} alt="" onClick={()=>d({type:"MODAL",v:"part-detail",d:i})} style={{width:80,height:80,objectFit:"cover",borderRadius:6,border:"1px solid var(--ln)",cursor:"pointer",display:"block"}}/>):(<div onClick={()=>d({type:"MODAL",v:eng?"part-detail":"edit-part",d:i})} style={{width:80,height:80,borderRadius:6,border:"1px dashed var(--ln)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:26,color:"var(--ft)",cursor:"pointer"}} title="Open">{eng?"🔧":"📷"}</div>)}</td><td onClick={()=>eng&&d({type:"MODAL",v:"part-detail",d:i})} style={{cursor:eng?"pointer":"default"}}><div className="rc-tn">{i.name}</div>{eng&&(i.serial||i.esn)&&<div style={{fontSize:11,color:"var(--mt)"}}>ESN {i.serial||i.esn}</div>}{eng&&locs.has(i.id)&&<div className="rc-s3-loc" role="button" tabIndex={0} title="Show in the 3D shop" onClick={e=>{e.stopPropagation();d({type:"TAB",v:"shop3d",focus:i.id});}} onKeyDown={e=>{if(e.key==="Enter"||e.key===" "){e.preventDefault();e.stopPropagation();d({type:"TAB",v:"shop3d",focus:i.id});}}}>📍 {areaTitle(locs.get(i.id))}</div>}{eng&&(i.listedOn||[]).length>0?<div style={{display:"flex",gap:3,marginTop:2}}>{(i.listedOn||[]).map(ck=>{const c=chan(ck);return <span key={ck} style={{fontSize:10,fontFamily:"var(--fb)",color:c.col,border:`1px solid ${c.col}`,borderRadius:2,padding:"0 3px",letterSpacing:.5}}>{c.ab}</span>;})}</div>:(eng&&engStatus(i)==="available"?<div style={{fontSize:10,color:"var(--mt)",marginTop:2,fontStyle:"italic"}}>not advertised</div>:null)}</td><td style={{color:"var(--mt)",fontSize:13}}>{i.sku}</td><td style={{fontSize:13,color:"var(--tx2)"}}>{$$(costBasis(i))}</td><td style={{color:"var(--ac)",fontWeight:600}}>{i.price>0?$$(i.price):"Core"}</td><td style={{fontSize:13,color:m>40?"var(--g)":m>0?"var(--w)":"var(--r)"}}>{i.price>0?m.toFixed(0)+"%":"—"}</td><td>{eng?(<>{<Badge s={engStatus(i)}/>}{engStatus(i)==="available"&&i.stageDate&&(()=>{const dl=Math.floor((Date.now()-new Date(i.stageDate).getTime())/864e5);return <div style={{fontSize:10,color:dl>=60?"var(--w)":"var(--mt)",marginTop:3}}>{dl}d on lot{dl>=90?" · −10%?":dl>=60?" · −5%?":""}</div>;})()}{uwLevel(i)&&<div style={{fontSize:10,fontWeight:700,color:uwLevel(i)==="crit"?"var(--r)":"var(--w)",marginTop:3}}>⚠ {Math.round(uwRatio(i)*100)}% of list</div>}</>):<><div className="rc-qty" style={{marginBottom:3}}><button className="rc-qb" onClick={()=>d({type:"UPDATE",list:"inventory",id:i.id,d:{qty:Math.max(0,i.qty-1)}})}>−</button><span className="rc-qv">{i.qty}</span><button className="rc-qb" onClick={()=>d({type:"UPDATE",list:"inventory",id:i.id,d:{qty:i.qty+1}})}>+</button></div><Badge s={stk(i)==="ok"?"in-stock":stk(i)}/></>}</td><td><BtnRow>{eng&&engStatus(i)==="available"&&<button className="rc-bs" onClick={()=>genListing(i)} disabled={aiL===i.id} style={{fontSize:11,color:"var(--p)",borderColor:"var(--p)"}}>{aiL===i.id?"⏳":"✨"}</button>}<button className="rc-bs" onClick={()=>d({type:"MODAL",v:"edit-part",d:i})} style={{fontSize:14.5}}>✎</button><button className="rc-bs rc-bsr" onClick={()=>d({type:"DELETE",list:"inventory",id:i.id})} style={{fontSize:14.5}}>×</button></BtnRow></td></tr>);})}</Tbl>)}
     {aiR&&(<div className="rc-card" style={{padding:16,borderColor:"var(--p)"}}><div style={{display:"flex",justifyContent:"space-between",marginBottom:10}}><span style={{fontFamily:"var(--fd)",fontWeight:700,color:"var(--p)",letterSpacing:2,textTransform:"uppercase",fontSize:14.5}}>✨ AI Listing — {aiR.item.name}</span><button className="rc-bs" onClick={()=>setAiR(null)} style={{fontSize:14.5}}>✕</button></div><div style={{background:"var(--sf2)",borderRadius:6,padding:14,fontSize:14,lineHeight:1.8,whiteSpace:"pre-wrap"}}>{aiR.text}</div><BtnRow><button className="rc-ba" onClick={()=>navigator.clipboard.writeText(aiR.text)}>📋 Copy</button><button className="rc-bs" onClick={()=>genListing(aiR.item)} style={{color:"var(--p)",borderColor:"var(--p)"}}>🔄</button></BtnRow></div>)}
   </div>);
 }
 
 // ═══════════════════════════════════════════════════════════════
-// YARD — carport map: where each engine sits
+// SHOP 3D — the shop and yard as a 3D model, with the real engines where they're kept
 // ═══════════════════════════════════════════════════════════════
-// Inputs that only save when you leave the box (or press Enter), so typing "40"
-// never makes the carport 4 ft long for a moment.
-function NumIn({v,onSet,min,max,label}){const[t,st]=useState(String(v));const[foc,sfoc]=useState(false);useEffect(()=>{if(!foc)st(String(v));},[v,foc]);const commit=()=>{sfoc(false);const n=parseFloat(t);if(isFinite(n)){const c=Math.max(min,Math.min(max,Math.round(n*2)/2));st(String(c));if(c!==+v)onSet(c);}else st(String(v));};return(<input className="rc-fi" type="number" inputMode="decimal" aria-label={label} min={min} max={max} step={.5} value={t} onFocus={()=>sfoc(true)} onChange={e=>st(e.target.value)} onBlur={commit} onKeyDown={e=>{if(e.key==="Enter")e.currentTarget.blur();}}/>);}
-function TxtIn({v,onSet,label,ph}){const[t,st]=useState(v||"");const[foc,sfoc]=useState(false);useEffect(()=>{if(!foc)st(v||"");},[v,foc]);return(<input className="rc-fi" aria-label={label} placeholder={ph} value={t} onFocus={()=>sfoc(true)} onChange={e=>st(e.target.value)} onBlur={()=>{sfoc(false);if(t.trim()!==(v||""))onSet(t.trim());}} onKeyDown={e=>{if(e.key==="Enter")e.currentTarget.blur();}}/>);}
-function Yard({s,d}){
-  const cfg=yardCfg(s);const fixes=s.yardFix||[];const engs=(s.inventory||[]).filter(isEngine);
-  const placed=engs.filter(inCarport);const need=engs.filter(i=>!(i.yard&&i.yard.area)&&engStatus(i)!=="sold");const away=engs.filter(i=>i.yard&&i.yard.area&&i.yard.area!=="carport");
-  const[mode,setMode]=useState("view");const[sel,setSel]=useState(null);const[q,setQ]=useState("");
-  const[drag,setDrag]=useState(null);const[placing,setPlacing]=useState(null);const[ghost,setGhost]=useState(null);const[allNeed,setAllNeed]=useState(false);
-  const boxRef=useRef(null);const svgRef=useRef(null);const dragEnd=useRef(0);const[cw,setCw]=useState(800);
-  useEffect(()=>{const el=boxRef.current;if(!el)return;if(el.clientWidth)setCw(el.clientWidth);if(typeof ResizeObserver==="undefined")return;const ro=new ResizeObserver(es=>{const w=es[0]&&es[0].contentRect.width;if(w)setCw(w);});ro.observe(el);return()=>ro.disconnect();},[]);
-  // "Show on the yard map" from the passport or the Engines list lands here with that engine picked.
-  useEffect(()=>{if(s.focus){setSel({k:"e",id:s.focus});setMode("view");setPlacing(null);}},[s.focus]);
-  const clash=useMemo(()=>yardClashes(s,cfg),[s.inventory,s.yardFix,cfg.len,cfg.wid]);
-  const room=useMemo(()=>yardRoom(cfg,yardBlocks(s)),[s.inventory,s.yardFix,cfg.len,cfg.wid]);
-  const selE=sel&&sel.k==="e"?engs.find(i=>i.id===sel.id)||null:null;const selF=sel&&sel.k==="f"?fixes.find(f=>f.id===sel.id)||null:null;
-  const ql=q.trim().toLowerCase();const isHit=i=>!!ql&&[i.name,i.sku,i.serial,i.esn,i.cpl,yardSpot(i),famLabel(familyKey(i))].some(v=>String(v||"").toLowerCase().includes(ql));
-  const hits=ql?engs.filter(isHit):[];
-  useEffect(()=>{if(hits.length===1)setSel({k:"e",id:hits[0].id});},[ql]);
-  // Geometry. Plan coordinates: x along the length, y across the width, in feet. Wide
-  // screens draw the length left to right; narrow ones turn the plan a quarter turn
-  // so the length runs up the screen (the 1 end at the bottom). Text stays upright.
-  const port=cw<560;const MG=3;const VW=(port?cfg.wid:cfg.len)+2*MG,VH=(port?cfg.len:cfg.wid)+2*MG;const ppf=cw/VW;const fpx=n=>n/ppf;
-  const SR=r=>port?{x:r.y,y:cfg.len-(r.x+r.w),w:r.h,h:r.w}:r;
-  const SP=(x,y)=>port?[y,cfg.len-x]:[x,y];
-  const scr=(dx,dy)=>port?[-dy,dx]:[dx,dy];
-  const toPlan=e=>{const sv=svgRef.current;const m=sv&&sv.getScreenCTM();if(!m)return{x:0,y:0};const pt=sv.createSVGPoint();pt.x=e.clientX;pt.y=e.clientY;const p=pt.matrixTransform(m.inverse());return port?{x:cfg.len-p.y,y:p.x}:{x:p.x,y:p.y};};
-  const snap=v=>Math.round(v/YARD_STEP)*YARD_STEP;const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
-  // Engine moves
-  const upd=(i,y)=>d({type:"UPDATE",list:"inventory",id:i.id,d:{yard:y}});
-  const keepSize=i=>i.yard&&+i.yard.l>0&&+i.yard.w>0?{l:+i.yard.l,w:+i.yard.w}:{};
-  const putAt=(i,x,y,r90)=>{const[l,w]=engSize(i);const rw=r90?w:l,rh=r90?l:w;upd(i,{area:"carport",x:clamp(snap(x),0,Math.max(0,cfg.len-rw)),y:clamp(snap(y),0,Math.max(0,cfg.wid-rh)),rot:r90?90:0,...keepSize(i)});};
-  const noRoom=(l,w)=>d({type:"TOAST",d:{msg:"No free spot for a "+l+" × "+w+" ft engine. Move something, or shrink a keep-clear zone.",long:true,t:Date.now()}});
-  const autoPlace=i=>{const[l,w]=engSize(i);const p=findSpot(cfg,yardBlocks(s,i.id),l,w);setSel({k:"e",id:i.id});if(!p)return noRoom(l,w);putAt(i,p.x,p.y,p.rot===90);};
-  const placeAll=()=>{let bs=yardBlocks(s);let n=0,miss=0;[...need].sort((a,b)=>{const[al,aw]=engSize(a),[bl,bw]=engSize(b);return bl*bw-al*aw;}).forEach(i=>{const[l,w]=engSize(i);const p=findSpot(cfg,bs,l,w);if(!p){miss++;return;}bs=[...bs,{x:p.x,y:p.y,w:p.rot?w:l,h:p.rot?l:w}];upd(i,{area:"carport",x:p.x,y:p.y,rot:p.rot,...keepSize(i)});n++;});d({type:"TOAST",d:{msg:n?"Planned a spot for "+n+" engine"+(n===1?"":"s")+(miss?". "+miss+" didn't fit.":"."):"None of them fit. Make some room first.",long:true,t:Date.now()}});};
-  const sendTo=(i,area)=>{setPlacing(null);if(area==="carport")return autoPlace(i);upd(i,area?{area,...keepSize(i)}:null);};
-  const rotate=i=>{const r=yardRect(i);if(!r)return;const cx=r.x+r.w/2,cy=r.y+r.h/2;putAt(i,cx-r.h/2,cy-r.w/2,+i.yard.rot!==90);};
-  const nudge=(i,dx,dy)=>{const r=yardRect(i);if(r)putAt(i,r.x+dx,r.y+dy,+i.yard.rot===90);};
-  const setSize=(i,l,w)=>{const y=i.yard||{};if(!inCarport(i))return upd(i,{...y,l,w});const r90=+y.rot===90;const rw=r90?w:l,rh=r90?l:w;upd(i,{...y,l,w,x:clamp(+y.x||0,0,Math.max(0,cfg.len-rw)),y:clamp(+y.y||0,0,Math.max(0,cfg.wid-rh))});};
-  // Fixtures and the carport itself
-  const updFix=(f,p)=>d({type:"UPDATE",list:"yardFix",id:f.id,d:p});
-  const addFix=k=>{const K=FIX_KINDS.find(x=>x[0]===k)||FIX_KINDS[3];const w=Math.min(K[2],cfg.len),h=Math.min(K[3],cfg.wid);const id=Date.now();d({type:"ADD",list:"yardFix",keep:true,label:K[1]+" added",d:{id,kind:K[0],label:K[1],x:snap((cfg.len-w)/2),y:snap((cfg.wid-h)/2),w,h}});setSel({k:"f",id});};
-  const moveFix=(f,dx,dy)=>{const r=fixRect(f);updFix(f,{x:clamp(snap(r.x+dx),0,Math.max(0,cfg.len-r.w)),y:clamp(snap(r.y+dy),0,Math.max(0,cfg.wid-r.h))});};
-  const turnFix=f=>{const r=fixRect(f);const cx=r.x+r.w/2,cy=r.y+r.h/2;const w=Math.min(r.h,cfg.len),h=Math.min(r.w,cfg.wid);updFix(f,{w,h,x:clamp(snap(cx-w/2),0,Math.max(0,cfg.len-w)),y:clamp(snap(cy-h/2),0,Math.max(0,cfg.wid-h))});};
-  const sizeFix=(f,w,h)=>updFix(f,{w,h,x:clamp(+f.x||0,0,Math.max(0,cfg.len-w)),y:clamp(+f.y||0,0,Math.max(0,cfg.wid-h))});
-  const saveCfg=p=>{const cur=(s.settings||[])[0];const y={...(getSet(s).yard||{}),...p};if(cur)d({type:"UPDATE",list:"settings",id:cur.id,d:{yard:y}});else d({type:"ADD",list:"settings",keep:true,label:"Saved",d:{yard:y}});};
-  // Pointer: drag in Move / Layout, tap to drop an engine while placing.
-  const startDrag=(e,k,item,r)=>{if(e.button!=null&&e.button!==0)return;e.stopPropagation();const p=toPlan(e);setDrag({k,id:item.id,ox:p.x-r.x,oy:p.y-r.y,x:r.x,y:r.y,w:r.w,h:r.h,sx:e.clientX,sy:e.clientY,moved:false});try{svgRef.current.setPointerCapture(e.pointerId);}catch(err){}};
-  const onMove=e=>{if(drag){const moved=drag.moved||Math.hypot(e.clientX-drag.sx,e.clientY-drag.sy)>4;if(!moved)return;const p=toPlan(e);setDrag({...drag,moved:true,x:clamp(snap(p.x-drag.ox),0,Math.max(0,cfg.len-drag.w)),y:clamp(snap(p.y-drag.oy),0,Math.max(0,cfg.wid-drag.h))});return;}
-    if(placing){const i=engs.find(x=>x.id===placing);if(!i)return;const[l,w]=engSize(i);const p=toPlan(e);setGhost({x:clamp(snap(p.x-l/2),0,Math.max(0,cfg.len-l)),y:clamp(snap(p.y-w/2),0,Math.max(0,cfg.wid-w)),w:l,h:w});}};
-  const onUp=e=>{if(drag){const dr=drag;setDrag(null);dragEnd.current=Date.now();setSel({k:dr.k,id:dr.id});if(!dr.moved)return;
-      if(dr.k==="e"){const i=engs.find(x=>x.id===dr.id);const r=i&&yardRect(i);if(r&&(r.x!==dr.x||r.y!==dr.y))upd(i,{...i.yard,x:dr.x,y:dr.y});}
-      else{const f=fixes.find(x=>x.id===dr.id);if(f&&(+f.x!==dr.x||+f.y!==dr.y))updFix(f,{x:dr.x,y:dr.y});}return;}
-    if(placing){const i=engs.find(x=>x.id===placing);if(i){const[l,w]=engSize(i);const p=toPlan(e);putAt(i,p.x-l/2,p.y-w/2,false);setSel({k:"e",id:i.id});}dragEnd.current=Date.now();setPlacing(null);setGhost(null);}};
-  const keyMove=(e,move,turn)=>{const st=e.shiftKey?1:YARD_STEP;const m={ArrowLeft:[-st,0],ArrowRight:[st,0],ArrowUp:[0,-st],ArrowDown:[0,st]}[e.key];if(m){e.preventDefault();const[dx,dy]=scr(m[0],m[1]);move(dx,dy);}else if(e.key==="r"||e.key==="R"){e.preventDefault();turn();}};
-  const pick=(k,id)=>{setPlacing(null);setGhost(null);setSel({k,id});};
-  // Drawing
-  const T=(x,y,txt,cls,size,rot,key)=>{const[X,Y]=SP(x,y);return(<text key={key} x={X} y={Y} className={cls} textAnchor="middle" dominantBaseline="central" transform={rot?"rotate("+rot+" "+X+" "+Y+")":undefined} style={{fontSize:fpx(size)}}>{txt}</text>);};
-  const rowsN=Math.ceil(cfg.wid/YARD_BAND),colsN=Math.ceil(cfg.len/YARD_BAND);const lastRow=String.fromCharCode(64+Math.min(26,rowsN));const E=cfg.edges||{};
-  const sides=[["top","Row A side",E.top,"Shop wall"],["bottom","Row "+lastRow+" side",E.bottom,"Driveway"],["left","Spot 1 end",E.left,"Street"],["right","Spot "+colsN+" end",E.right,"Back fence"]];
-  const grid=[];for(let x=YARD_BAND;x<cfg.len;x+=YARD_BAND){const a=SP(x,0),b=SP(x,cfg.wid);grid.push(<line key={"gx"+x} x1={a[0]} y1={a[1]} x2={b[0]} y2={b[1]} className="rc-ygrid" style={{strokeWidth:fpx(1)}}/>);}
-  for(let y=YARD_BAND;y<cfg.wid;y+=YARD_BAND){const a=SP(0,y),b=SP(cfg.len,y);grid.push(<line key={"gy"+y} x1={a[0]} y1={a[1]} x2={b[0]} y2={b[1]} className="rc-ygrid" style={{strokeWidth:fpx(1)}}/>);}
-  const bands=[];for(let k=0;k<colsN;k++)bands.push(T((k*YARD_BAND+Math.min(cfg.len,(k+1)*YARD_BAND))/2,-1.1,String(k+1),"rc-yband",12.5,0,"bc"+k));
-  for(let k=0;k<rowsN;k++)bands.push(T(-1.1,(k*YARD_BAND+Math.min(cfg.wid,(k+1)*YARD_BAND))/2,String.fromCharCode(65+k),"rc-yband",12.5,0,"br"+k));
-  const sideAt={top:[cfg.len/2,-2.35],bottom:[cfg.len/2,cfg.wid+1.35],left:[-2.35,cfg.wid/2],right:[cfg.len+1.35,cfg.wid/2]};
-  const sideTxt=sides.filter(x=>x[2]).map(([k,,txt])=>T(sideAt[k][0],sideAt[k][1],txt,"rc-yedge",12.5,(port?(k==="top"||k==="bottom"):(k==="left"||k==="right"))?-90:0,"sd"+k));
-  const floor=SR({x:0,y:0,w:cfg.len,h:cfg.wid});
-  const engG=i=>{const r0=yardRect(i);const dr=!!drag&&drag.k==="e"&&drag.id===i.id&&drag.moved;const r=SR(dr?{...r0,x:drag.x,y:drag.y}:r0);const st=engStatus(i);const c=stCol(st);const isSel=!!selE&&selE.id===i.id;const dim=(!!ql&&!isHit(i))||mode==="layout";const bad=!!clash[i.id];const sold=st==="sold";
-    const tag=engTag(i);const sub=sold?"SOLD":i.sku?famLabel(familyKey(i)):"";
-    const wpx=r.w*ppf,hpx=r.h*ppf;const vert=hpx>wpx*1.25;const aw=(vert?hpx:wpx)-6,ah=(vert?wpx:hpx)-4;
-    const f1=Math.max(8,Math.min(13,aw/(Math.max(4,tag.length)*.62)));const f2=Math.min(11.5,f1);const two=!!sub&&ah>=f1+f2+4&&aw>=sub.length*.6*f2;const cx=r.x+r.w/2,cy=r.y+r.h/2;
-    return(<g key={i.id} className={"rc-yeng"+(isSel?" sel":"")+(dim?" dim":"")+(dr?" drag":"")} tabIndex={mode==="layout"?-1:0} role="button" aria-label={tag+", "+(i.name||"engine")+", "+engStatusLabel(st)+", spot "+yardSpot(i)+(bad?", needs sorting out":"")}
-      onClick={e=>{e.stopPropagation();if(!placing)pick("e",i.id);}} onPointerDown={mode==="move"&&!placing?e=>startDrag(e,"e",i,r0):undefined}
-      onKeyDown={e=>{if(e.key==="Enter"||e.key===" "){e.preventDefault();pick("e",i.id);return;}if(mode==="move"){setSel({k:"e",id:i.id});keyMove(e,(dx,dy)=>nudge(i,dx,dy),()=>rotate(i));}}}>
-      {isSel&&<rect x={r.x-fpx(4)} y={r.y-fpx(4)} width={r.w+fpx(8)} height={r.h+fpx(8)} rx={fpx(8)} className="rc-yhalo" style={{strokeWidth:fpx(3)}}/>}
-      <rect x={r.x} y={r.y} width={r.w} height={r.h} rx={fpx(5)} className="rc-ybox" style={{fill:tint(c,sold?7:20),stroke:bad?"var(--r)":c,strokeWidth:fpx(bad?2.6:1.6),strokeDasharray:sold?fpx(5)+" "+fpx(3):undefined}}/>
-      <g transform={vert?"rotate(-90 "+cx+" "+cy+")":undefined}>
-        <text x={cx} y={two?cy-fpx(f2*.62):cy} textAnchor="middle" dominantBaseline="central" className="rc-ylbl" style={{fontSize:fpx(f1)}}>{tag}</text>
-        {two&&<text x={cx} y={cy+fpx(f1*.62)} textAnchor="middle" dominantBaseline="central" className={"rc-ysub"+(sold?" sold":"")} style={{fontSize:fpx(f2)}}>{sub}</text>}
-      </g>
-      {bad&&<text x={r.x+r.w-fpx(8)} y={r.y+fpx(9)} textAnchor="middle" dominantBaseline="central" className="rc-ybad" style={{fontSize:fpx(12)}}>⚠</text>}
-    </g>);};
-  const fixG=f=>{const r0=fixRect(f);const dr=!!drag&&drag.k==="f"&&drag.id===f.id&&drag.moved;const r=SR(dr?{...r0,x:drag.x,y:drag.y}:r0);const isSel=!!selF&&selF.id===f.id;const lay=mode==="layout";const k=f.kind||"other";
-    const lbl=k==="post"?"":String(f.label||"");const wpx=r.w*ppf,hpx=r.h*ppf;const vert=hpx>wpx*1.25;const aw=(vert?hpx:wpx)-6;const fs=Math.max(8,Math.min(12.5,aw/(Math.max(4,lbl.length)*.62)));const showL=!!lbl&&(vert?wpx:hpx)>=fs+4;const cx=r.x+r.w/2,cy=r.y+r.h/2;
-    return(<g key={f.id} className={"rc-yfix k-"+k+(isSel?" sel":"")+(lay?" edit":"")} tabIndex={lay?0:-1} role={lay?"button":undefined} aria-label={lay?(f.label||"Fixture")+", "+(+f.w||1)+" by "+(+f.h||1)+" feet":undefined}
-      onClick={lay?e=>{e.stopPropagation();pick("f",f.id);}:undefined} onPointerDown={lay?e=>startDrag(e,"f",f,r0):undefined}
-      onKeyDown={lay?e=>{if(e.key==="Enter"||e.key===" "){e.preventDefault();pick("f",f.id);return;}setSel({k:"f",id:f.id});keyMove(e,(dx,dy)=>moveFix(f,dx,dy),()=>turnFix(f));}:undefined}>
-      <rect x={r.x} y={r.y} width={r.w} height={r.h} rx={fpx(k==="post"?2:4)} className="rc-yfr" style={{strokeWidth:fpx(isSel?2.6:1.3),strokeDasharray:k==="clear"?fpx(6)+" "+fpx(4):undefined}}/>
-      {showL&&<text x={cx} y={cy} textAnchor="middle" dominantBaseline="central" className="rc-yfl" transform={vert?"rotate(-90 "+cx+" "+cy+")":undefined} style={{fontSize:fpx(fs)}}>{lbl}</text>}
-    </g>);};
-  const ghostR=placing&&ghost?SR(ghost):null;const pe=placing?engs.find(x=>x.id===placing):null;
-  const soldHere=placed.filter(i=>engStatus(i)==="sold").length;const used=placed.reduce((a,i)=>{const[l,w]=engSize(i);return a+l*w;},0);const pct=used/(cfg.len*cfg.wid)*100;
-  const nClash=Object.keys(clash).length;const nudgeBtns=fn=>(<div className="rc-yarrows" role="group" aria-label="Nudge half a foot">{[["←",-1,0,"left"],["↑",0,-1,"up"],["↓",0,1,"down"],["→",1,0,"right"]].map(([g,dx,dy,n])=>(<button key={n} className="rc-bs" aria-label={"Nudge "+n} onClick={()=>{const[a,b]=scr(dx*YARD_STEP,dy*YARD_STEP);fn(a,b);}}>{g}</button>))}</div>);
-  const engCard=i=>{const st=engStatus(i);const[l,w]=engSize(i);const cls=sizeClass(i);const custom=!!(i.yard&&+i.yard.l>0&&+i.yard.w>0);const here=inCarport(i);const area=(i.yard&&i.yard.area)||"";const why=clash[i.id];
-    return(<div className="rc-card rc-ysel">
-      <div style={{display:"flex",justifyContent:"space-between",gap:10,alignItems:"flex-start"}}><div style={{minWidth:0}}><div className="rc-ml">{i.sku||"Engine"}</div><div className="rc-ysn">{i.name}</div>{(i.serial||i.esn)&&<div style={{fontSize:13,color:"var(--mt)",marginTop:2}}>ESN {i.serial||i.esn}</div>}</div><Badge s={st}/></div>
-      <div className="rc-ywhere">📍 <b>{yardWhere(i)||"No spot yet"}</b></div>
-      {why&&<div className="rc-ywarn">⚠ Sitting {why.join(", ")}.</div>}
-      {here?(<div className="rc-ymv"><button className="rc-bs" onClick={()=>rotate(i)}>↻ Turn</button>{nudgeBtns((dx,dy)=>nudge(i,dx,dy))}</div>)
-        :pe&&pe.id===i.id?(<div className="rc-ymv"><span style={{fontSize:13.5,color:"var(--act)",fontWeight:600}}>Tap the map where it goes</span><button className="rc-bs" onClick={()=>{setPlacing(null);setGhost(null);}}>Cancel</button></div>)
-        :(<div className="rc-ymv"><button className="rc-ba" onClick={()=>autoPlace(i)}>Next free spot</button><button className="rc-bs" onClick={()=>{setSel({k:"e",id:i.id});setPlacing(i.id);setGhost(null);}}>Place on map</button></div>)}
-      <div className="rc-fl" style={{marginTop:12}}>Stored</div>
-      <select className="rc-fi" aria-label="Where it's stored" value={area} onChange={e=>sendTo(i,e.target.value)} style={{appearance:"none"}}><option value="">No spot yet</option>{YARD_AREAS.map(([k,l2])=>(<option key={k} value={k}>{k==="carport"?(here?"Carport · "+yardSpot(i):"Carport (next free spot)"):l2}</option>))}</select>
-      <div className="rc-fl" style={{marginTop:12}}>Footprint · {l} × {w} ft{custom?"":", guessed from the engine"}</div>
-      <div className="rc-ysz">{SIZE_NAMES.map(([k,nm])=>{const[a,b]=ENG_SIZES[k];const on=custom?(a===l&&b===w):k===cls;return(<button key={k} className={"rc-fb"+(on?" on":"")} aria-pressed={on} onClick={()=>setSize(i,a,b)}>{nm} {a}×{b}</button>);})}</div>
-      <div className="rc-ycust"><label>Length, ft<NumIn v={l} min={1} max={20} label="Footprint length in feet" onSet={v=>setSize(i,v,w)}/></label><label>Width, ft<NumIn v={w} min={1} max={20} label="Footprint width in feet" onSet={v=>setSize(i,l,v)}/></label></div>
-      <div className="rc-fa" style={{marginTop:14,justifyContent:"space-between",flexWrap:"wrap"}}>{st==="sold"&&here?<button className="rc-bs" onClick={()=>{upd(i,null);setSel(null);}}>Picked up · take it off the map</button>:<span/>}<button className="rc-bs" onClick={()=>d({type:"MODAL",v:"part-detail",d:i})}>Open passport</button></div>
-    </div>);};
-  const fixCard=f=>(<div className="rc-card rc-ysel">
-    <div style={{display:"flex",justifyContent:"space-between",gap:10,alignItems:"center"}}><div className="rc-ysn">{f.label||"Fixture"}</div><button className="rc-bs" style={{color:"var(--r)"}} onClick={()=>{d({type:"DELETE",list:"yardFix",id:f.id});setSel(null);}}>Delete</button></div>
-    <div className="rc-fg" style={{marginTop:10}}><label className="rc-fl">Name</label><TxtIn v={f.label} label="Fixture name" ph="Post, parts rack, forklift aisle…" onSet={v=>updFix(f,{label:v})}/></div>
-    <div className="rc-fg"><label className="rc-fl">Kind</label><select className="rc-fi" aria-label="Fixture kind" value={f.kind||"other"} onChange={e=>updFix(f,{kind:e.target.value})} style={{appearance:"none"}}>{FIX_KINDS.map(([k,l2])=>(<option key={k} value={k}>{l2}</option>))}</select></div>
-    <div className="rc-ycust"><label>Along, ft<NumIn v={+f.w||1} min={.5} max={cfg.len} label="Size along the carport in feet" onSet={v=>sizeFix(f,v,+f.h||1)}/></label><label>Across, ft<NumIn v={+f.h||1} min={.5} max={cfg.wid} label="Size across the carport in feet" onSet={v=>sizeFix(f,+f.w||1,v)}/></label></div>
-    <div className="rc-ymv" style={{marginTop:12}}><button className="rc-bs" onClick={()=>turnFix(f)}>↻ Turn</button>{nudgeBtns((dx,dy)=>moveFix(f,dx,dy))}</div>
-  </div>);
+// The scene (src/shop3d/scene.js, three.js) loads on demand the first time this view opens.
+const S3_COARSE=typeof window!=="undefined"&&window.matchMedia?window.matchMedia("(pointer: coarse)").matches:false;
+function Shop3D({s,d,theme}){
+  const gl=useRef(null);const api=useRef(null);
+  const[ready,setReady]=useState(false);const[err,setErr]=useState("");const[prog,setProg]=useState(["Loading the 3D shop…",4]);
+  const[selA,setSelA]=useState(null);const[selE,setSelE]=useState(null);const[hint,setHint]=useState(true);
+  const[tod,setTod]=useState(theme==="night"?"night":"day");const[walls,setWalls]=useState("cut");const[roofs,setRoofs]=useState(false);const[labels,setLabels]=useState(true);const[tour,setTour]=useState(false);const[drive,setDrive]=useState(false);
+  const engs=(s.inventory||[]).filter(isEngine);
+  const locs=useMemo(()=>engLocs(s),[s.inventory]);
+  const list=useMemo(()=>engs.filter(i=>locs.has(i.id)).map(i=>({id:i.id,sku:i.sku||"",name:i.name||"",area:locs.get(i.id),status:engStatus(i),statusLabel:engStatusLabel(engStatus(i)),size:sizeClass(i),remanned:remanned(i)})),[s.inventory,locs]);
+  const listRef=useRef(list);listRef.current=list;const start=useRef({tod,walls,roofs,labels});
+  useEffect(()=>{let dead=false;
+    import("./shop3d/scene.js").then(m=>{if(dead||!gl.current)return;const o=start.current;
+      api.current=m.createShop(gl.current,{engines:listRef.current,tod:o.tod,walls:o.walls,roofs:o.roofs,labels:o.labels,
+        onProgress:(t,p)=>setProg([t,p]),onReady:()=>setReady(true),onError:msg=>setErr(msg),onInteract:()=>setHint(false),
+        onSelectArea:id=>{setSelA(id);setSelE(null);},onSelectEngine:id=>{setSelE(id);setSelA(null);},onTour:v=>setTour(v),onDrive:v=>setDrive(v)});})
+      .catch(()=>{if(!dead)setErr("The 3D shop didn't load. Check your connection, then open this page again.");});
+    return()=>{dead=true;if(api.current){api.current.dispose();api.current=null;}};},[]);
+  useEffect(()=>{if(api.current)api.current.setEngines(list);},[list]);
+  // "Show in 3D" from an engine's passport or the Engines list lands here with that engine picked.
+  useEffect(()=>{if(!s.focus)return;setSelE(s.focus);setSelA(null);if(ready&&api.current)api.current.selectEngine(s.focus);},[s.focus,ready]);
+  const A=f=>{if(api.current)f(api.current);};
+  const pickArea=id=>{setSelA(id);setSelE(null);A(a=>a.selectArea(id));};
+  const pickEng=id=>{setSelE(id);setSelA(null);A(a=>a.selectEngine(id));};
+  const count={};locs.forEach(a=>{count[a]=(count[a]||0)+1;});
+  const bySku=(a,b)=>String(a.sku||a.name||"").localeCompare(String(b.sku||b.name||""),undefined,{numeric:true});
+  const panel=(()=>{
+    const ie=selE?engs.find(x=>x.id===selE):null;
+    if(ie){const lo=locs.get(ie.id)||"";const st=engStatus(ie);const own=ie.loc&&STORE_IDS.includes(ie.loc)?ie.loc:"";
+      const auto=st==="sold"?"":shopLocs(engs.map(x=>x.id===ie.id?{...x,loc:""}:x),{status:engStatus,remanned}).get(ie.id)||"";
+      const over=lo&&(count[lo]||0)>(SLOT_CAP[lo]||0);
+      return(<div className="rc-card rc-s3-card" aria-live="polite">
+        <div style={{display:"flex",justifyContent:"space-between",gap:10,alignItems:"flex-start"}}><div style={{minWidth:0}}><div className="rc-ml">{ie.sku||"Engine"}</div><div className="rc-s3-h">{ie.name}</div>{(ie.serial||ie.esn)&&<div className="rc-s3-sub">ESN {ie.serial||ie.esn}</div>}</div><Badge s={st}/></div>
+        <div className="rc-s3-where">📍 <b>{lo?areaTitle(lo):"Not on the map"}</b>{lo&&!own?<span> · placed by status</span>:null}</div>
+        {over&&<div className="rc-s3-warn">{areaTitle(lo)} has more engines than spots, so a few aren't drawn. They're all listed on the area's card.</div>}
+        <label className="rc-fl" htmlFor="s3-loc">Where it's kept</label>
+        <select id="s3-loc" className="rc-fi" value={own} onChange={e=>d({type:"UPDATE",list:"inventory",id:ie.id,d:{loc:e.target.value}})} style={{appearance:"none"}}>
+          <option value="">{st==="sold"?"Off the map (sold)":"By status · "+areaTitle(auto)}</option>
+          {STORE_IDS.map(id=>(<option key={id} value={id}>{areaTitle(id)}</option>))}
+        </select>
+        <div className="rc-fa" style={{flexWrap:"wrap"}}>{st==="sold"&&own?<button className="rc-bs" onClick={()=>d({type:"UPDATE",list:"inventory",id:ie.id,d:{loc:""}})}>Picked up · take it off the map</button>:null}<button className="rc-bs" onClick={()=>{setSelE(null);A(a=>a.selectArea(null));}}>Close</button><button className="rc-ba" onClick={()=>d({type:"MODAL",v:"part-detail",d:ie})}>Open passport</button></div>
+      </div>);}
+    const a=selA?AREA_BY_ID[selA]:null;
+    if(a){const here=engs.filter(i=>locs.get(i.id)===a.id).sort(bySku);const cap=SLOT_CAP[a.id]||0;const k=PLACE_ORDER.indexOf(a.id);
+      return(<div className="rc-card rc-s3-card" aria-live="polite">
+        <div className="rc-s3-chips"><span className="rc-s3-chip k">{a.kind}</span><span className="rc-s3-chip">About {Math.round(a.w)} × {Math.round(a.d)} ft</span></div>
+        <div className="rc-s3-h big">{a.title}</div>
+        <p className="rc-s3-p">{a.blurb}</p>
+        <ul className="rc-s3-ul">{a.items.map(t=>(<li key={t}>{t}</li>))}</ul>
+        {a.store&&(<><div className="rc-fl" style={{marginTop:6}}>Engines here · {here.length}{cap?" · "+cap+" spots":""}</div>
+          {here.length===0?<div className="rc-s3-empty">No engines here right now.</div>:<div className="rc-s3-elist">{here.map(i=>(<button key={i.id} className="rc-s3-erow" onClick={()=>pickEng(i.id)}><span style={{minWidth:0}}><b>{i.sku||"Engine"}</b><span>{i.name}</span></span><Badge s={engStatus(i)}/></button>))}</div>}
+          {here.length>cap&&<div className="rc-s3-warn">{here.length-cap} more than fit on the map. They're still listed here.</div>}</>)}
+        <div className="rc-fa"><button className="rc-bs" onClick={()=>pickArea(PLACE_ORDER[(k-1+PLACE_ORDER.length)%PLACE_ORDER.length])}>← Previous</button><button className="rc-bs" onClick={()=>pickArea(PLACE_ORDER[(k+1)%PLACE_ORDER.length])}>Next →</button><button className="rc-bs" onClick={()=>{setSelA(null);A(x=>x.selectArea(null));}}>Close</button></div>
+      </div>);}
+    return(<div className="rc-card rc-s3-card">
+      <div className="rc-s3-h">Places</div>
+      {PLACE_GROUPS.map(([g,ids])=>(<div key={g}><div className="rc-s3-pg">{g}</div>{ids.map(id=>{const ar=AREA_BY_ID[id];const n=count[id]||0;return(<button key={id} className="rc-s3-pl" style={{"--dot":ar.dot}} onClick={()=>pickArea(id)}><i/><span>{ar.title}</span>{ar.store&&<small>{n} engine{n===1?"":"s"}</small>}</button>);})}</div>))}
+      <div className="rc-s3-note">Engines without a set spot are placed by status: in reman on the stands, remanned in reman inventory, cores and runners in take-out. Pick an engine to choose its spot.</div>
+    </div>);
+  })();
+  const seg=(label,opts,val,set)=>(<div className="rc-seg rc-s3-seg" role="group" aria-label={label}>{opts.map(([k,l])=>(<button key={k} className={val===k?"on":""} aria-pressed={val===k} onClick={()=>set(k)}>{l}</button>))}</div>);
+  const pad=(k,g,cls,lab)=>(<button key={k} className={cls} aria-label={lab} onPointerDown={e=>{e.preventDefault();A(a=>a.press(k,true));}} onPointerUp={()=>A(a=>a.press(k,false))} onPointerCancel={()=>A(a=>a.press(k,false))} onPointerLeave={()=>A(a=>a.press(k,false))}>{g}</button>);
   return(<div>
-    <style>{"@media print{@page{size:letter landscape;margin:10mm;}}"}</style>
-    <div className="rc-print-header rc-print-only"><div><h1>Rollin Coal — Yard Map</h1><div style={{fontSize:13,color:"var(--mt)",marginTop:4}}>Carport {cfg.wid} × {cfg.len} ft · Medicine Hat, AB</div></div><div className="rc-ph-sub"><div>{new Date().toLocaleDateString("en-US",{year:"numeric",month:"long",day:"numeric"})}</div></div></div>
-    <div className="rc-g4 rc-noprint"><Stat label="In the carport" value={placed.length-soldHere} sub={soldHere?soldHere+" sold, waiting for pickup":"engines"}/><Stat label="Need a spot" value={need.length} sub={away.length?away.length+" stored somewhere else":"engines"}/><Stat label="Floor used" value={Math.round(pct)+"%"} sub={"of "+(cfg.len*cfg.wid).toLocaleString()+" sq ft"}/><Stat label="Room for" value={"≈ "+room} sub="more mid-size engines"/></div>
-    <div className="rc-noprint"><SH title={"Carport · "+cfg.wid+" × "+cfg.len+" ft"}><input className="rc-si" placeholder="Find: stock #, ESN, spot…" aria-label="Find an engine" value={q} onChange={e=>setQ(e.target.value)}/><div className="rc-seg rc-yseg" role="group" aria-label="Map mode">{[["view","View"],["move","Move"],["layout","Layout"]].map(([k,l2])=>(<button key={k} className={mode===k?"on":""} aria-pressed={mode===k} onClick={()=>{setMode(k);setPlacing(null);setGhost(null);if(k!=="layout"&&sel&&sel.k==="f")setSel(null);}}>{l2}</button>))}</div><button className="rc-bs" onClick={()=>window.print()}>🖨 Print</button></SH></div>
-    {ql&&<div className="rc-yhits rc-noprint">{hits.length?hits.slice(0,12).map(i=>(<button key={i.id} className={"rc-fb"+(selE&&selE.id===i.id?" on":"")} onClick={()=>pick("e",i.id)}>{engTag(i)} · {yardWhere(i)||"no spot yet"}</button>)):<span>Nothing matches “{q.trim()}”.</span>}</div>}
-    <div className="rc-yard-wrap">
-      <div className="rc-card rc-yard-map">
-        <div className="rc-yard-hint rc-noprint">{pe?(<><span><b>Tap the spot</b> where {engTag(pe)} goes.</span><button className="rc-bs" onClick={()=>{setPlacing(null);setGhost(null);}}>Cancel</button></>):<span>{mode==="move"?"Drag an engine to where it sits, or pick one and use the arrow keys. R turns it.":mode==="layout"?"Add posts, racks and keep-clear zones, then drag them into place.":"Tap an engine to see what it is. Switch to Move to drag engines around."}</span>}</div>
-        <div ref={boxRef}>
-          <svg ref={svgRef} className={"rc-yard-svg"+(mode!=="view"?" edit":"")+(mode==="layout"?" layout":"")+(placing?" placing":"")} viewBox={(-MG)+" "+(-MG)+" "+VW+" "+VH} role="group" aria-label={"Carport map, "+cfg.wid+" by "+cfg.len+" feet, "+placed.length+" engines"}
-            onPointerMove={onMove} onPointerUp={onUp} onPointerCancel={()=>setDrag(null)} onPointerLeave={()=>{if(placing)setGhost(null);}} onClick={()=>{if(placing||Date.now()-dragEnd.current<350)return;setSel(null);}}>
-            <defs><pattern id="rc-yhatch" patternUnits="userSpaceOnUse" width={fpx(9)} height={fpx(9)} patternTransform="rotate(45)"><rect width={fpx(9)} height={fpx(9)} className="rc-yhbg"/><line x1="0" y1="0" x2="0" y2={fpx(9)} className="rc-yhl" style={{strokeWidth:fpx(2.2)}}/></pattern></defs>
-            <rect x={floor.x} y={floor.y} width={floor.w} height={floor.h} className="rc-yfloor" style={{strokeWidth:fpx(2.5)}}/>
-            {grid}{bands}{sideTxt}
-            {fixes.map(fixG)}
-            {placed.map(engG)}
-            {ghostR&&<rect x={ghostR.x} y={ghostR.y} width={ghostR.w} height={ghostR.h} rx={fpx(5)} className="rc-yghost" style={{strokeWidth:fpx(2),strokeDasharray:fpx(6)+" "+fpx(4)}}/>}
-          </svg>
-        </div>
-        <div className="rc-ylegend">{ENG_STATUSES.map(st=>(<span key={st}><i style={{borderColor:stCol(st),background:tint(stCol(st),st==="sold"?7:20),borderStyle:st==="sold"?"dashed":"solid"}}/>{engStatusLabel(st)}</span>))}<span><i className="lg-clear"/>Keep clear</span><span><i className="lg-post"/>Post</span><span className="rc-ylegend-n">Grid squares are 5 ft</span></div>
-      </div>
-      <div className="rc-yard-side rc-noprint">
-        {mode==="layout"&&(<div className="rc-card rc-ysel">
-          <div className="rc-ysn" style={{marginBottom:10}}>Carport setup</div>
-          <div className="rc-ycust"><label>Length, ft<NumIn v={cfg.len} min={10} max={200} label="Carport length in feet" onSet={v=>saveCfg({len:v})}/></label><label>Width, ft<NumIn v={cfg.wid} min={8} max={200} label="Carport width in feet" onSet={v=>saveCfg({wid:v})}/></label></div>
-          <div className="rc-fl" style={{marginTop:12}}>Name the sides so everyone reads the map the same way</div>
-          {sides.map(([k,l2,v,ph])=>(<div key={k} className="rc-yside"><span>{l2}</span><TxtIn v={v} label={l2+" name"} ph={"e.g. "+ph} onSet={t=>saveCfg({edges:{...E,[k]:t}})}/></div>))}
-          <div className="rc-fl" style={{marginTop:12}}>Add to the map</div>
-          <div className="rc-ysz">{FIX_KINDS.map(([k,l2])=>(<button key={k} className="rc-fb" onClick={()=>addFix(k)}>+ {l2}</button>))}</div>
-        </div>)}
-        {mode==="layout"&&selF&&fixCard(selF)}
-        {selE&&engCard(selE)}
-        {nClash>0&&(<div className="rc-card rc-ylist rc-yclash"><div className="rc-ylh"><span>⚠ Needs sorting out · {nClash}</span></div>{placed.filter(i=>clash[i.id]).map(i=>(<div key={i.id} className="rc-yrow"><span style={{flex:1,minWidth:150}}><button className="rc-lnk" onClick={()=>pick("e",i.id)}>{engTag(i)}</button><span className="rc-ysub2">{yardSpot(i)} · {clash[i.id].join(", ")}</span></span></div>))}</div>)}
-        <div className="rc-card rc-ylist"><div className="rc-ylh"><span>Needs a spot · {need.length}</span>{need.length>1&&<button className="rc-bs" onClick={placeAll}>Plan spots for all</button>}</div>
-          {need.length===0?<div className="rc-yempty">{engs.length?"Every engine has a spot.":"No engines in inventory yet."}</div>:(allNeed?need:need.slice(0,15)).map(i=>(<div key={i.id} className={"rc-yrow"+(selE&&selE.id===i.id?" on":"")}><span style={{flex:1,minWidth:150}}><button className="rc-lnk" onClick={()=>pick("e",i.id)}>{engTag(i)}</button><span className="rc-ysub2">{i.name} · {engStatusLabel(engStatus(i))}</span></span><span className="rc-ybtns"><button className="rc-bs" onClick={()=>autoPlace(i)}>Next free spot</button><button className="rc-bs" onClick={()=>{setSel({k:"e",id:i.id});setPlacing(i.id);setGhost(null);}}>Place</button></span></div>))}{need.length>15&&<button className="rc-bs rc-ymore" onClick={()=>setAllNeed(v=>!v)}>{allNeed?"Show fewer":"Show all "+need.length}</button>}</div>
-        {away.length>0&&(<div className="rc-card rc-ylist"><div className="rc-ylh"><span>Somewhere else · {away.length}</span></div>{away.map(i=>(<div key={i.id} className={"rc-yrow"+(selE&&selE.id===i.id?" on":"")}><span style={{flex:1,minWidth:150}}><button className="rc-lnk" onClick={()=>pick("e",i.id)}>{engTag(i)}</button><span className="rc-ysub2">{i.name} · {yardWhere(i)}</span></span><span className="rc-ybtns"><button className="rc-bs" onClick={()=>autoPlace(i)}>Back to the carport</button></span></div>))}</div>)}
-      </div>
+    <div className="rc-s3-tools">
+      {seg("Time of day",[["day","Day"],["dusk","Dusk"],["night","Night"]],tod,k=>{setTod(k);A(a=>a.setTod(k));})}
+      {seg("Walls",[["cut","Cutaway"],["up","Walls up"],["down","Walls down"]],walls,k=>{setWalls(k);A(a=>a.setWalls(k));})}
+      <button className={"rc-fb"+(roofs?" on":"")} aria-pressed={roofs} onClick={()=>{setRoofs(!roofs);A(a=>a.setRoofs(!roofs));}}>Roofs</button>
+      <button className={"rc-fb"+(labels?" on":"")} aria-pressed={labels} onClick={()=>{setLabels(!labels);A(a=>a.setLabels(!labels));}}>Labels</button>
+      <button className={"rc-fb"+(tour?" on":"")} aria-pressed={tour} onClick={()=>{const v=!tour;setTour(v);if(v){setDrive(false);setSelE(null);}A(a=>a.setTour(v));}}>Tour</button>
+      <button className="rc-fb" onClick={()=>{setSelA(null);setSelE(null);setTour(false);setDrive(false);A(a=>a.home());}}>Overview</button>
+      <button className={drive?"rc-bs":"rc-ba"} aria-pressed={drive} onClick={()=>{const v=!drive;setDrive(v);if(v){setTour(false);setSelA(null);setSelE(null);}A(a=>a.setDrive(v));}}>{drive?"Stop driving":"Drive the forklift"}</button>
     </div>
-    <div className="rc-print-only" style={{marginTop:14}}><table className="rc-tbl"><thead><tr><th>Spot</th><th>Stock #</th><th>Engine</th><th>ESN</th><th>Status</th></tr></thead><tbody>{[...placed].sort(bySpot).map(i=>(<tr key={i.id}><td><b>{yardSpot(i)}</b></td><td>{i.sku||"—"}</td><td>{i.name}</td><td>{i.serial||i.esn||"—"}</td><td>{engStatusLabel(engStatus(i))}</td></tr>))}{[...away,...need].map(i=>(<tr key={i.id}><td>{yardWhere(i)||"No spot yet"}</td><td>{i.sku||"—"}</td><td>{i.name}</td><td>{i.serial||i.esn||"—"}</td><td>{engStatusLabel(engStatus(i))}</td></tr>))}</tbody></table></div>
+    <div className="rc-s3-wrap">
+      <div className="rc-s3-stage">
+        <div className="rc-s3-gl" ref={gl}/>
+        {!ready&&!err&&<div className="rc-s3-load"><div className="rc-hi" style={{width:46,height:46,fontSize:22}}>RC</div><div className="rc-s3-lt">{prog[0]}</div><div className="rc-s3-bar"><span style={{width:prog[1]+"%"}}/></div></div>}
+        {err&&<div className="rc-s3-load"><div className="rc-hi" style={{width:46,height:46,fontSize:22}}>RC</div><div className="rc-s3-lt" style={{maxWidth:360,lineHeight:1.5}}>{err}</div></div>}
+        {ready&&hint&&!drive&&<div className="rc-s3-hint">{S3_COARSE?"Drag to turn · Pinch to zoom · Two fingers to move · Tap a place":"Drag to turn · Scroll to zoom · Right-drag to move · Click a place or an engine"}</div>}
+        {drive&&<div className="rc-s3-drivebar">Driving the forklift · W A S D or the arrow keys · Esc to stop</div>}
+        {drive&&S3_COARSE&&<div className="rc-s3-pad">{pad("w","▲","u","Forward")}{pad("a","◀","l","Turn left")}{pad("s","▼","d","Reverse")}{pad("d","▶","r","Turn right")}</div>}
+      </div>
+      <div className="rc-s3-side">{panel}</div>
+    </div>
   </div>);
 }
 
@@ -1803,7 +1698,7 @@ function Modals({s,d}){
     const lk=engLinks(s,i.id);const cur=engStatus(i);
     const Lrec=(icon,col,label,val,sub,subcol)=>(<div className="rc-card" style={{padding:11,display:"flex",gap:9,alignItems:"flex-start"}}><span style={{fontSize:16.5,color:col}}>{icon}</span><div style={{flex:1,minWidth:0}}><div className="rc-ml">{label}</div><div style={{fontSize:14,marginTop:1}}>{val}</div>{sub&&<div style={{fontSize:12,color:subcol||"var(--tx2)",marginTop:2}}>{sub}</div>}</div></div>);
     return W(<div><div className="rc-mt" style={{marginBottom:4}}>Engine Unit Record</div><div style={{fontSize:12,color:"var(--mt)",letterSpacing:1,marginBottom:12}}>{i.sku}</div>
-      <div style={{display:"flex",gap:12,marginBottom:14}}>{i.photo?<img src={i.photo} alt="" style={{width:84,height:84,objectFit:"cover",borderRadius:6,border:"1px solid var(--ln)",flexShrink:0}}/>:<div onClick={()=>d({type:"MODAL",v:"edit-part",d:i})} style={{width:84,height:84,borderRadius:6,border:"1px dashed var(--ln)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:22,color:"var(--ft)",flexShrink:0,cursor:"pointer"}}>📷</div>}<div style={{flex:1}}><div style={{fontFamily:"var(--fd)",fontWeight:800,fontSize:21,lineHeight:1.05}}>{i.name}</div><div style={{fontSize:13,color:"var(--tx2)",margin:"3px 0 4px"}}>ESN {i.serial||i.esn||"—"}{i.cpl?` · CPL ${i.cpl}`:""}</div><button className="rc-lnk rc-ypass" onClick={()=>{d({type:"CLOSE"});d({type:"TAB",v:"yard",focus:i.id});}}>📍 {yardWhere(i)||"No yard spot yet · put it in the yard"}</button><Badge s={cur}/></div></div>
+      <div style={{display:"flex",gap:12,marginBottom:14}}>{i.photo?<img src={i.photo} alt="" style={{width:84,height:84,objectFit:"cover",borderRadius:6,border:"1px solid var(--ln)",flexShrink:0}}/>:<div onClick={()=>d({type:"MODAL",v:"edit-part",d:i})} style={{width:84,height:84,borderRadius:6,border:"1px dashed var(--ln)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:22,color:"var(--ft)",flexShrink:0,cursor:"pointer"}}>📷</div>}<div style={{flex:1}}><div style={{fontFamily:"var(--fd)",fontWeight:800,fontSize:21,lineHeight:1.05}}>{i.name}</div><div style={{fontSize:13,color:"var(--tx2)",margin:"3px 0 4px"}}>ESN {i.serial||i.esn||"—"}{i.cpl?` · CPL ${i.cpl}`:""}</div>{(()=>{const lo=engLocs(s).get(i.id);return lo?<button className="rc-lnk rc-s3-pass" onClick={()=>{d({type:"CLOSE"});d({type:"TAB",v:"shop3d",focus:i.id});}}>📍 {areaTitle(lo)} · Show in 3D</button>:<div style={{height:4}}/>;})()}<Badge s={cur}/></div></div>
       {(()=>{const lv=uwLevel(i);if(!lv)return null;const r=Math.round(uwRatio(i)*100);return(<div style={{border:"1px solid "+(lv==="crit"?"var(--r)":"var(--w)"),background:lv==="crit"?"var(--rs)":"var(--ws)",color:lv==="crit"?"var(--r)":"var(--w)",borderRadius:9,padding:"9px 12px",fontSize:13,marginBottom:12,fontWeight:600,lineHeight:1.5}}>⚠ {lv==="crit"?"UNDERWATER":"MARGIN RISK"} — cost is {r}% of the {$$(+i.price)} expected sale. Finish, part out, or sell as-is — decide before the next dollar goes in.</div>);})()}
       {(()=>{const dxN=dxFor(s,i.id).length;const bsh=sheetFor(s,i.id);const bbm=bsh?bomById(s,bsh.bomId):null;const bst=bbm?bomStats(bbm,bsh):null;return(<div style={{display:"flex",gap:6,marginBottom:12,paddingBottom:10,borderBottom:"1px solid var(--ln)",flexWrap:"wrap"}}>{[["overview","Overview"],["costs","Costs · "+$K(cb)],["bom","BOM"+(bst?(bst.ordered&&bst.signed?" · ✓":" · open"):"")],["diagnosis","Diagnosis"+(dxN?" · "+dxN:"")],["sell","Sell"]].map(([k,l])=>(<button key={k} className={"rc-fb"+(ptab===k?" on":"")} onClick={()=>setPtab(k)}>{l}</button>))}</div>);})()}
       {ptab==="overview"&&(<>
@@ -2428,73 +2323,72 @@ const CSS=`@import url('${FONTS}');
 .rc-cmp td.ed:hover{box-shadow:inset 0 0 0 1px var(--ln2);}
 .rc-cmp textarea{min-width:200px;font-size:13px;}
 @media(max-width:700px){.rc-pi-add{grid-template-columns:minmax(0,1fr) minmax(0,1fr);}}
-.rc-yard-wrap{display:grid;grid-template-columns:minmax(0,1fr) 330px;gap:16px;align-items:start;}
-.rc-yard-map{padding:10px 12px 12px;overflow:hidden;}
-.rc-yard-hint{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;font-size:13.5px;color:var(--mt);margin:0 2px 6px;min-height:32px;}
-.rc-yard-svg{display:block;width:100%;height:auto;user-select:none;-webkit-user-select:none;font-family:var(--fb);-webkit-tap-highlight-color:transparent;}
-.rc-yard-svg.edit,.rc-yard-svg.placing{touch-action:none;}
-.rc-yard-svg.placing{cursor:crosshair;}
-.rc-yfloor{fill:var(--sf2);stroke:var(--tx2);}
-.rc-ygrid{stroke:var(--ln);}
-.rc-yband{fill:var(--mt);font-weight:700;}
-.rc-yedge{fill:var(--tx2);font-style:italic;font-weight:500;}
-.rc-yeng{cursor:pointer;outline:none;}
-.rc-yard-svg.edit .rc-yeng{cursor:grab;}
-.rc-yeng.drag{cursor:grabbing;}
-.rc-yeng.dim{opacity:.22;}
-.rc-yeng:focus-visible .rc-ybox{stroke:var(--ac)!important;}
-.rc-yhalo{fill:none;stroke:var(--ac);opacity:.55;}
-.rc-ylbl{fill:var(--tx);font-weight:700;pointer-events:none;font-variant-numeric:tabular-nums;}
-.rc-ysub{fill:var(--tx2);font-weight:500;pointer-events:none;}
-.rc-ysub.sold{fill:var(--r);font-weight:700;letter-spacing:.06em;}
-.rc-ybad{fill:var(--r);pointer-events:none;}
-.rc-yard-svg.placing .rc-yeng,.rc-yard-svg.placing .rc-yfix,.rc-yard-svg.layout .rc-yeng{pointer-events:none;}
-.rc-yfix:not(.edit){pointer-events:none;}
-.rc-yfix.edit{cursor:grab;outline:none;}
-.rc-yfr{fill:var(--sf);stroke:var(--mt);}
-.rc-yfix.k-post .rc-yfr{fill:var(--tx2);stroke:var(--tx2);}
-.rc-yfix.k-rack .rc-yfr{stroke:var(--tx2);}
-.rc-yfix.k-clear .rc-yfr{fill:url(#rc-yhatch);stroke:var(--w);}
-.rc-yfix.sel .rc-yfr,.rc-yfix.edit:focus-visible .rc-yfr{stroke:var(--ac);}
-.rc-yfl{fill:var(--tx2);font-weight:600;pointer-events:none;}
-.rc-yfix.k-clear .rc-yfl{fill:var(--w);font-weight:700;text-transform:uppercase;letter-spacing:.08em;}
-.rc-yhbg{fill:var(--ws);}
-.rc-yhl{stroke:color-mix(in srgb,var(--w) 40%,transparent);}
-.rc-yghost{fill:var(--acs);stroke:var(--ac);pointer-events:none;}
-.rc-ylegend{display:flex;gap:6px 14px;flex-wrap:wrap;align-items:center;font-size:12.5px;color:var(--tx2);margin:10px 2px 0;}
-.rc-ylegend span{display:inline-flex;align-items:center;gap:6px;}
-.rc-ylegend i{display:inline-block;width:16px;height:11px;border-radius:3px;border:1.5px solid;}
-.rc-ylegend i.lg-clear{border:1.5px dashed var(--w);background:repeating-linear-gradient(45deg,var(--ws) 0 3px,color-mix(in srgb,var(--w) 40%,transparent) 3px 4.5px);}
-.rc-ylegend i.lg-post{width:11px;background:var(--tx2);border-color:var(--tx2);}
-.rc-ylegend-n{margin-left:auto;color:var(--mt);}
-.rc-yseg{width:240px;}
-.rc-yhits{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin:-4px 0 12px;font-size:13.5px;color:var(--mt);}
-.rc-ysel{padding:14px 16px;}
-.rc-ysn{font:700 19px/1.15 var(--fd);color:var(--tx);}
-.rc-ywhere{font-size:14.5px;color:var(--tx2);margin:10px 0;}
-.rc-ywarn{font-size:13.5px;color:var(--r);background:var(--rs);border:1px solid color-mix(in srgb,var(--r) 35%,transparent);border-radius:9px;padding:8px 10px;margin-bottom:10px;line-height:1.45;}
-.rc-ymv{display:flex;gap:8px;align-items:center;flex-wrap:wrap;}
-.rc-yarrows{display:flex;gap:4px;}
-.rc-yarrows .rc-bs{min-width:36px;padding-left:0;padding-right:0;}
-.rc-ysz{display:flex;gap:6px;flex-wrap:wrap;}
-.rc-ycust{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px;}
-.rc-ycust label{display:flex;flex-direction:column;gap:4px;font-size:12.5px;font-weight:600;color:var(--tx2);}
-.rc-yside{display:grid;grid-template-columns:104px minmax(0,1fr);gap:8px;align-items:center;margin-bottom:6px;font-size:13px;color:var(--tx2);}
-.rc-ylist{padding:2px 16px 8px;}
-.rc-ylh{display:flex;justify-content:space-between;align-items:center;gap:8px;font-weight:700;font-size:14.5px;padding:12px 0 8px;}
-.rc-yrow{display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:9px 0;border-top:1px solid var(--ln2);}
-.rc-yrow.on{background:var(--acs);margin:0 -16px;padding:9px 16px;}
-.rc-ysub2{display:block;font-size:12.5px;color:var(--mt);margin-top:1px;}
-.rc-ybtns{display:flex;gap:6px;flex-shrink:0;margin-left:auto;}
-.rc-ymore{width:100%;margin:4px 0 6px;}
-.rc-yempty{font-size:13.5px;color:var(--mt);padding:4px 0 8px;}
-.rc-yclash{border-color:color-mix(in srgb,var(--r) 40%,var(--ln));}
-.rc-yloc{font-size:12px;color:var(--mt);margin-top:2px;cursor:pointer;width:fit-content;}
-.rc-yloc:hover,.rc-yloc:focus-visible{color:var(--act);text-decoration:underline;outline:none;}
-.rc-ypass{display:block;font-size:13px;font-weight:500;color:var(--act);margin:0 0 8px;}
-@media(max-width:1100px){.rc-yard-wrap{grid-template-columns:minmax(0,1fr);}}
-@media(max-width:600px){.rc-yseg{width:100%;}.rc-yard-map{padding:8px;}}
-@media print{.rc-yard-wrap{display:block;}.rc-yard-map{border:none!important;padding:0!important;}.rc-yard-svg{max-height:5.6in;}.rc-ylegend-n{margin-left:0;}}
+.rc-s3-tools{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:2px 0 12px;}
+.rc-seg.rc-s3-seg{width:auto;min-width:228px;}
+.rc-seg.rc-s3-seg button{padding:7px 10px;font-size:13px;}
+.rc-s3-wrap{display:grid;grid-template-columns:minmax(0,1fr) 330px;gap:16px;align-items:start;}
+.rc-s3-stage{position:relative;height:calc(100vh - 205px);height:calc(100dvh - 205px);min-height:480px;border-radius:12px;overflow:hidden;border:1px solid var(--ln);background:var(--sf2);box-shadow:var(--sh1);}
+.rc-s3-gl{position:absolute;inset:0;}
+.rc-s3-side{max-height:calc(100vh - 205px);max-height:calc(100dvh - 205px);overflow-y:auto;}
+.s3-canvas{position:absolute;inset:0;width:100%;height:100%;display:block;touch-action:none;outline:none;}
+.s3-canvas.hover{cursor:pointer;}
+.s3-canvas:focus-visible{outline:2px solid var(--ac);outline-offset:-2px;}
+.s3-labels{position:absolute;inset:0;pointer-events:none;overflow:hidden;z-index:2;}
+.s3-tag[hidden],.s3-mark[hidden],.s3-plate[hidden],.s3-tip[hidden]{display:none!important;}
+.s3-tag{position:absolute;left:0;top:0;pointer-events:auto;border:1px solid var(--ln);background:var(--sf);color:var(--tx);border-radius:999px;padding:5px 11px 5px 8px;font:700 14px/1 var(--fd);letter-spacing:.08em;text-transform:uppercase;white-space:nowrap;cursor:pointer;box-shadow:var(--sh1);display:flex;align-items:center;gap:6px;transform-origin:50% 100%;}
+.s3-tag i{width:9px;height:9px;border-radius:3px;background:var(--dot);}
+.s3-tag b{color:var(--mt);font-variant-numeric:tabular-nums;}
+.s3-tag.on{background:var(--ac);border-color:var(--ac);color:#fff;}
+.s3-tag.on b{color:#fff;}
+.s3-tag.hov{border-color:var(--ac);}
+.s3-tag:focus-visible,.s3-plate:focus-visible{outline:2px solid var(--ac);outline-offset:2px;}
+.s3-mark{position:absolute;left:0;top:0;font:700 12.5px/1 var(--fd);letter-spacing:.14em;text-transform:uppercase;color:var(--bg);background:color-mix(in srgb,var(--tx) 72%,transparent);padding:5px 8px;border-radius:6px;white-space:nowrap;transform-origin:50% 100%;}
+.s3-plate{position:absolute;left:0;top:0;pointer-events:auto;border:1px solid var(--ln);background:var(--sf);color:var(--tx);border-radius:6px;padding:3px 7px;font:700 12.5px/1 var(--fd);letter-spacing:.06em;white-space:nowrap;cursor:pointer;transform-origin:50% 100%;font-variant-numeric:tabular-nums;}
+.s3-plate.sold{border-color:var(--r);color:var(--r);}
+.s3-tip{position:absolute;left:0;top:0;z-index:4;pointer-events:none;background:var(--tx);color:var(--bg);font-size:13px;line-height:1.35;padding:6px 9px;border-radius:7px;white-space:nowrap;box-shadow:var(--sh2);}
+.rc-s3-load{position:absolute;inset:0;z-index:6;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;background:var(--sf2);text-align:center;padding:16px;}
+.rc-s3-lt{font-size:14px;color:var(--tx2);}
+.rc-s3-bar{width:min(260px,80%);height:6px;border-radius:9px;background:var(--sf);border:1px solid var(--ln);overflow:hidden;}
+.rc-s3-bar span{display:block;height:100%;background:var(--ac);transition:width .25s;}
+.rc-s3-hint,.rc-s3-drivebar{position:absolute;left:50%;transform:translateX(-50%);bottom:14px;z-index:3;padding:8px 13px;border-radius:10px;font-size:13px;white-space:nowrap;box-shadow:var(--sh1);max-width:calc(100% - 24px);overflow:hidden;text-overflow:ellipsis;}
+.rc-s3-hint{background:var(--sf);color:var(--tx2);border:1px solid var(--ln);}
+.rc-s3-drivebar{background:var(--acs);color:var(--act);font-weight:600;}
+.rc-s3-pad{position:absolute;right:12px;bottom:58px;z-index:3;display:grid;grid-template-columns:repeat(3,52px);grid-template-rows:repeat(2,52px);gap:6px;}
+.rc-s3-pad button{border:1px solid var(--ln);background:var(--sf);color:var(--tx);border-radius:10px;font-size:20px;touch-action:none;user-select:none;-webkit-user-select:none;box-shadow:var(--sh1);}
+.rc-s3-pad button:active{background:var(--acs);color:var(--act);}
+.rc-s3-pad .u{grid-column:2;}.rc-s3-pad .l{grid-column:1;grid-row:2;}.rc-s3-pad .d{grid-column:2;grid-row:2;}.rc-s3-pad .r{grid-column:3;grid-row:2;}
+.rc-s3-card{padding:14px 16px;margin-bottom:12px;}
+.rc-s3-h{font:700 19px/1.15 var(--fd);color:var(--tx);margin-bottom:6px;}
+.rc-s3-h.big{font-size:24px;letter-spacing:.02em;text-transform:uppercase;margin:6px 0;}
+.rc-s3-sub{font-size:13px;color:var(--mt);margin-top:2px;}
+.rc-s3-where{font-size:14.5px;color:var(--tx2);margin:12px 0;}
+.rc-s3-where span{color:var(--mt);}
+.rc-s3-warn{font-size:13px;color:var(--w);background:var(--ws);border-radius:9px;padding:8px 10px;margin:4px 0 10px;line-height:1.45;}
+.rc-s3-chips{display:flex;gap:6px;flex-wrap:wrap;}
+.rc-s3-chip{font:700 11.5px/1 var(--fd);letter-spacing:.12em;text-transform:uppercase;padding:5px 8px;border-radius:6px;background:var(--sf2);color:var(--mt);border:1px solid var(--ln);}
+.rc-s3-chip.k{background:var(--acs);color:var(--act);border-color:transparent;}
+.rc-s3-p{font-size:14px;line-height:1.55;color:var(--tx2);margin:0 0 8px;}
+.rc-s3-ul{margin:0 0 10px;padding:0;list-style:none;display:grid;gap:5px;}
+.rc-s3-ul li{font-size:13.5px;color:var(--tx2);display:flex;gap:8px;align-items:baseline;}
+.rc-s3-ul li::before{content:"";width:6px;height:6px;border-radius:2px;background:var(--ac);flex:none;transform:translateY(-2px);}
+.rc-s3-elist{display:grid;gap:2px;margin:4px 0 8px;}
+.rc-s3-erow{display:flex;justify-content:space-between;gap:8px;align-items:center;width:100%;text-align:left;border:0;border-top:1px solid var(--ln2);background:none;padding:8px 2px;cursor:pointer;color:var(--tx);font-family:var(--fb);}
+.rc-s3-erow b{display:block;font-size:14px;}
+.rc-s3-erow span span{display:block;font-size:12.5px;color:var(--mt);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.rc-s3-erow:hover b{color:var(--act);}
+.rc-s3-empty{font-size:13.5px;color:var(--mt);padding:4px 0 8px;}
+.rc-s3-pg{font:700 12px/1 var(--fd);letter-spacing:.14em;text-transform:uppercase;color:var(--mt);padding:12px 2px 6px;}
+.rc-s3-pl{display:flex;align-items:center;gap:9px;width:100%;text-align:left;border:0;background:none;border-radius:8px;padding:7px 6px;font-size:14px;cursor:pointer;color:var(--tx2);font-family:var(--fb);}
+.rc-s3-pl i{width:10px;height:10px;border-radius:3px;flex:none;background:var(--dot);}
+.rc-s3-pl small{margin-left:auto;color:var(--mt);font-size:12.5px;font-variant-numeric:tabular-nums;white-space:nowrap;}
+.rc-s3-pl:hover{background:var(--sf2);color:var(--tx);}
+.rc-s3-note{font-size:12.5px;color:var(--mt);line-height:1.5;padding:10px 2px 2px;border-top:1px solid var(--ln2);margin-top:8px;}
+.rc-s3-loc{font-size:12px;color:var(--mt);margin-top:2px;cursor:pointer;width:fit-content;}
+.rc-s3-loc:hover,.rc-s3-loc:focus-visible{color:var(--act);text-decoration:underline;outline:none;}
+.rc-s3-pass{display:block;font-size:13px;font-weight:500;color:var(--act);margin:0 0 8px;}
+@media(max-width:1100px){.rc-s3-wrap{grid-template-columns:minmax(0,1fr);}.rc-s3-side{max-height:none;}}
+@media(max-width:700px){.rc-s3-stage{height:68vh;height:68dvh;min-height:400px;}.rc-seg.rc-s3-seg{min-width:0;flex:1 1 100%;}.rc-s3-hint{white-space:normal;text-align:center;width:calc(100% - 24px);}}
+@media(prefers-reduced-motion:reduce){.rc-s3-bar span{transition:none;}}
 .rc-tbl tr.rc-grp td{background:var(--sf2);font-size:12.5px;font-weight:700;letter-spacing:.8px;text-transform:uppercase;color:var(--mt);padding:9px 14px;}
 .rc-seg.two button{padding:8px 6px;font-size:13.5px;}
 .rc-user{display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--mt);min-width:0;}
@@ -2689,7 +2583,7 @@ const ICO={
   flag:<><path d="M5 21V4"/><path d="M5 4h11l-2 4 2 4H5"/></>,
   chip:<><rect x="7" y="7" width="10" height="10" rx="1.5"/><path d="M10 3v4M14 3v4M10 17v4M14 17v4M3 10h4M3 14h4M17 10h4M17 14h4"/></>,
   tag:<><path d="M3 12V4a1 1 0 0 1 1-1h8l9 9-9 9z"/><circle cx="7.5" cy="7.5" r="1.5"/></>,
-  map:<><path d="M9 4 3 6v14l6-2 6 2 6-2V4l-6 2z"/><path d="M9 4v14M15 6v14"/></>,
+  shop:<><path d="M3 21V9l9-6 9 6v12"/><path d="M7 21v-8h10v8M3 21h18M7 16h10"/></>,
   menu:<path d="M4 7h16M4 12h16M4 17h16"/>,
 };
 const Ico=({n})=>(<svg className="rc-ico" viewBox="0 0 24 24" aria-hidden="true">{ICO[n]}</svg>);
@@ -2716,15 +2610,15 @@ export default function App(){
   useEffect(()=>{if(!s.soldSplash)return;if(getSet(s).soundOn!==false)horn();const t=setTimeout(()=>d({type:"SPLASH",d:null}),6500);return()=>clearTimeout(t);},[s.soldSplash]);
   // Load data once authenticated (immediately in localStorage mode). Never loads/saves while logged out.
   useEffect(()=>{if(!authed){setLoading(false);return;}let off=false;setLoading(true);setLoadErr(false);(async()=>{try{const data=await loadAll();if(off)return;if(data.__loadError){setLoadErr(true);setLoading(false);return;}lastSaved.current=data;d({type:"LOAD",d:data});}catch(e){if(!off)setLoadErr(true);}if(!off)setLoading(false);})();return()=>{off=true;};},[authed]);
-  useEffect(()=>{if(loading||!authed||loadErr||!lastSaved.current)return;const t=setTimeout(()=>{const prev=lastSaved.current;const dirty=prev?STORE_KEYS.filter(k=>s[k]!==prev[k]):STORE_KEYS.slice();if(!dirty.length)return;saveAll(s,dirty,prev||{}).then(failed=>{const snap={...(lastSaved.current||{})};dirty.forEach(k=>{if(!(failed||[]).includes(k))snap[k]=s[k];});lastSaved.current=snap;if(failed&&failed.length)d({type:"TOAST",d:{msg:"⚠ Couldn't save changes — check your connection",t:Date.now()}});});},500);return()=>clearTimeout(t);},[s.customers,s.jobs,s.quotes,s.inventory,s.invoices,s.schedule,s.employees,s.expenses,s.leads,s.social,s.campaigns,s.contentCalendar,s.cores,s.shipments,s.commsLog,s.purchaseOrders,s.warranties,s.parts,s.timeEntries,s.wins,s.activity,s.settings,s.diagnoses,s.issues,s.brief,s.boms,s.bomSheets,s.vendors,s.services,s.ecmJobs,s.ecmFiles,s.prospects,s.competitors,s.compare,s.yardFix,loading,authed,loadErr]);
+  useEffect(()=>{if(loading||!authed||loadErr||!lastSaved.current)return;const t=setTimeout(()=>{const prev=lastSaved.current;const dirty=prev?STORE_KEYS.filter(k=>s[k]!==prev[k]):STORE_KEYS.slice();if(!dirty.length)return;saveAll(s,dirty,prev||{}).then(failed=>{const snap={...(lastSaved.current||{})};dirty.forEach(k=>{if(!(failed||[]).includes(k))snap[k]=s[k];});lastSaved.current=snap;if(failed&&failed.length)d({type:"TOAST",d:{msg:"⚠ Couldn't save changes — check your connection",t:Date.now()}});});},500);return()=>clearTimeout(t);},[s.customers,s.jobs,s.quotes,s.inventory,s.invoices,s.schedule,s.employees,s.expenses,s.leads,s.social,s.campaigns,s.contentCalendar,s.cores,s.shipments,s.commsLog,s.purchaseOrders,s.warranties,s.parts,s.timeEntries,s.wins,s.activity,s.settings,s.diagnoses,s.issues,s.brief,s.boms,s.bomSheets,s.vendors,s.services,s.ecmJobs,s.ecmFiles,s.prospects,s.competitors,s.compare,loading,authed,loadErr]);
   // Live sync: quietly re-pull the shop's data on window focus and every 60s
   // (cloud only, never while a modal is open or local changes are unsaved),
   // so a tab left open overnight can't overwrite the crew's newer work.
   useEffect(()=>{if(!usingCloud||!authed||loading)return;let busy=false;const refresh=async()=>{const before=sRef.current;const prev=lastSaved.current;if(busy||document.hidden||!prev||before.modal)return;if(STORE_KEYS.some(k=>before[k]!==prev[k]))return;busy=true;try{const data=await loadAll();const cur=sRef.current;if(!data.__loadError&&!cur.modal&&!STORE_KEYS.some(k=>cur[k]!==before[k])){lastSaved.current=data;d({type:"LOAD",d:data});}}catch(e){}finally{busy=false;}};const iv=setInterval(refresh,60000);window.addEventListener("focus",refresh);return()=>{clearInterval(iv);window.removeEventListener("focus",refresh);};},[authed,loading]);
   useEffect(()=>{const t=setInterval(()=>setTime(new Date()),60000);return()=>clearInterval(t);},[]);
   useEffect(()=>{if(s.toast){const t=setTimeout(()=>d({type:"TOAST",d:null}),s.toast.undo?5000:s.toast.long?6500:2200);return()=>clearTimeout(t);}},[s.toast]);
-  const TABL={overview:"Overview",inventory:"Engines",yard:"Yard",parts:"Parts",boms:"BOM",social:"Marketing",services:"Services",prospects:"Prospects",competitors:"Competitors",issues:"Issues",ecm:"ECM",customers:"Customers & Jobs",operations:"Operations",schedule:"Schedule",quotes:"Quotes",invoices:"Invoicing",employees:"Team",reports:"Reports"};
-  const NAV=[{t:"overview",i:"home"},{h:"Shop"},{t:"inventory",i:"eng"},{t:"yard",i:"map"},{t:"boms",i:"clip"},{t:"parts",i:"box"},{t:"issues",i:"wrench"},{t:"ecm",i:"chip"},{h:"Sales"},{t:"social",i:"mega"},{t:"prospects",i:"target"},{t:"competitors",i:"flag"},{t:"services",i:"tag"},{t:"quotes",i:"doc"},{t:"invoices",i:"cash"},{h:"Operations"},{t:"customers",i:"users"},{t:"operations",i:"truck"},{t:"schedule",i:"cal"},{h:"Business"},{t:"employees",i:"team"},{t:"reports",i:"chart"}];
+  const TABL={overview:"Overview",inventory:"Engines",shop3d:"Shop 3D",parts:"Parts",boms:"BOM",social:"Marketing",services:"Services",prospects:"Prospects",competitors:"Competitors",issues:"Issues",ecm:"ECM",customers:"Customers & Jobs",operations:"Operations",schedule:"Schedule",quotes:"Quotes",invoices:"Invoicing",employees:"Team",reports:"Reports"};
+  const NAV=[{t:"overview",i:"home"},{h:"Shop"},{t:"inventory",i:"eng"},{t:"shop3d",i:"shop"},{t:"boms",i:"clip"},{t:"parts",i:"box"},{t:"issues",i:"wrench"},{t:"ecm",i:"chip"},{h:"Sales"},{t:"social",i:"mega"},{t:"prospects",i:"target"},{t:"competitors",i:"flag"},{t:"services",i:"tag"},{t:"quotes",i:"doc"},{t:"invoices",i:"cash"},{h:"Operations"},{t:"customers",i:"users"},{t:"operations",i:"truck"},{t:"schedule",i:"cal"},{h:"Business"},{t:"employees",i:"team"},{t:"reports",i:"chart"}];
   const splash=(<div className="rc-root" data-theme={theme} style={{display:"flex",alignItems:"center",justifyContent:"center",minHeight:"100vh"}}><style>{CSS}</style><div style={{textAlign:"center"}}><div className="rc-hi" style={{width:50,height:50,fontSize:24,margin:"0 auto 12px"}}>RC</div><div style={{fontFamily:"var(--fd)",fontSize:17.5,letterSpacing:2,textTransform:"uppercase",color:"var(--tx2)"}}>Loading...</div></div></div>);
   if(usingCloud&&!authReady)return splash;
   if(usingCloud&&!session)return <Login onAuthed={setSession} theme={theme}/>;
@@ -2753,7 +2647,7 @@ export default function App(){
       {s.tab==="services"&&<Services s={s} d={d}/>}
       {s.tab==="quotes"&&<Quotes s={s} d={d}/>}
       {s.tab==="inventory"&&<Inv s={s} d={d}/>}
-      {s.tab==="yard"&&<Yard s={s} d={d}/>}
+      {s.tab==="shop3d"&&<Shop3D s={s} d={d} theme={theme}/>}
       {s.tab==="parts"&&<Parts s={s} d={d}/>}
       {s.tab==="boms"&&<Boms s={s} d={d}/>}
       {s.tab==="issues"&&<Issues s={s} d={d}/>}
