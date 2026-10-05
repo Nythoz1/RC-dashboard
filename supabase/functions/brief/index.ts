@@ -30,7 +30,7 @@ const MAIL_TO = Deno.env.get("MAIL_TO") || "wayne@rollin-coal.ca";
 const MAIL_FROM = Deno.env.get("MAIL_FROM") || "Rollin Coal <onboarding@resend.dev>";
 const DASH = Deno.env.get("DASHBOARD_URL") || "";
 const TZ = "America/Edmonton";
-const BLOBS = ["wins","invoices","settings","timeEntries","diagnoses","cores","jobs","activity","expenses","employees"];
+const BLOBS = ["wins","invoices","settings","timeEntries","diagnoses","cores","jobs","activity","expenses","employees","prospects","competitors"];
 
 const cors = {
   "Access-Control-Allow-Origin": "*",
@@ -72,6 +72,11 @@ function daily3(s: Any) {
   E.filter((i: Any) => !(i.serial||i.esn)).forEach((i: Any) => c.push({ t:"esn", l:"Record ESN — " + (i.sku||i.name||"") }));
   E.filter((i: Any) => WIP.includes(engStatus(i)) && i.stageDate && days(i.stageDate) > 7).forEach((i: Any) => c.push({ t:"stale", l:"Touch " + (i.sku||i.name||"") + " — stuck in " + STAGE[engStatus(i)] }));
   (s.invoices||[]).filter((v: Any) => v.status === "overdue").forEach((v: Any) => c.push({ t:"inv", l:"Chase invoice " + (v.invNum||v.id) }));
+  // Prospect / shop follow-ups due today or overdue (mirrors resFollowups(s,0) in the dashboard).
+  const today = local(new Date()).ymd;
+  [...(s.prospects||[]), ...(s.competitors||[])].filter((r: Any) => r.nextFollowUp && r.nextFollowUp <= today && !["not-a-fit","do-not-contact"].includes(r.status||""))
+    .sort((a: Any, b: Any) => String(a.nextFollowUp).localeCompare(String(b.nextFollowUp)) || String(a.name).localeCompare(String(b.name)))
+    .forEach((r: Any) => c.push({ t:"follow", l:"Follow up — " + (r.name||"") + (r.city ? " (" + r.city + ")" : "") }));
   const day = Math.floor(Date.now()/864e5); const types = [...new Set(c.map(x => x.t))]; const picks: Any[] = [];
   for (let k = 0; k < types.length && picks.length < 3; k++) { const ty = types[(k+day) % types.length]; const cand = c.find(x => x.t === ty && !picks.includes(x)); if (cand) picks.push(cand); }
   for (const x of c) { if (picks.length >= 3) break; if (!picks.includes(x)) picks.push(x); }

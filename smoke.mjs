@@ -1,5 +1,6 @@
 // Smoke test: localStorage mode, walks the diagnosis + issues features, an engine sale with a swap,
-// and an ECM job from intake to invoice (including the emissions block).
+// an ECM job from intake to invoice (including the emissions block), and the sales research
+// (prospect seeds, a logged visit with a follow-up, convert to customer, route sheet).
 import { chromium } from "playwright";
 import { spawn } from "child_process";
 const srv=spawn("npx",["vite","preview","--port","4173","--strictPort"],{stdio:"ignore"});
@@ -167,5 +168,47 @@ await p.reload();
 await p.waitForSelector(".rc-side");
 const ej3=await ecmJob();
 console.log("ECM after reload: status",ej3.status,"| fault codes",(ej3.bFaults||[]).length,"| files",(await LS("ecmFiles")).filter(x=>x.jobId===ej3.id).length,"| parameter changes",(ej3.params||[]).length,"| follow-ups",(await LS("schedule")).filter(a=>+a.ecmJobId===ej3.id).length,"| billed",!!ej3.invoiceId);
+// Prospects + competitors: the research seeds load (229 fleets, 292 shops, 14 comparison rows). Log a visit on a
+// fleet with a follow-up, convert it to a customer, reload: the stored copy wins and the seed doesn't overwrite it.
+// The follow-up shows on the Schedule, and the Brooks route sheet prints on one page.
+await p.click('.rc-ni:has-text("Prospects")');
+await p.waitForSelector(".rc-pipe");
+const fleetsTitle=await p.locator(".rc-sht").first().innerText();
+await p.click('.rc-ni:has-text("Competitors")');
+const shopsN=await p.locator('.rc-stat:has-text("Shops tracked") .rc-sv').innerText();
+await p.click('[role=tab]:has-text("Comparison")');
+console.log("research seeds: fleets",(fleetsTitle.match(/\d+/)||[""])[0],"| shops",shopsN,"| comparison rows",await p.locator("table.rc-cmp tbody tr").count());
+await p.click('.rc-ni:has-text("Prospects")');
+await p.locator(".rc-main table.rc-tbl tbody tr",{hasText:"C & K Trucking Inc"}).locator('button:has-text("Log visit")').click();
+await p.waitForSelector(".rc-mod >> text=Log a Visit");
+await p.click('.rc-mod button.rc-fb:has-text("Interested")');
+await p.fill('.rc-mod textarea[aria-label="Notes"]',"Smoke visit: two ISX15s due this winter.");
+await p.check('.rc-mod input[aria-label="Flyer left"]');
+await p.click('.rc-mod button.rc-fb:has-text("Today")');
+await p.click(".rc-mod .rc-fa .rc-ba");
+await p.waitForTimeout(900);
+await p.locator(".rc-main table.rc-tbl tbody tr",{hasText:"C & K Trucking Inc"}).locator("td").nth(1).click();
+await p.waitForSelector(".rc-mod .rc-pitch");
+await p.click('.rc-mod button:has-text("Convert to customer")');
+await p.waitForTimeout(900);
+await p.click('.rc-mod .rc-fa button:has-text("Close")');
+await p.reload();
+await p.waitForSelector(".rc-side");
+const fleets=await LS("prospects");const ck=fleets.find(r=>r.id==="fleet-001")||{};const ckCust=(await LS("customers")).find(c=>c.prospectId==="fleet-001");
+console.log("prospect after reload: fleets",fleets.length,"| visit logged",(ck.log||[]).some(e=>e.type==="visit"&&/Smoke visit/.test(e.notes||"")),"| follow-up",ck.nextFollowUp,"| status",ck.status,"| customer linked both ways",!!ckCust&&ck.customerId===ckCust.id);
+await p.click('.rc-ni:has-text("Prospects")');
+console.log("seed did not overwrite the edits:",(await p.locator('.rc-pipe-i:has-text("Customer") .n').innerText())==="1"&&(await p.locator('.rc-pipe-i:has-text("Not contacted") .n').innerText())==="228");
+await p.click('.rc-ni:has-text("Schedule")');
+const fuCard=p.locator(".rc-card",{hasText:"Prospect follow-ups"});
+console.log("follow-up on the Schedule:",(await fuCard.count())===1&&(await fuCard.innerText()).includes("C & K Trucking Inc"));
+await p.click('.rc-ni:has-text("Prospects")');
+await p.click('button:has-text("Route day")');
+await p.locator('.rc-mod select[aria-label="Town"]').selectOption("Brooks");
+const [route]=await Promise.all([p.waitForEvent("popup"),p.click(".rc-mod .rc-fa .rc-ba")]);
+await route.waitForLoadState();
+const routePages=((await route.pdf({preferCSSPageSize:true})).toString("latin1").match(/\/Type\s*\/Page(?!s)/g)||[]).length;
+console.log("route sheet for Brooks: stops",await route.locator("table.rt tbody").count(),"| pages",routePages);
+await route.screenshot({path:"shot-route.png",fullPage:true});
+await route.close();
 console.log("errors:",errs.length?errs:"none");
 await b.close();srv.kill();process.exit(0);

@@ -22,6 +22,9 @@ const EMPTY={
   boms:BOM_SEED,bomSheets:[],vendors:VENDOR_SEED,services:SERVICE_SEED,
   ecmJobs:[],      // ECM programming jobs — see ecmGuard and CLAUDE.md for the shape and the emissions rule
   ecmFiles:[],     // {id,jobId,path,name,size,type,at} — metadata only; the bytes live in the ecm-files bucket
+  prospects:[],    // trucking fleets to cold-approach — seeded once from src/data/fleet-prospects.json (seedResearch)
+  competitors:[],  // Alberta diesel / engine shops — seeded once from src/data/competitors.json
+  compare:[],      // the Rollin Coal vs key competitors cheat sheet — seeded once from src/data/competitor-comparison.json
 
   wins:[],       // {id,ts,user,kind:"sale",name,sku,price,cost} — permanent wins feed
   activity:[],   // {id,ts,user,type,msg} — auto-captured shop log (capped)
@@ -138,7 +141,7 @@ const EMPTY={
   ],
 };
 
-const STORE_KEYS=["customers","jobs","timeEntries","quotes","inventory","invoices","schedule","employees","expenses","leads","social","campaigns","contentCalendar","cores","shipments","commsLog","purchaseOrders","warranties","parts","wins","activity","settings","diagnoses","issues","brief","boms","bomSheets","vendors","services","ecmJobs","ecmFiles"];
+const STORE_KEYS=["customers","jobs","timeEntries","quotes","inventory","invoices","schedule","employees","expenses","leads","social","campaigns","contentCalendar","cores","shipments","commsLog","purchaseOrders","warranties","parts","wins","activity","settings","diagnoses","issues","brief","boms","bomSheets","vendors","services","ecmJobs","ecmFiles","prospects","competitors","compare"];
 
 // ── Shop activity log (who-did-what, auto-captured as a byproduct of work) ──
 let CURRENT_USER="shop";
@@ -179,6 +182,9 @@ const describeAdd=(list,d)=>{switch(list){
   case "services":return "🏷 Service added to the price list: "+(d.name||"");
   case "ecmJobs":return "🖥 ECM job opened"+(d.unit?": unit "+d.unit:"")+(d.family?" · "+ecmFamLabel(d.family):"");
   case "ecmFiles":return "📎 ECM file uploaded: "+(d.name||"");
+  case "prospects":return "🎯 Prospect added: "+(d.name||"");
+  case "competitors":return "🏁 Shop added to competitors: "+(d.name||"");
+  case "compare":return "📊 Added to the comparison: "+(d.business||"");
   case "timeEntries":return "⏱ "+(d.hours||0)+"h logged by "+(d.tech||"?");
   case "invoices":return "🧾 Invoice created: "+(d.invNum||"");
   case "quotes":return "📋 Quote created: "+(d.quoteNum||"");
@@ -213,6 +219,8 @@ function reducer(s,a){switch(a.type){
     }else if(a.list==="inventory"&&it&&a.d.photo&&it.photo!==a.d.photo){act="📷 Photo added: "+(it.name||it.sku||"");}
     else if(a.list==="inventory"&&it&&a.d.partsLog&&(a.d.partsLog||[]).length>(it.partsLog||[]).length){const np=a.d.partsLog[(a.d.partsLog||[]).length-1]||{};act="🧩 Part into "+(it.name||it.sku||"engine")+": "+(np.d||"part")+" — $"+(+np.v||0).toLocaleString();}
     else if(a.list==="invoices"&&it&&a.d.status==="paid"&&it.status!=="paid"){act="💰 Invoice paid: "+(it.invNum||a.id);}
+    else if((a.list==="prospects"||a.list==="competitors")&&it&&Array.isArray(a.d.log)&&a.d.log.length>(it.log||[]).length&&a.d.log[a.d.log.length-1].type!=="note"){const e=a.d.log[a.d.log.length-1];act={visit:"🚚 Visit",call:"📞 Call",email:"✉ Email"}[e.type]+": "+(it.name||"")+(e.outcome?" · "+e.outcome:"");}
+    else if((a.list==="prospects"||a.list==="competitors")&&it&&a.d.status!==undefined&&(it.status||"")!==(a.d.status||"")){act="🎯 "+(it.name||"")+" → "+pstOf(a.d.status)[1];}
     else if(a.list==="jobs"&&it&&a.d.status&&it.status!==a.d.status){act="🛠 Job → "+a.d.status+(it.service?" ("+it.service+")":"");}
     if(a.list==="inventory"&&it&&isEngine(it)){const rk=v=>v==="crit"?2:v==="warn"?1:0;const af={...it,...d2};const b0=rk(uwLevel(it)),a0=rk(uwLevel(af));if(a0>b0){const pct=Math.round((uwRatio(af)||0)*100);const nm=it.name||it.sku||"Engine";autos.push("⚠ "+nm+" is at "+pct+"% of expected sale — "+(a0===2?"UNDERWATER":"margin risk"));toast={msg:"⚠ "+nm+" crossed "+pct+"% of list — decide before the next dollar goes in",t:Date.now()};}}
     // ECM jobs: the emissions rule, completion checks, and 30/60/90-day follow-ups on completion.
@@ -221,7 +229,7 @@ function reducer(s,a){switch(a.type){
     const act0=act?pushAct(s,"update",act):s.activity;const activity=autos.length?[...autos.map((m,k)=>({id:Date.now()+Math.random()+k,ts:nowIso(),user:"auto",type:"auto",msg:m})),...act0].slice(0,400):act0;
     const stU={...s,activity,wins,soldSplash:splash,toast,...extra,[a.list]:(s[a.list]||[]).map(x=>x.id===a.id?{...x,...d2}:x)};
     return LABOR_LISTS.includes(a.list)?syncLabor(stU):stU;}
-  case "DELETE":{const item=(s[a.list]||[]).find(x=>x.id===a.id);const stD={...s,[a.list]:(s[a.list]||[]).filter(x=>x.id!==a.id),lastDel:item?{list:a.list,item}:null,activity:item?pushAct(s,"delete","🗑 Deleted: "+((a.list==="ecmJobs"?"ECM job"+(item.unit?" · unit "+item.unit:""):"")||item.name||item.sku||item.invNum||item.service||item.title||item.engName||(item.symptoms&&item.symptoms.join(", "))||a.list)):s.activity,toast:{msg:"Deleted",undo:!!item,t:Date.now()}};
+  case "DELETE":{const item=(s[a.list]||[]).find(x=>x.id===a.id);const stD={...s,[a.list]:(s[a.list]||[]).filter(x=>x.id!==a.id),lastDel:item?{list:a.list,item}:null,activity:item?pushAct(s,"delete","🗑 Deleted: "+((a.list==="ecmJobs"?"ECM job"+(item.unit?" · unit "+item.unit:""):"")||item.name||item.sku||item.invNum||item.service||item.title||item.engName||item.business||(item.symptoms&&item.symptoms.join(", "))||a.list)):s.activity,toast:{msg:"Deleted",undo:!!item,t:Date.now()}};
     return LABOR_LISTS.includes(a.list)?syncLabor(stD):stD;}
   case "UNDO":{if(!s.lastDel)return s;const stR={...s,[s.lastDel.list]:[...(s[s.lastDel.list]||[]),s.lastDel.item],lastDel:null,toast:{msg:"Restored",t:Date.now()}};
     return LABOR_LISTS.includes(s.lastDel.list)?syncLabor(stR):stR;}
@@ -435,6 +443,75 @@ const ecmSummary=(s,j)=>{const L=[];const kv=(l,v)=>{if(v!=null&&String(v).trim(
   [30,60,90].forEach(n=>{const x=(j.fu||{})[n]||{};if(x.date)kv(n+"-day follow-up",jn(x.fuel&&x.fuel+" L/100 km",x.regenEvery&&"regen every "+x.regenEvery+" km",x.faults&&"new faults: "+x.faults,x.comments&&"customer: "+x.comments));});
   return L.join("\n");};
 const ecmFamSelect=(v,on)=>(<select className="rc-fi" value={v||""} onChange={e=>on(e.target.value)} style={{appearance:"none"}}><option value="">Pick the family…</option><optgroup label="Truck engines">{ECM_FAMS.map(([k,l])=>(<option key={k} value={k}>{l}</option>))}</optgroup><optgroup label="Other families">{FAMILIES.filter(k=>k!=="SERIES60"&&!ECM_FAMS.some(x=>x[0]===k)).map(k=>(<option key={k} value={k}>{ecmFamLabel(k)}</option>))}</optgroup></select>);
+// ── Sales research: fleet prospects + competitor shops ──
+// Both lists (plus the comparison cheat sheet) ship as research files in src/data.
+// They seed ONCE: seedResearch (in loadAll) copies a seed in only when that list
+// was never stored or is stored empty, and from then on the stored copy is the
+// truth: the seed never overwrites edits. The files load on demand, so they stay
+// out of the main bundle. Seed ids are strings ("fleet-001", "comp-001"); records
+// added in the app use Date.now(), so look records up with resById, not ===.
+const resWork=r=>({status:"",lastContact:"",nextFollowUp:"",contactName:"",contactRole:"",engines:[],truckCount:"",flyerLeft:false,log:[],customerId:null,...r});
+const compWork=r=>({myNotes:"",lastChecked:"",prices:[],...resWork(r)});
+const SEEDS={
+  prospects:[()=>import("./data/fleet-prospects.json"),rows=>rows.map(resWork)],
+  competitors:[()=>import("./data/competitors.json"),rows=>rows.map(compWork)],
+  compare:[()=>import("./data/competitor-comparison.json"),rows=>rows.map((r,i)=>({id:"cmp-"+String(i+1).padStart(2,"0"),us:/rollin/i.test(r.business||""),...r}))],
+};
+async function seedResearch(d){for(const k of Object.keys(SEEDS)){if(Array.isArray(d[k])&&d[k].length)continue;try{const m=await SEEDS[k][0]();d[k]=SEEDS[k][1](m.default||[]);}catch(e){console.error("[rc seed] "+k+" failed:",e&&e.message?e.message:e);d[k]=[];}}}
+const resById=(s,list,id)=>(s[list]||[]).find(x=>String(x.id)===String(id));
+// The pipeline. "" is "not contacted" (records start with an empty status).
+const PST=[["","Not contacted","var(--mt)"],["contacted","Visited / called","var(--b)"],["interested","Interested","var(--ac)"],["quoted","Quoted","var(--p)"],["customer","Customer","var(--g)"],["not-a-fit","Not a fit","var(--ft)"],["do-not-contact","Do not contact","var(--r)"]];
+const pstOf=k=>PST.find(x=>x[0]===(k||""))||PST[0];
+// Never followed up, put on a route sheet or on the Daily 3.
+const PST_OFF=["not-a-fit","do-not-contact"];
+const addDays=(iso,n)=>ecmDue(iso,n);
+const fuDue=(r,td)=>!!r.nextFollowUp&&r.nextFollowUp<=(td||isoToday())&&!PST_OFF.includes(r.status||"");
+const resFollowups=(s,days)=>{const lim=addDays(isoToday(),days||0);return[...(s.prospects||[]).map(r=>["prospects",r]),...(s.competitors||[]).map(r=>["competitors",r])].filter(([,r])=>r.nextFollowUp&&r.nextFollowUp<=lim&&!PST_OFF.includes(r.status||"")).sort(([,a],[,b])=>String(a.nextFollowUp).localeCompare(String(b.nextFollowUp))||String(a.name).localeCompare(String(b.name)));};
+const visited=r=>(r.log||[]).some(e=>e.type==="visit");
+// The last real contact (visit, call or email), skipping notes like "Converted to customer".
+const lastTouch=r=>(r.log||[]).slice().reverse().find(e=>e.type&&e.type!=="note")||null;
+// 93 free-text haul types fold into a handful of groups for filtering.
+const HAUL_GROUPS=[["Livestock",/livestock|cattle/i],["Oilfield / water",/\boil|pipeline|\brig|water|\bvac\b/i],["Ag: grain, hay, fertilizer",/grain|fertil|\bhay\b|bale|\bag\b|farm/i],["Construction / gravel",/gravel|sand|topsoil|bobcat|excavat|construct|equipment|aggregate|dump|crush/i],["Bulk / liquid",/bulk|liquid|fuel|chemical|tank/i],["Hotshot / expedited",/hotshot|expedit|express|pilot|courier/i],["General freight / LTL",/ltl|freight|truckload|cartage|truck|transport|logist|general|dedicated|haul|terminal|deck|reefer|\bvan|super b|over-dim/i]];
+const haulGroup=h=>(HAUL_GROUPS.find(([,re])=>re.test(h||""))||["Other"])[0];
+// "Sells engines?" is free text in the research ("Yes (Cummins ReCon)", "OEM reman (likely)"…).
+const sellsGroup=v=>{const t=String(v||"").trim();return /^(yes|oem reman)/i.test(t)?"yes":/^no\b/i.test(t)?"no":"unknown";};
+const SELLS_OPTS=["Unknown","Yes","Yes (reman / rebuilt)","Yes (OEM reman)","Yes (used take-outs)","No"];
+const PRICING_OPTS=["Not verified","Yes","No","No (website checked)"];
+const optsWith=(opts,cur)=>cur&&!opts.includes(cur)?[cur,...opts]:opts;
+const THREAT_COL={High:"var(--r)",Medium:"var(--w)",Low:"var(--mt)"};
+const SALES_COL={High:"var(--g)",Medium:"var(--b)",Low:"var(--mt)","Supplier?":"var(--p)"};
+// Shops with a sales-prospect rating get the same visit / convert actions as fleets.
+const isSalesShop=r=>["High","Medium","Low"].includes(r.salesProspect);
+// The research files use "—" for "don't know"; treat it as blank everywhere it is shown or linked.
+const nb=v=>{const t=String(v??"").trim();return /^[—–-]$/.test(t)?"":t;};
+const telHref=p=>"tel:"+nb(p).replace(/[^\d+]/g,"");
+const webHref=w=>{const t=nb(w);return !t?"":/^https?:\/\//i.test(t)?t:"https://"+t;};
+const mapHref=r=>"https://www.google.com/maps/search/?api=1&query="+encodeURIComponent([nb(r.address),r.city,"Alberta"].filter(Boolean).join(", "));
+const townOf=c=>String(c||"").replace(/\s+(area|county)$/i,"").split(" / ")[0].trim();
+const kmTxt=r=>r.kmFromMH!==""&&r.kmFromMH!=null?r.kmFromMH+" km":"";
+function PBadge({st}){const[,l,c]=pstOf(st);return(<span style={{display:"inline-flex",alignItems:"center",gap:5,whiteSpace:"nowrap",padding:"3px 10px",borderRadius:20,fontSize:11,fontWeight:700,letterSpacing:1,textTransform:"uppercase",fontFamily:"var(--fb)",color:c,border:"1px solid "+tint(c,40),background:tint(c,12)}}><span style={{width:6,height:6,borderRadius:"50%",background:c}}/>{l}</span>);}
+function Lvl({v,cols}){if(!v)return <span style={{color:"var(--mt)"}}>—</span>;const c=(cols||{})[v]||"var(--mt)";return(<span style={{display:"inline-flex",alignItems:"center",gap:6,whiteSpace:"nowrap",fontSize:13.5,fontWeight:600,color:c}}><span style={{width:8,height:8,borderRadius:"50%",background:c}}/>{v}</span>);}
+// Printable route sheet. Each stop takes two lines (name, address and phone, then
+// the pitch) with a notes box and tick boxes beside it, so a full town day fits
+// on one Letter page (ROUTE_PAGE stops). With fewer stops the rows grow to give
+// the notes box more room. Black and white friendly: borders only, no fills.
+const ROUTE_PAGE=28;
+function printRoute(stops,title){
+  const esc=t=>String(t==null?"":t).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/'/g,"&#39;");
+  const h=Math.max(30,Math.min(64,Math.floor(830/Math.max(1,stops.length))));
+  const stop=(r,x)=>'<tbody><tr><td class="n" rowspan="2">'+(x+1)+(kmTxt(r)?'<small>'+esc(kmTxt(r))+'</small>':"")+'</td><td class="nm">'+esc(r.name)+'</td><td class="ad">'+esc([nb(r.address),r.city].filter(Boolean).join(", "))+'</td><td class="tl">'+(nb(r.phone)?nb(r.phone).split(/\s*\/\s*/).map(x=>'<span>'+esc(x)+'</span>').join(" / "):"—")+'</td><td class="nt" rowspan="2" style="height:'+h+'px"></td><td class="ck" rowspan="2">&#9744; Visited<br>&#9744; Flyer left<br>&#9744; Follow up</td></tr><tr><td class="pi" colspan="3">'+esc(r.pitch||"")+'</td></tr></tbody>';
+  const html='<!doctype html><html><head><meta charset="utf-8"><title>Route day — '+esc(title)+'</title>'+SHEET_STYLE+
+  '<style>@page{size:letter portrait;margin:9mm;}body{padding:0;}.logo{background:#fff!important;color:#111!important;border:2px solid #111;width:34px;height:34px;font-size:17px;}h1{font-size:20px;}.head{border-bottom:2px solid #111!important;margin-bottom:6px;padding-bottom:5px;}.sub{color:#111!important;}.meta{font-size:10.5px;line-height:1.45;}'+
+  '.rt{width:100%;border-collapse:collapse;table-layout:fixed;font-family:Arial,Helvetica,sans-serif;border-bottom:1px solid #555;}.rt td{border:0;padding:1px 5px 0;vertical-align:top;font-size:9.5px;line-height:1.18;color:#111;}.rt thead td{font-size:8.5px;font-weight:700;letter-spacing:1px;text-transform:uppercase;border-bottom:2px solid #111;padding-bottom:3px;}'+
+  '.rt tbody{break-inside:avoid;}.rt tbody tr:first-child td{border-top:1px solid #555;}.rt tbody:first-of-type tr:first-child td{border-top:0;}.rt .n,.rt .nt,.rt .ck{border-left:1px solid #555;}.rt .n{border-left:0;text-align:center;font-weight:700;font-size:11px;}.rt .n small{display:block;font-weight:400;font-size:7.5px;color:#444;white-space:nowrap;}'+
+  '.rt .nm{font-weight:700;font-size:10.5px;}.rt .tl{font-variant-numeric:tabular-nums;}.rt .tl span{white-space:nowrap;}.rt .pi{font-style:italic;font-size:9px;color:#333;padding-bottom:2px;}.rt .ck{font-size:8px;line-height:1.15;padding-top:2px;white-space:nowrap;}.foot{border-top:0;margin-top:6px;color:#444;}</style></head><body>'+
+  '<div class="head"><div class="brand"><div class="logo">RC</div><div><h1>Route Day</h1><div class="sub">'+esc(title)+' &middot; '+stops.length+' stop'+(stops.length===1?"":"s")+'</div></div></div><div class="meta"><strong>Rollin Coal</strong><br>'+new Date().toLocaleDateString("en-US",{year:"numeric",month:"long",day:"numeric"})+'<br>1-587-863-0505 &middot; rollin-coal.ca</div></div>'+
+  '<table class="rt"><colgroup><col style="width:4.5%"><col style="width:29%"><col style="width:22%"><col style="width:11.5%"><col><col style="width:8.5%"></colgroup><thead><tr><td class="n">#</td><td class="nm">Fleet / pitch</td><td>Address</td><td>Phone</td><td class="nt">Notes</td><td class="ck">Done</td></tr></thead>'+stops.map(stop).join("")+'</table>'+
+  '<div class="foot"><span>Priority A fleets not yet visited, nearest first.</span><span>Log each visit in the dashboard the same day.</span></div>'+
+  '<scr'+'ipt>window.onload=function(){var go=function(){setTimeout(function(){window.print();},200);};if(document.fonts&&document.fonts.ready)document.fonts.ready.then(go,go);else go();};</scr'+'ipt></body></html>';
+  const w=window.open("","_blank","width=920,height=1080");if(!w)return;
+  w.document.open();w.document.write(html);w.document.close();
+}
 // Underwater build detection: cost creeping up on the expected sale price (WIP stages only)
 const UW_WARN=.75,UW_CRIT=.9;
 const uwRatio=i=>{const p=+i.price||0,cb=costBasis(i);return p>0&&cb>0?cb/p:null;};
@@ -452,6 +529,7 @@ function genDaily3(s){
   E.filter(i=>!(i.serial||i.esn)).forEach(i=>c.push({t:"esn",id:i.id,l:"🔢 Record ESN — "+(i.sku||i.name||"")}));
   E.filter(i=>["core","in-reman","on-hold"].includes(engStatus(i))&&i.stageDate&&Date.now()-new Date(i.stageDate).getTime()>7*864e5).forEach(i=>c.push({t:"stale",id:i.id,l:"⏳ Touch "+(i.sku||i.name||"")+" — stuck in "+engStatusLabel(engStatus(i))}));
   (s.invoices||[]).filter(v=>v.status==="overdue").forEach(v=>c.push({t:"inv",id:v.id,l:"💰 Chase invoice "+(v.invNum||v.id)}));
+  resFollowups(s,0).forEach(([list,r])=>c.push({t:"follow",id:r.id,list,l:"📞 Follow up — "+(r.name||"")+(r.city?" ("+r.city+")":"")}));
   const day=Math.floor(Date.now()/864e5);const types=[...new Set(c.map(x=>x.t))];const picks=[];
   for(let k=0;k<types.length&&picks.length<3;k++){const ty=types[(k+day)%types.length];const cand=c.find(x=>x.t===ty&&!picks.includes(x));if(cand)picks.push(cand);}
   for(const x of c){if(picks.length>=3)break;if(!picks.includes(x))picks.push(x);}
@@ -464,6 +542,7 @@ const d3Done=(s,t)=>{const gi=id=>(s.inventory||[]).find(x=>x.id===id);switch(t.
   case "esn":{const i=gi(t.id);return !i||!!(i.serial||i.esn);}
   case "stale":{const i=gi(t.id);return !i||!["core","in-reman","on-hold"].includes(engStatus(i))||!i.stageDate||Date.now()-new Date(i.stageDate).getTime()<=7*864e5;}
   case "inv":{const v=(s.invoices||[]).find(x=>x.id===t.id);return !v||v.status!=="overdue";}
+  case "follow":{const r=resById(s,t.list,t.id);return !r||!fuDue(r,isoToday());}
   default:return false;}};
 // Velocity from stage history: days first-stage→available (build), available→sold (sell)
 const velo=i=>{const lg=i.stageLog||[];const first=st=>{const e=lg.find(x=>x.st===st);return e?new Date(e.ts).getTime():null;};const acq=lg.length?new Date(lg[0].ts).getTime():null;const av=first("available");const so=i.soldDate?new Date(i.soldDate+"T12:00:00").getTime():first("sold");return{build:acq!=null&&av!=null&&av>acq?(av-acq)/864e5:null,sell:av!=null&&so!=null&&so>=av?(so-av)/864e5:null};};
@@ -592,7 +671,7 @@ function horn(){try{const C=window.AudioContext||window.webkitAudioContext;if(!C
 // Save only the given (changed) lists, handing the adapter the previous
 // snapshot so table-backed lists can diff per-row instead of rewriting.
 async function saveAll(s,keys,prev){const failed=[];for(const k of (keys||STORE_KEYS)){try{await db.setItem("rc:"+k,JSON.stringify(s[k]||[]),prev&&prev[k]!=null?JSON.stringify(prev[k]||[]):undefined);}catch(e){failed.push(k);console.error("[rc save] "+k+" failed:",e&&e.message?e.message:e);}}return failed;}
-async function loadAll(){const d={};let m=null;try{m=await db.getAll(STORE_KEYS.map(k=>"rc:"+k));}catch(e){console.error("[rc load] batch failed:",e&&e.message?e.message:e);}if(!m){STORE_KEYS.forEach(k=>{d[k]=EMPTY[k]||[];});d.__loadError=true;return d;}let err=false;for(const k of STORE_KEYS){const r=m["rc:"+k];try{d[k]=(r!=null)?JSON.parse(r):(EMPTY[k]||[]);}catch(e){err=true;d[k]=EMPTY[k]||[];console.error("[rc load] "+k+" parse failed:",e&&e.message?e.message:e);}}if(err)d.__loadError=true;return d;}
+async function loadAll(){const d={};let m=null;try{m=await db.getAll(STORE_KEYS.map(k=>"rc:"+k));}catch(e){console.error("[rc load] batch failed:",e&&e.message?e.message:e);}if(!m){STORE_KEYS.forEach(k=>{d[k]=EMPTY[k]||[];});d.__loadError=true;return d;}let err=false;for(const k of STORE_KEYS){const r=m["rc:"+k];try{d[k]=(r!=null)?JSON.parse(r):(EMPTY[k]||[]);}catch(e){err=true;d[k]=EMPTY[k]||[];console.error("[rc load] "+k+" parse failed:",e&&e.message?e.message:e);}}if(err)d.__loadError=true;else await seedResearch(d);return d;}
 async function clearAll(){for(const k of STORE_KEYS){try{await db.removeItem("rc:"+k);}catch(e){}}}
 
 // Claude AI
@@ -654,7 +733,7 @@ function Overview({s,d}){
   const allDone=!!d3&&d3.length>0&&d3done.every(Boolean);
   useEffect(()=>{if(!allDone)return;const cur=(s.settings||[])[0];if(!cur||cur.d3LastDone===tIso)return;const y=new Date(Date.now()-864e5).toISOString().slice(0,10);const streak=cur.d3LastDone===y?(+cur.d3Streak||0)+1:1;d({type:"UPDATE",list:"settings",id:cur.id,d:{d3LastDone:tIso,d3Streak:streak}});d({type:"TOAST",d:{msg:"✅ Shift card complete — 🔥 streak "+streak,t:Date.now()}});},[allDone]);
   const d3streak=+d3set.d3Streak||0;
-  const d3open=t=>{if(t.t==="inv"){d({type:"TAB",v:"invoices"});return;}const i=(s.inventory||[]).find(x=>x.id===t.id);if(i)d({type:"MODAL",v:"part-detail",d:i});};
+  const d3open=t=>{if(t.t==="inv"){d({type:"TAB",v:"invoices"});return;}if(t.t==="follow"){d({type:"MODAL",v:"pros-rec",d:{list:t.list,id:t.id}});return;}const i=(s.inventory||[]).find(x=>x.id===t.id);if(i)d({type:"MODAL",v:"part-detail",d:i});};
   // Break-even: monthly fixed costs vs average engine margin
   const fixedMo=(s.expenses||[]).reduce((a,e)=>a+(+e.amount||0),0)+(s.employees||[]).reduce((a,e)=>a+(+e.rate||0)*(+e.hrs||0),0)*4.33;
   const costWins=(s.wins||[]).filter(w=>w.kind==="sale"&&+w.cost>0);
@@ -989,6 +1068,94 @@ function Ecm({s,d}){
 }
 
 // ═══════════════════════════════════════════════════════════════
+// PROSPECTS — trucking fleets to cold-approach
+// ═══════════════════════════════════════════════════════════════
+function Prospects({s,d}){
+  const[q,sq]=useState("");const[fp,sfp]=useState("all");const[fr,sfr]=useState("");const[ft,sft]=useState("");const[fh,sfh]=useState("");const[fs,sfs]=useState("all");const[due,sdue]=useState(false);const[lim,setLim]=useState(100);
+  const all=s.prospects||[];const td=isoToday();
+  const cnt=k=>all.filter(r=>(r.status||"")===k).length;const dueN=all.filter(r=>fuDue(r,td)).length;
+  const regions=[...new Set(all.map(r=>r.region).filter(Boolean))].sort();const types=[...new Set(all.map(r=>r.fleetType).filter(Boolean))].sort();const hauls=[...new Set(all.map(r=>haulGroup(r.haul)))].sort();
+  const t=q.trim().toLowerCase();const dg=t.replace(/\D/g,"");
+  const list=all.filter(r=>(fp==="all"||r.priority===fp)&&(!fr||r.region===fr)&&(!ft||r.fleetType===ft)&&(!fh||haulGroup(r.haul)===fh)&&(fs==="all"||(r.status||"")===fs)&&(!due||fuDue(r,td))&&(!t||[r.name,r.city,r.phone,r.contactName].some(v=>String(v||"").toLowerCase().includes(t))||(dg.length>=3&&String(r.phone||"").replace(/\D/g,"").includes(dg)))).sort((a,b)=>(+a.kmFromMH||0)-(+b.kmFromMH||0)||String(a.name||"").localeCompare(String(b.name||"")));
+  const sel={width:"auto",minWidth:150,appearance:"none"};
+  return(<div>
+    <div className="rc-pipe" role="group" aria-label="Pipeline by status">{PST.map(([k,l,c])=>(<button key={k||"new"} type="button" className={"rc-pipe-i"+(fs===k?" on":"")} aria-pressed={fs===k} onClick={()=>sfs(fs===k?"all":k)} style={{"--pc":c}}><span className="n">{cnt(k)}</span><span className="l">{l}</span></button>))}</div>
+    <SH title={"Fleet Prospects · "+all.length}><input className="rc-si" placeholder="Search name, city, phone…" aria-label="Search prospects" value={q} onChange={e=>sq(e.target.value)}/><button className="rc-bs" onClick={()=>d({type:"MODAL",v:"route-day"})}>🗺 Route day</button><button className="rc-ba" onClick={()=>d({type:"MODAL",v:"pros-add",d:{list:"prospects"}})}>+ Prospect</button></SH>
+    <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center",marginBottom:14}}>
+      {[["all","Every priority"],["A","Priority A"],["B","Priority B"],["C","Priority C"]].map(([k,l])=>(<button key={k} className={"rc-fb"+(fp===k?" on":"")} onClick={()=>sfp(k)}>{l}</button>))}
+      <button className={"rc-fb"+(due?" on":"")} aria-pressed={due} onClick={()=>sdue(!due)}>Follow-up due{dueN?" · "+dueN:""}</button>
+      <select className="rc-fi" aria-label="Filter by region" value={fr} onChange={e=>sfr(e.target.value)} style={sel}><option value="">Every region</option>{regions.map(x=>(<option key={x} value={x}>{x}</option>))}</select>
+      <select className="rc-fi" aria-label="Filter by fleet type" value={ft} onChange={e=>sft(e.target.value)} style={sel}><option value="">Every fleet type</option>{types.map(x=>(<option key={x} value={x}>{x}</option>))}</select>
+      <select className="rc-fi" aria-label="Filter by haul type" value={fh} onChange={e=>sfh(e.target.value)} style={sel}><option value="">Every haul type</option>{hauls.map(x=>(<option key={x} value={x}>{x}</option>))}</select>
+      <select className="rc-fi" aria-label="Filter by status" value={fs} onChange={e=>sfs(e.target.value)} style={sel}><option value="all">Every status</option>{PST.map(([k,l])=>(<option key={k||"new"} value={k}>{l}</option>))}</select>
+    </div>
+    {list.length===0?(<Empty icon="🎯" title={all.length?"No Matching Fleets":"No Prospects"} sub={all.length?"Nothing matches these filters":"Add the fleets you want to call on"} action={()=>d({type:"MODAL",v:"pros-add",d:{list:"prospects"}})} label="+ Prospect"/>):(<>
+      <Tbl headers={["Pri","Fleet","Type","Status","Follow-up","Last contact",""]}>{list.slice(0,lim).map(r=>{const ll=lastTouch(r);const dn=r.status==="do-not-contact";const late=fuDue(r,td);return(<tr key={r.id} style={{cursor:"pointer"}} onClick={()=>d({type:"MODAL",v:"pros-rec",d:{list:"prospects",id:r.id}})}>
+        <td><span className={"rc-pri p"+(r.priority||"")}>{r.priority||"—"}</span></td>
+        <td><div className="rc-tn">{r.name}</div><div style={{fontSize:12.5,color:"var(--mt)"}}>{[r.city,kmTxt(r)].filter(Boolean).join(" · ")}</div></td>
+        <td style={{fontSize:13,maxWidth:220}}>{r.fleetType}<div style={{fontSize:12,color:"var(--mt)"}}>{r.haul}</div></td>
+        <td><PBadge st={r.status}/></td>
+        <td style={{fontSize:13,whiteSpace:"nowrap",color:late?"var(--w)":"var(--tx2)",fontWeight:late?600:400}}>{r.nextFollowUp||"—"}{late?<div style={{fontSize:12}}>due</div>:null}</td>
+        <td style={{fontSize:13,color:"var(--tx2)",whiteSpace:"nowrap"}}>{r.lastContact||"—"}{ll&&ll.outcome?<div style={{fontSize:12,color:"var(--mt)",maxWidth:170,overflow:"hidden",textOverflow:"ellipsis"}}>{ll.outcome}</div>:null}</td>
+        <td onClick={e=>e.stopPropagation()}><BtnRow nw>{nb(r.phone)&&<a className="rc-bs" href={telHref(r.phone)} aria-label={"Call "+r.name} title={nb(r.phone)} style={{textDecoration:"none"}}>📞</a>}<button className="rc-bs" disabled={dn} onClick={()=>d({type:"MODAL",v:"pros-log",d:{list:"prospects",id:r.id}})} style={{whiteSpace:"nowrap"}}>Log visit</button></BtnRow></td>
+      </tr>);})}</Tbl>
+      {list.length>lim&&<button className="rc-bs" onClick={()=>setLim(lim+100)}>Show {Math.min(100,list.length-lim)} more of {list.length-lim}</button>}
+    </>)}
+  </div>);
+}
+
+// ═══════════════════════════════════════════════════════════════
+// COMPETITORS — who else does diesel / engine work, and which shops buy engines
+// ═══════════════════════════════════════════════════════════════
+const CMP_COLS=[["business","Business"],["city","City"],["kmFromMH","km"],["category","Category"],["hdFocus","HD focus"],["sellsRemanHD","Sells reman HD"],["stockOnHand","Stock on hand"],["postedPricing","Posted pricing"],["platforms","Platforms"],["machineShop","Machine shop"],["mobile","Mobile"],["shipsCanadaWide","Ships Canada-wide"],["rollinCoalWins","Where we win"],["theyWin","Where they win"]];
+function ComparePanel({s,d}){
+  const[ed,setEd]=useState(null);const[addId,setAddId]=useState("");
+  const rows=(s.compare||[]).slice().sort((a,b)=>(b.us?1:0)-(a.us?1:0)||(+a.kmFromMH||0)-(+b.kmFromMH||0));
+  const save=(r,k,v)=>{const val=k==="kmFromMH"?(String(v).trim()===""?"":+v||0):v;if(String(r[k]??"")!==String(val))d({type:"UPDATE",list:"compare",id:r.id,d:{[k]:val}});setEd(null);};
+  const have=new Set((s.compare||[]).map(r=>String(r.business||"").toLowerCase()));
+  const addShop=()=>{const c=resById(s,"competitors",addId);if(!c)return;d({type:"ADD",list:"compare",keep:true,d:{id:"cmp-"+Date.now(),business:c.name,city:c.city||"",kmFromMH:c.kmFromMH??"",category:c.category||"",hdFocus:/HD/.test(c.duty||"")?"Yes":(c.duty||""),sellsRemanHD:c.sellsEngines||"",stockOnHand:"",postedPricing:c.postedPricing||"",platforms:"",machineShop:"",mobile:c.mobile24hr||"",shipsCanadaWide:"",rollinCoalWins:"",theyWin:""},label:c.name+" added to the comparison"});setAddId("");};
+  return(<div>
+    <div style={{fontSize:13,color:"var(--mt)",margin:"0 0 10px",lineHeight:1.5}}>The cheat sheet for sales calls. Click any cell to change it. Rollin Coal stays pinned on top.</div>
+    <div className="rc-card"><table className="rc-tbl rc-cmp"><thead><tr>{CMP_COLS.map(([k,l])=>(<th key={k} className={k==="business"?"stick":""}>{l}</th>))}<th/></tr></thead><tbody>{rows.map(r=>(<tr key={r.id} className={r.us?"us":""}>
+      {CMP_COLS.map(([k])=>{const on=ed&&ed.id===r.id&&ed.k===k;const v=r[k]??"";return(<td key={k} className={[k==="business"?"stick":"",k==="rollinCoalWins"?"win":"",k==="theyWin"?"lose":"","ed"].filter(Boolean).join(" ")} onClick={()=>{if(!on)setEd({id:r.id,k});}}>{on?<textarea className="rc-fi" autoFocus defaultValue={String(v)} rows={Math.min(6,Math.max(2,Math.ceil(String(v).length/26)))} aria-label={"Edit "+k+" for "+r.business} onBlur={e=>{if(e.target.dataset.cancel){setEd(null);return;}save(r,k,e.target.value);}} onKeyDown={e=>{if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();e.currentTarget.blur();}if(e.key==="Escape"){e.currentTarget.dataset.cancel="1";e.currentTarget.blur();}}}/>:(String(v)||<span style={{color:"var(--ft)"}}>—</span>)}</td>);})}
+      <td>{!r.us&&<button className="rc-bs rc-bsr" aria-label={"Remove "+r.business+" from the comparison"} onClick={e=>{e.stopPropagation();d({type:"DELETE",list:"compare",id:r.id});}}>×</button>}</td>
+    </tr>))}</tbody></table></div>
+    <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}><select className="rc-fi" aria-label="Add a shop to the comparison" value={addId} onChange={e=>setAddId(e.target.value)} style={{width:"auto",minWidth:260,appearance:"none"}}><option value="">Add a shop to the comparison…</option>{(s.competitors||[]).filter(c=>!have.has(String(c.name||"").toLowerCase())).slice().sort((a,b)=>(+a.kmFromMH||0)-(+b.kmFromMH||0)).map(c=>(<option key={c.id} value={c.id}>{c.name} · {c.city}</option>))}</select><button className="rc-bs" disabled={!addId} onClick={addShop}>+ Add</button></div>
+  </div>);
+}
+function Competitors({s,d}){
+  const[view,setView]=useState("shops");const[quick,setQuick]=useState("all");const[q,sq]=useState("");const[fr,sfr]=useState("");const[fc,sfc]=useState("");const[fth,sfth]=useState("");const[fsp,sfsp]=useState("");const[fdu,sfdu]=useState("");const[fse,sfse]=useState("");const[lim,setLim]=useState(100);
+  const all=s.competitors||[];const td=isoToday();
+  const rival=r=>["High","Medium"].includes(r.threat);const sellTo=r=>["High","Medium"].includes(r.salesProspect);
+  const uniq=k=>[...new Set(all.map(r=>r[k]).filter(Boolean))].sort();
+  const t=q.trim().toLowerCase();
+  const list=all.filter(r=>(quick==="all"||(quick==="rivals"?rival(r):sellTo(r)))&&(!fr||r.region===fr)&&(!fc||r.category===fc)&&(!fth||r.threat===fth)&&(!fsp||r.salesProspect===fsp)&&(!fdu||r.duty===fdu)&&(!fse||sellsGroup(r.sellsEngines)===fse)&&(!t||[r.name,r.city,r.phone,r.specialty,r.category,r.contactName].some(v=>String(v||"").toLowerCase().includes(t)))).sort((a,b)=>(+a.kmFromMH||0)-(+b.kmFromMH||0)||String(a.name||"").localeCompare(String(b.name||"")));
+  const sel={width:"auto",minWidth:150,appearance:"none"};
+  const S=(v,set,lab,opts)=>(<select className="rc-fi" aria-label={lab} value={v} onChange={e=>set(e.target.value)} style={sel}><option value="">{lab}</option>{opts.map(o=>Array.isArray(o)?<option key={o[0]} value={o[0]}>{o[1]}</option>:<option key={o} value={o}>{o}</option>)}</select>);
+  return(<div>
+    <div className="rc-g4"><Stat label="Shops tracked" value={all.length} sub={uniq("region").length+" regions"}/><Stat label="Rivals" value={all.filter(rival).length} sub="threat high or medium"/><Stat label="Shops to sell to" value={all.filter(sellTo).length} sub="sales prospect high or medium"/><Stat label="Sell engines" value={all.filter(r=>sellsGroup(r.sellsEngines)==="yes").length} sub="known so far"/></div>
+    <div style={{display:"flex",gap:6,marginBottom:14,flexWrap:"wrap"}} role="tablist" aria-label="Competitor views"><button role="tab" aria-selected={view==="shops"} className={"rc-fb"+(view==="shops"?" on":"")} onClick={()=>setView("shops")}>Shops · {all.length}</button><button role="tab" aria-selected={view==="compare"} className={"rc-fb"+(view==="compare"?" on":"")} onClick={()=>setView("compare")}>Comparison · {(s.compare||[]).length}</button></div>
+    {view==="compare"?<ComparePanel s={s} d={d}/>:(<>
+      <SH title="Competitors"><input className="rc-si" placeholder="Search name, city, specialty…" aria-label="Search competitors" value={q} onChange={e=>sq(e.target.value)}/><button className="rc-ba" onClick={()=>d({type:"MODAL",v:"pros-add",d:{list:"competitors"}})}>+ Shop</button></SH>
+      <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:10}}>{[["all","All shops"],["rivals","Rivals"],["sell","Shops to sell to"]].map(([k,l])=>(<button key={k} className={"rc-fb"+(quick===k?" on":"")} aria-pressed={quick===k} onClick={()=>setQuick(k)}>{l}</button>))}</div>
+      <div style={{display:"flex",gap:8,flexWrap:"wrap",marginBottom:14}}>{S(fr,sfr,"Every region",uniq("region"))}{S(fc,sfc,"Every category",uniq("category"))}{S(fth,sfth,"Any threat",["High","Medium","Low"])}{S(fsp,sfsp,"Any sales prospect",["High","Medium","Low","Supplier?"])}{S(fdu,sfdu,"Any duty class",uniq("duty"))}{S(fse,sfse,"Sells engines?",[["yes","Sells engines: yes"],["no","Sells engines: no"],["unknown","Sells engines: unknown"]])}</div>
+      {list.length===0?(<Empty icon="🏁" title={all.length?"No Matching Shops":"No Competitors"} sub={all.length?"Nothing matches these filters":"Add the shops you compete with or sell to"} action={()=>d({type:"MODAL",v:"pros-add",d:{list:"competitors"}})} label="+ Shop"/>):(<>
+        <Tbl headers={["Shop","Category","Threat","Sales prospect","Sells engines","Status",""]}>{list.slice(0,lim).map(r=>(<tr key={r.id} style={{cursor:"pointer"}} onClick={()=>d({type:"MODAL",v:"pros-rec",d:{list:"competitors",id:r.id}})}>
+          <td><div className="rc-tn">{r.name}</div><div style={{fontSize:12.5,color:"var(--mt)"}}>{[r.city,kmTxt(r)].filter(Boolean).join(" · ")}</div></td>
+          <td style={{fontSize:13,maxWidth:220}}>{r.category}<div style={{fontSize:12,color:"var(--mt)"}}>{r.duty}{r.specialty?" · "+r.specialty:""}</div></td>
+          <td><Lvl v={r.threat} cols={THREAT_COL}/></td>
+          <td><Lvl v={r.salesProspect} cols={SALES_COL}/></td>
+          <td style={{fontSize:13,maxWidth:170,color:sellsGroup(r.sellsEngines)==="yes"?"var(--tx)":"var(--mt)"}}>{r.sellsEngines||"—"}</td>
+          <td><PBadge st={r.status}/>{fuDue(r,td)&&<div style={{fontSize:12,color:"var(--w)",fontWeight:600,marginTop:3}}>follow-up due</div>}</td>
+          <td onClick={e=>e.stopPropagation()}><BtnRow nw>{nb(r.phone)&&<a className="rc-bs" href={telHref(r.phone)} aria-label={"Call "+r.name} title={nb(r.phone)} style={{textDecoration:"none"}}>📞</a>}{isSalesShop(r)&&<button className="rc-bs" disabled={r.status==="do-not-contact"} onClick={()=>d({type:"MODAL",v:"pros-log",d:{list:"competitors",id:r.id}})} style={{whiteSpace:"nowrap"}}>Log visit</button>}</BtnRow></td>
+        </tr>))}</Tbl>
+        {list.length>lim&&<button className="rc-bs" onClick={()=>setLim(lim+100)}>Show {Math.min(100,list.length-lim)} more of {list.length-lim}</button>}
+      </>)}
+    </>)}
+  </div>);
+}
+
+// ═══════════════════════════════════════════════════════════════
 // INVOICING with AR Aging
 // ═══════════════════════════════════════════════════════════════
 function Invoicing({s,d}){
@@ -1088,9 +1255,12 @@ function Schedule({s,d}){
   const days=Array.from({length:7},(_,i)=>{const dt=new Date(ws);dt.setDate(dt.getDate()+i);return dt;});
   const techs=[...new Set((s.schedule||[]).map(a=>a.tech).concat((s.employees||[]).filter(e=>e.status==="active").map(e=>e.nick||e.name)))].filter(Boolean).sort();
   const td=isoToday();const wl=days[0].toLocaleDateString("en-US",{month:"short",day:"numeric"})+" – "+days[6].toLocaleDateString("en-US",{month:"short",day:"numeric",year:"numeric"});
+  // Prospect / shop follow-ups: due and the next 7 days in a card, and on the week grid by day.
+  const fus=resFollowups(s,7);const wk0=days[0].toISOString().split("T")[0],wk6=days[6].toISOString().split("T")[0];const fuWeek=resFollowups(s,3650).filter(([,r])=>r.nextFollowUp>=wk0&&r.nextFollowUp<=wk6);
   return (<div>
     <SH title="Schedule"><div style={{display:"flex",gap:6,alignItems:"center"}}><button className="rc-bs" onClick={()=>setWo(w=>w-1)}>◄</button><span style={{fontSize:14,color:"var(--tx2)",minWidth:150,textAlign:"center"}}>{wl}</span><button className="rc-bs" onClick={()=>setWo(w=>w+1)}>►</button><button className="rc-bs" onClick={()=>setWo(0)}>Today</button></div><div style={{display:"flex",gap:6}}><button className="rc-ba rc-noprint" onClick={()=>window.print()}>🖨</button><button className="rc-ba" onClick={()=>d({type:"MODAL",v:"add-appt"})}>+ Book</button></div></SH>
-    {(s.schedule||[]).length===0&&techs.length===0?(<Empty icon="📅" title="No Appointments" sub="Book appointments" action={()=>d({type:"MODAL",v:"add-appt"})} label="+ Book"/>):(<div className="rc-card" style={{overflowX:"auto"}}><table className="rc-tbl" style={{minWidth:800}}><thead><tr><th style={{width:80}}>Tech</th>{days.map((dt,i)=>{const iso=dt.toISOString().split("T")[0];return (<th key={i} style={{textAlign:"center",color:iso===td?"var(--ac)":undefined}}>{["M","T","W","T","F","S","S"][i]} {dt.getDate()}</th>);})}</tr></thead><tbody>{techs.map(tech=>(<tr key={tech}><td style={{fontFamily:"var(--fd)",fontWeight:600,fontSize:13}}>{tech}</td>{days.map((dt,i)=>{const iso=dt.toISOString().split("T")[0];const appts=(s.schedule||[]).filter(a=>a.tech===tech&&a.date===iso);return (<td key={i} style={{verticalAlign:"top",padding:"6px 4px"}}>{appts.map(a=>(<div key={a.id} onClick={()=>d({type:"MODAL",v:"appt-detail",d:a})} style={{background:a.status==="confirmed"?"var(--bs)":"var(--ws)",border:`1px solid ${a.status==="confirmed"?"var(--b)":"var(--w)"}`,borderRadius:3,padding:"4px 6px",marginBottom:3,cursor:"pointer",fontSize:11}}><div style={{fontWeight:600}}>{a.time}</div><div style={{color:"var(--ac)"}}>{a.service}</div></div>))}</td>);})}</tr>))}</tbody></table></div>)}
+    {fus.length>0&&(<div className="rc-card" style={{padding:"4px 14px"}}><div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",gap:10,padding:"10px 0 6px",flexWrap:"wrap"}}><b style={{fontSize:15}}>Prospect follow-ups</b><span style={{fontSize:12.5,color:"var(--mt)"}}>{fus.filter(([,r])=>r.nextFollowUp<=td).length} due · the next 7 days</span></div>{fus.map(([list,r])=>{const late=r.nextFollowUp<td,now=r.nextFollowUp===td;const ll=lastTouch(r);return(<div key={list+":"+r.id} className="rc-fu-row"><span style={{flex:1,minWidth:180}}><button className="rc-lnk" onClick={()=>d({type:"MODAL",v:"pros-rec",d:{list,id:r.id}})}>{r.name}</button><span style={{display:"block",fontSize:12.5,color:"var(--mt)"}}>{list==="competitors"?"Shop":"Fleet"}{r.city?" · "+r.city:""}{ll&&ll.outcome?" · last: "+ll.outcome:""}</span></span><span style={{fontSize:13.5,fontWeight:600,whiteSpace:"nowrap",color:late?"var(--r)":now?"var(--w)":"var(--tx2)"}}>{late?"Overdue · "+r.nextFollowUp:now?"Due today":r.nextFollowUp}</span><button className="rc-bs" disabled={r.status==="do-not-contact"} onClick={()=>d({type:"MODAL",v:"pros-log",d:{list,id:r.id}})}>Log visit</button></div>);})}</div>)}
+    {(s.schedule||[]).length===0&&techs.length===0?(<Empty icon="📅" title="No Appointments" sub="Book appointments" action={()=>d({type:"MODAL",v:"add-appt"})} label="+ Book"/>):(<div className="rc-card" style={{overflowX:"auto"}}><table className="rc-tbl" style={{minWidth:800}}><thead><tr><th style={{width:80}}>Tech</th>{days.map((dt,i)=>{const iso=dt.toISOString().split("T")[0];return (<th key={i} style={{textAlign:"center",color:iso===td?"var(--ac)":undefined}}>{["M","T","W","T","F","S","S"][i]} {dt.getDate()}</th>);})}</tr></thead><tbody>{techs.map(tech=>(<tr key={tech}><td style={{fontFamily:"var(--fd)",fontWeight:600,fontSize:13}}>{tech}</td>{days.map((dt,i)=>{const iso=dt.toISOString().split("T")[0];const appts=(s.schedule||[]).filter(a=>a.tech===tech&&a.date===iso);return (<td key={i} style={{verticalAlign:"top",padding:"6px 4px"}}>{appts.map(a=>(<div key={a.id} onClick={()=>d({type:"MODAL",v:"appt-detail",d:a})} style={{background:a.status==="confirmed"?"var(--bs)":"var(--ws)",border:`1px solid ${a.status==="confirmed"?"var(--b)":"var(--w)"}`,borderRadius:3,padding:"4px 6px",marginBottom:3,cursor:"pointer",fontSize:11}}><div style={{fontWeight:600}}>{a.time}</div><div style={{color:"var(--ac)"}}>{a.service}</div></div>))}</td>);})}</tr>))}{fuWeek.length>0&&<tr><td style={{fontFamily:"var(--fd)",fontWeight:600,fontSize:13}}>Follow-ups</td>{days.map((dt,i)=>{const iso=dt.toISOString().split("T")[0];return (<td key={i} style={{verticalAlign:"top",padding:"6px 4px"}}>{fuWeek.filter(([,r])=>r.nextFollowUp===iso).map(([list,r])=>(<div key={list+":"+r.id} onClick={()=>d({type:"MODAL",v:"pros-rec",d:{list,id:r.id}})} style={{background:"var(--acs)",border:"1px solid var(--ac)",borderRadius:3,padding:"4px 6px",marginBottom:3,cursor:"pointer",fontSize:12}}>{r.name}</div>))}</td>);})}</tr>}</tbody></table></div>)}
     <SH title="All Appointments"/><Tbl headers={["Date","Time","Customer","Service","Tech","Status",""]}>{[...(s.schedule||[])].sort((a,b)=>(a.date||"").localeCompare(b.date||"")).map(a=>(<tr key={a.id}><td style={{fontSize:13}}>{a.date}</td><td style={{fontSize:13,fontWeight:600}}>{a.time}</td><td className="rc-tn">{cn(s.customers,a.custId)}</td><td style={{fontSize:13,color:"var(--ac)",cursor:"pointer"}} onClick={()=>d({type:"MODAL",v:"appt-detail",d:a})}>{a.service}</td><td style={{fontSize:13}}>{a.tech}</td><td><Badge s={a.status}/></td><td><BtnRow><button className="rc-bs" onClick={()=>d({type:"MODAL",v:"edit-appt",d:a})} style={{fontSize:14.5}}>✎</button>{a.status==="pending"&&<button className="rc-bs rc-bsg" onClick={()=>d({type:"UPDATE",list:"schedule",id:a.id,d:{status:"confirmed"}})}>✓</button>}<button className="rc-bs rc-bsr" onClick={()=>d({type:"DELETE",list:"schedule",id:a.id})} style={{fontSize:14.5}}>×</button></BtnRow></td></tr>))}</Tbl>
   </div>);
 }
@@ -1207,6 +1377,22 @@ function Reports({s}){
         {Object.keys(dyno).length>0&&<Tbl headers={["Engine family","Before and after dynos","Average HP gain","Average torque gain"]}>{Object.keys(dyno).sort().map(k=>{const x=dyno[k];return(<tr key={k}><td className="rc-tn">{ecmFamLabel(k)}</td><td>{x.n}</td><td style={{fontWeight:600}}>{sg(Math.round(x.hp/x.n*10)/10)} HP</td><td>{x.tqn?sg(Math.round(x.tq/x.tqn))+" lb-ft":"—"}</td></tr>);})}</Tbl>}
         {Object.keys(codes).length>0&&<Tbl headers={["Engine family","Most common fault codes at intake"]}>{Object.keys(codes).sort().map(k=>(<tr key={k}><td className="rc-tn" style={{verticalAlign:"top"}}>{ecmFamLabel(k)}</td><td style={{fontSize:13.5}}>{Object.entries(codes[k]).sort((a,b)=>b[1].n-a[1].n).slice(0,5).map(([c,v])=>(<div key={c}><b>{c}</b>{v.d?" · "+v.d:""} <span style={{color:"var(--mt)"}}>×{v.n}</span></div>))}</td></tr>))}</Tbl>}
       </>);})()}
+    {(()=>{const P=s.prospects||[],Cm=s.competitors||[];if(!P.length&&!Cm.length)return null;const both=[...P,...Cm];
+      const regs=[...new Set(P.map(r=>r.region||"—"))].sort();const pv=(reg,k)=>P.filter(r=>(r.region||"—")===reg&&(r.status||"")===k).length;
+      // Week of = the Monday. Visits per week across fleets and shops, last 8 weeks.
+      const wkOf=iso=>{const dt=new Date(iso+"T12:00:00");dt.setDate(dt.getDate()-((dt.getDay()+6)%7));return dt.toISOString().slice(0,10);};
+      const weeks=[];for(let x=0;x<8;x++)weeks.push(wkOf(addDays(isoToday(),-7*x)));
+      const vc={},cc={};both.forEach(r=>(r.log||[]).forEach(e=>{if(!e.date)return;const w=wkOf(e.date);if(e.type==="visit")vc[w]=(vc[w]||0)+1;else if(e.type==="call"||e.type==="email")cc[w]=(cc[w]||0)+1;}));
+      const touched=both.filter(r=>(r.log||[]).some(e=>e.type!=="note")||(r.status||"")!=="");const conv=both.filter(r=>r.status==="customer"||r.customerId);
+      const cids=new Set(conv.map(r=>+r.customerId).filter(Boolean));const rev=(s.invoices||[]).filter(v=>cids.has(+v.custId)).reduce((a,v)=>a+invTot(v),0);
+      const cats=[...new Set(Cm.map(r=>r.category||"—"))].sort();const cregs=[...new Set(Cm.map(r=>r.region||"—"))].sort();
+      return(<>
+        {P.length>0&&<><SH title="Prospect Pipeline"/>
+          <div className="rc-g4"><Stat label="Fleets" value={P.length} sub={P.filter(r=>!(r.status||"")).length+" not contacted yet"}/><Stat label="Contacted" value={touched.length} sub="fleets and shops"/><Stat label="Visited to customer" value={touched.length?Math.round(conv.length/touched.length*100)+"%":"—"} sub={conv.length+" became customers"}/><Stat label="Revenue from converted" value={$K(rev)} sub="their invoices, incl. GST"/></div>
+          <div className="rc-card"><table className="rc-tbl rc-tbl-wrap"><thead><tr>{["Region",...PST.map(x=>x[1]),"Total"].map(h=>(<th key={h}>{h}</th>))}</tr></thead><tbody>{regs.map(rg=>(<tr key={rg}><td className="rc-tn">{rg}</td>{PST.map(([k])=>{const n=pv(rg,k);return(<td key={k||"new"} style={{color:n?"var(--tx)":"var(--ft)"}}>{n||"—"}</td>);})}<td style={{fontWeight:600}}>{P.filter(r=>(r.region||"—")===rg).length}</td></tr>))}</tbody></table></div>
+          <Tbl headers={["Week of","Visits","Calls and emails"]}>{weeks.map(w=>(<tr key={w}><td className="rc-tn">{w}</td><td>{vc[w]||0}</td><td>{cc[w]||0}</td></tr>))}</Tbl></>}
+        {Cm.length>0&&<><SH title="Competitors by Region"/><Tbl headers={["Category",...cregs,"Total"]}>{cats.map(c=>(<tr key={c}><td className="rc-tn">{c}</td>{cregs.map(rg=>{const n=Cm.filter(r=>(r.category||"—")===c&&(r.region||"—")===rg).length;return(<td key={rg} style={{color:n?"var(--tx)":"var(--ft)"}}>{n||"—"}</td>);})}<td style={{fontWeight:600}}>{Cm.filter(r=>(r.category||"—")===c).length}</td></tr>))}<tr><td className="rc-tn">Total</td>{cregs.map(rg=>(<td key={rg} style={{fontWeight:600}}>{Cm.filter(r=>(r.region||"—")===rg).length}</td>))}<td style={{fontWeight:700}}>{Cm.length}</td></tr></Tbl></>}
+      </>);})()}
     {techRows.length>0&&<><SH title="Labor by Technician"/><div className="rc-card" style={{padding:16}}><div style={{display:"flex",justifyContent:"space-between",fontSize:13,color:"var(--mt)",marginBottom:10}}><span>{laborHrs}h logged</span><span style={{color:"var(--ac)",fontWeight:600}}>{$$(laborVal)} labour cost at tech pay</span></div>{techRows.map(([tech,v],i)=>(<div key={i} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"5px 0",borderBottom:i<techRows.length-1?"1px solid var(--ln)":"none",fontSize:14}}><span style={{fontFamily:"var(--fd)",fontWeight:600}}>{tech}</span><span style={{display:"flex",gap:16,alignItems:"center"}}><span style={{color:"var(--tx2)"}}>{v.hours}h</span><span style={{color:"var(--ac)",fontWeight:600,width:80,textAlign:"right"}}>{$$(v.val)}</span></span></div>))}</div></>}
     <div className="rc-print-only" style={{marginTop:24,paddingTop:10,borderTop:"2px solid #ccc",fontSize:12,color:"#999",display:"flex",justifyContent:"space-between"}}><span>Rollin Coal — Confidential</span><span>{td}</span></div>
   </div>);
@@ -1243,6 +1429,9 @@ function Modals({s,d}){
   // ECM: open a new job on one of our engines (from its passport), keeping Back to the passport.
   const newEcmFor=e=>{const nid=Date.now();const inv0=(s.invoices||[]).find(v=>+v.engineId===e.id);d({type:"ADD",list:"ecmJobs",d:{id:nid,date:isoToday(),status:"intake",...ecmBlank(),custId:inv0?(+inv0.custId||0):0,engineId:e.id,family:ecmFamOf(e),esn:e.serial||e.esn||"",cpl:e.cpl||"",arrangement:e.arrangement||"",hp:e.ratedHp||""},label:"ECM job opened"});d({type:"MODAL",v:"part-detail",d:{...e,ptab:"diagnosis"}});d({type:"MODAL",v:"ecm-job",d:{id:nid}});};
 
+  // Prospects / shops: convert to a customer, linked both ways (record.customerId and customer.prospectId).
+  const convertRec=(list,r)=>{const nid=Date.now();const comp=list==="competitors";d({type:"ADD",list:"customers",keep:true,d:{id:nid,name:r.name,type:comp?"Shop":"Fleet",phone:nb(r.phone),email:"",province:"AB",address:nb(r.address),city:r.city||"",vehicles:[],notes:[r.contactName&&("Contact: "+r.contactName+(r.contactRole?", "+r.contactRole:"")),r.truckCount&&(r.truckCount+" trucks"),(r.engines||[]).length&&("Runs "+r.engines.map(ecmFamLabel).join(", ")),comp?(r.specialty||r.category):r.haul].filter(Boolean).join(" · "),tags:[comp?"shop":"fleet","prospect"],spent:0,visits:0,last:today(),prospectId:r.id,prospectList:list},label:"✓ "+r.name+" is now a customer"});d({type:"UPDATE",list,id:r.id,d:{customerId:nid,status:"customer",log:[...(r.log||[]),{date:isoToday(),by:CURRENT_USER,type:"note",outcome:"Converted to customer",notes:""}]}});};
+
   // Detail modals
   if(s.modal==="job-detail"){const j=(s.jobs||[]).find(x=>x.id===(s.md&&s.md.id))||s.md||{};const nx={queued:"in-progress","in-progress":"complete"};const te=jobTime(s,j);const thrs=jobHours(s,j);const tlab=jobCost(s,j);const svc=jobKind(j)==="service";const chg=jobCharge(s,j);const hourly=jobPricing(j)==="hourly";const inv=jobInv(s,j);const eng=j.engineId?engById(s,j.engineId):null;const profit=chg-tlab;
     return W(<div><div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}><div className="rc-mt" style={{margin:0}}>Work Order</div><span className="rc-fb on" style={{cursor:"default"}}>{svc?"Service":"Reman · our engine"}</span><Badge s={j.status}/></div>
@@ -1262,7 +1451,7 @@ function Modals({s,d}){
       {j.notes&&<div className="rc-fg" style={{marginTop:8}}><div className="rc-fl">Notes</div><div style={{fontSize:14,color:"var(--tx2)"}}>{j.notes}</div></div>}
       <div className="rc-fa">{C}<button className="rc-bs" onClick={()=>d({type:"MODAL",v:"edit-job",d:j})}>✎ Edit</button>{svc&&!inv&&(chg>0||hourly)&&<button className="rc-bs" onClick={()=>d({type:"MODAL",v:"add-inv",d:{custId:j.custId,prefillItems:[jobBillLine(s,j)]}})}>🧾 Bill this job</button>}{j.status!=="complete"&&<button className="rc-ba" onClick={()=>{d({type:"UPDATE",list:"jobs",id:j.id,d:{status:nx[j.status]||"in-progress"}});d({type:"CLOSE"});}}>→ {nx[j.status]==="complete"?"Complete":"In Progress"}</button>}</div>
     </div>);}
-  if(s.modal==="cust-detail"){const c=s.md;return W(<div><div className="rc-mt">Customer</div><div style={{fontFamily:"var(--fd)",fontWeight:700,fontSize:21}}>{c.name}</div><div style={{fontSize:14,color:"var(--ac)"}}>{c.type} {c.province?`· ${c.province}`:""}</div><div style={{fontSize:14,color:"var(--tx2)",margin:"6px 0 12px"}}>{[c.phone,c.email].filter(Boolean).join(" · ")||"No phone or email yet"}</div><div className="rc-3c" style={{marginBottom:12}}><div><div className="rc-ml">Spent</div><div className="rc-mv">{$K(c.spent||0)}</div></div><div><div className="rc-ml">Visits</div><div className="rc-mv">{c.visits||0}</div></div><div><div className="rc-ml">Last</div><div className="rc-mv" style={{fontSize:14.5}}>{c.last||"—"}</div></div></div>{(c.vehicles||[]).length>0&&<div className="rc-fg"><div className="rc-fl">Vehicles</div><div style={{fontSize:14,color:"var(--tx2)"}}>{c.vehicles.join(" · ")}</div></div>}{c.notes&&<div className="rc-fg"><div className="rc-fl">Notes</div><div style={{fontSize:14,color:"var(--tx2)"}}>{c.notes}</div></div>}{(()=>{const cj=(s.jobs||[]).filter(j=>j.custId===c.id);if(!cj.length)return null;const tot=cj.reduce((a,j)=>a+jobCharge(s,j),0);return(<><div className="rc-fl" style={{marginTop:10,display:"flex",justifyContent:"space-between",gap:10}}><span>Work done</span><span style={{color:"var(--tx)"}}>{$$(tot)} charged</span></div>{cj.map(j=>(<div key={j.id} role="button" tabIndex={0} onClick={()=>d({type:"MODAL",v:"job-detail",d:j})} onKeyDown={e=>{if(e.key==="Enter")d({type:"MODAL",v:"job-detail",d:j});}} style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:8,padding:"6px 0",borderBottom:"1px solid var(--ln)",fontSize:14,cursor:"pointer"}}><span style={{flex:1,minWidth:0}}>{j.service}</span><span style={{fontWeight:600}}>{jobKind(j)==="service"?$$(jobCharge(s,j)):"—"}</span><Badge s={j.status}/></div>))}</>);})()}{(()=>{const ej=(s.ecmJobs||[]).filter(x=>+x.custId===c.id);if(!ej.length)return null;return(<><div className="rc-fl" style={{marginTop:10}}>ECM jobs</div>{ej.map(x=>(<div key={x.id} role="button" tabIndex={0} onClick={()=>d({type:"MODAL",v:"ecm-job",d:{id:x.id}})} onKeyDown={e=>{if(e.key==="Enter")d({type:"MODAL",v:"ecm-job",d:{id:x.id}});}} style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:8,padding:"6px 0",borderBottom:"1px solid var(--ln)",fontSize:14,cursor:"pointer"}}><span style={{flex:1,minWidth:0}}>{(x.types||[]).map(ecmTypeLabel).join(", ")||"ECM job"}<span style={{display:"block",fontSize:12,color:"var(--mt)"}}>{x.date}{x.unit?" · unit "+x.unit:""}</span></span><span style={{fontWeight:600}}>{x.billTo==="warranty"?"—":$$(ecmCharge(s,x))}</span><Badge s={x.status||"intake"}/></div>))}</>);})()}{(s.invoices||[]).filter(inv=>inv.custId===c.id).length>0&&<><div className="rc-fl" style={{marginTop:10}}>Invoices</div>{(s.invoices||[]).filter(inv=>inv.custId===c.id).map(inv=>(<div key={inv.id} style={{display:"flex",justifyContent:"space-between",padding:"4px 0",borderBottom:"1px solid var(--ln)",fontSize:14,gap:6}}><span style={{color:"var(--ac)"}}>{inv.invNum}</span><span>{$$(invTot(inv))}</span><Badge s={inv.status}/></div>))}</>}<div className="rc-fa">{C}<button className="rc-bs" onClick={()=>d({type:"MODAL",v:"edit-cust",d:c})}>✎ Edit</button></div></div>);}
+  if(s.modal==="cust-detail"){const c=s.md;return W(<div><div className="rc-mt">Customer</div><div style={{fontFamily:"var(--fd)",fontWeight:700,fontSize:21}}>{c.name}</div><div style={{fontSize:14,color:"var(--ac)"}}>{c.type} {c.province?`· ${c.province}`:""}</div><div style={{fontSize:14,color:"var(--tx2)",margin:"6px 0 12px"}}>{[c.phone,c.email].filter(Boolean).join(" · ")||"No phone or email yet"}</div><div className="rc-3c" style={{marginBottom:12}}><div><div className="rc-ml">Spent</div><div className="rc-mv">{$K(c.spent||0)}</div></div><div><div className="rc-ml">Visits</div><div className="rc-mv">{c.visits||0}</div></div><div><div className="rc-ml">Last</div><div className="rc-mv" style={{fontSize:14.5}}>{c.last||"—"}</div></div></div>{(c.vehicles||[]).length>0&&<div className="rc-fg"><div className="rc-fl">Vehicles</div><div style={{fontSize:14,color:"var(--tx2)"}}>{c.vehicles.join(" · ")}</div></div>}{c.notes&&<div className="rc-fg"><div className="rc-fl">Notes</div><div style={{fontSize:14,color:"var(--tx2)"}}>{c.notes}</div></div>}{(()=>{const cj=(s.jobs||[]).filter(j=>j.custId===c.id);if(!cj.length)return null;const tot=cj.reduce((a,j)=>a+jobCharge(s,j),0);return(<><div className="rc-fl" style={{marginTop:10,display:"flex",justifyContent:"space-between",gap:10}}><span>Work done</span><span style={{color:"var(--tx)"}}>{$$(tot)} charged</span></div>{cj.map(j=>(<div key={j.id} role="button" tabIndex={0} onClick={()=>d({type:"MODAL",v:"job-detail",d:j})} onKeyDown={e=>{if(e.key==="Enter")d({type:"MODAL",v:"job-detail",d:j});}} style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:8,padding:"6px 0",borderBottom:"1px solid var(--ln)",fontSize:14,cursor:"pointer"}}><span style={{flex:1,minWidth:0}}>{j.service}</span><span style={{fontWeight:600}}>{jobKind(j)==="service"?$$(jobCharge(s,j)):"—"}</span><Badge s={j.status}/></div>))}</>);})()}{(()=>{const ej=(s.ecmJobs||[]).filter(x=>+x.custId===c.id);if(!ej.length)return null;return(<><div className="rc-fl" style={{marginTop:10}}>ECM jobs</div>{ej.map(x=>(<div key={x.id} role="button" tabIndex={0} onClick={()=>d({type:"MODAL",v:"ecm-job",d:{id:x.id}})} onKeyDown={e=>{if(e.key==="Enter")d({type:"MODAL",v:"ecm-job",d:{id:x.id}});}} style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:8,padding:"6px 0",borderBottom:"1px solid var(--ln)",fontSize:14,cursor:"pointer"}}><span style={{flex:1,minWidth:0}}>{(x.types||[]).map(ecmTypeLabel).join(", ")||"ECM job"}<span style={{display:"block",fontSize:12,color:"var(--mt)"}}>{x.date}{x.unit?" · unit "+x.unit:""}</span></span><span style={{fontWeight:600}}>{x.billTo==="warranty"?"—":$$(ecmCharge(s,x))}</span><Badge s={x.status||"intake"}/></div>))}</>);})()}{(s.invoices||[]).filter(inv=>inv.custId===c.id).length>0&&<><div className="rc-fl" style={{marginTop:10}}>Invoices</div>{(s.invoices||[]).filter(inv=>inv.custId===c.id).map(inv=>(<div key={inv.id} style={{display:"flex",justifyContent:"space-between",padding:"4px 0",borderBottom:"1px solid var(--ln)",fontSize:14,gap:6}}><span style={{color:"var(--ac)"}}>{inv.invNum}</span><span>{$$(invTot(inv))}</span><Badge s={inv.status}/></div>))}</>}<div className="rc-fa">{C}{c.prospectId!=null&&c.prospectId!==""&&<button className="rc-bs" onClick={()=>d({type:"MODAL",v:"pros-rec",d:{list:c.prospectList||"prospects",id:c.prospectId}})}>{c.prospectList==="competitors"?"Open shop record":"Open prospect record"}</button>}<button className="rc-bs" onClick={()=>d({type:"MODAL",v:"edit-cust",d:c})}>✎ Edit</button></div></div>);}
   if(s.modal==="inv-detail"){const inv=s.md;const sb=(inv.items||[]).reduce((a,i)=>a+i.q*i.r,0);return W(<div><div className="rc-mt">{inv.invNum||inv.id}</div><div style={{display:"flex",justifyContent:"space-between",marginBottom:12}}><div><div className="rc-fl">Customer</div><div style={{fontFamily:"var(--fd)",fontWeight:600}}>{cn(s.customers,inv.custId)}</div></div><div style={{textAlign:"right"}}><div className="rc-fl">Status</div><Badge s={inv.status}/></div></div><div className="rc-fl">Line Items</div><div style={{background:"var(--sf2)",borderRadius:6,padding:10,marginBottom:12}}>{(inv.items||[]).map((it,i)=>(<div key={i} style={{display:"flex",justifyContent:"space-between",padding:"5px 0",borderBottom:i<inv.items.length-1?"1px solid var(--ln)":"none",fontSize:14}}><span style={{flex:1}}>{it.d}{it.svcId?<span style={{fontSize:11,fontWeight:600,letterSpacing:.5,color:"var(--act)",marginLeft:7}}>SERVICE</span>:null}{it.ecmJobId?<span style={{fontSize:11,fontWeight:600,letterSpacing:.5,color:"var(--act)",marginLeft:7}}>ECM</span>:null}</span><span style={{width:40,textAlign:"center",color:"var(--mt)"}}>×{it.q}</span><span style={{width:80,textAlign:"right",fontWeight:600}}>{$$(it.q*it.r)}</span></div>))}</div>{[["Subtotal",sb],["GST",sb*.05],["Total",sb*1.05]].map(([l,v],i)=>(<div key={i} style={{display:"flex",justifyContent:"space-between",padding:"2px 0",fontSize:i===2?14:12,fontWeight:i===2?700:400,color:i===2?"var(--ac)":"var(--tx2)"}}><span>{l}</span><span>{$$(v)}</span></div>))}<div className="rc-fa">{C}{inv.status==="pending"&&<button className="rc-ba" onClick={()=>{d({type:"UPDATE",list:"invoices",id:inv.id,d:{status:"paid"}});d({type:"CLOSE"});}}>Mark Paid</button>}</div></div>);}
   if(s.modal==="quote-detail"){const q=s.md;const sb=qTot(q);return W(<div><div className="rc-mt">{q.quoteNum||"Quote"}</div><div style={{display:"flex",justifyContent:"space-between",marginBottom:12}}><div><div className="rc-fl">Customer</div><div style={{fontFamily:"var(--fd)",fontWeight:600}}>{cn(s.customers,q.custId)}</div></div><Badge s={q.status}/></div>{q.description&&<div style={{fontSize:14,color:"var(--tx2)",marginBottom:10}}>{q.description}</div>}<div className="rc-fl">Items</div><div style={{background:"var(--sf2)",borderRadius:6,padding:10,marginBottom:12}}>{(q.items||[]).map((it,i)=>(<div key={i} style={{display:"flex",justifyContent:"space-between",padding:"5px 0",borderBottom:i<q.items.length-1?"1px solid var(--ln)":"none",fontSize:14}}><span style={{flex:1}}>{it.d}{it.svcId?<span style={{fontSize:11,fontWeight:600,letterSpacing:.5,color:"var(--act)",marginLeft:7}}>SERVICE</span>:null}</span><span style={{width:80,textAlign:"right",fontWeight:600}}>{$$(it.q*it.r)}</span></div>))}</div>{[["Sub",sb],["GST",sb*.05],["Total",sb*1.05]].map(([l,v],i)=>(<div key={i} style={{display:"flex",justifyContent:"space-between",padding:"2px 0",fontSize:i===2?14:12,fontWeight:i===2?700:400,color:i===2?"var(--ac)":"var(--tx2)"}}><span>{l}</span><span>{$$(v)}</span></div>))}<div className="rc-fa">{C}{q.status==="approved"&&<button className="rc-ba" onClick={()=>{d({type:"ADD",list:"invoices",d:{invNum:"INV-"+Date.now().toString().slice(-6),custId:q.custId,date:today(),due:"Net 30",items:q.items,status:"pending"}});d({type:"CLOSE"});}}>→ Invoice</button>}</div></div>);}
   if(s.modal==="appt-detail"){const a=s.md;return W(<div><div className="rc-mt">Appointment</div>{[["Customer",cn(s.customers,a.custId)],["Service",a.service],["Date",a.date],["Time",a.time],["Tech",a.tech],...(a.notes?[["Notes",a.notes]]:[])].map(([l,v],i)=>(<div key={i} className="rc-fg"><div className="rc-fl">{l}</div><div style={{fontSize:14.5}}>{v}</div></div>))}<div className="rc-fg"><div className="rc-fl">Status</div><Badge s={a.status}/></div><div className="rc-fa">{C}{a.ecmJobId&&<button className="rc-bs" onClick={()=>d({type:"MODAL",v:"ecm-job",d:{id:+a.ecmJobId,etab:"follow"}})}>Open ECM job</button>}{a.status==="pending"&&<button className="rc-ba" onClick={()=>{d({type:"UPDATE",list:"schedule",id:a.id,d:{status:"confirmed"}});d({type:"CLOSE"});}}>Confirm</button>}</div></div>);}
@@ -1764,6 +1953,118 @@ function Modals({s,d}){
       </>)}
       <div className="rc-fa">{C}<button className="rc-bs" onClick={()=>printEcm(s,j)}>🖨 Print job sheet</button>{T!=="work"&&canBill&&<button className="rc-bs" onClick={bill}>🧾 Bill this job</button>}{nxt&&<button className="rc-ba" onClick={()=>go(nxt)}>→ {ecmStLabel(nxt)}</button>}{j.status==="verify"&&<button className="rc-ba" disabled={!!miss.length} onClick={()=>up({status:"complete"})}>✓ Complete job</button>}</div>
     </div>,"rc-wmod");}
+  if(s.modal==="pros-rec"){const list=(s.md&&s.md.list)||"prospects";const comp=list==="competitors";const r=resById(s,list,s.md&&s.md.id);
+    if(!r)return W(<div><div className="rc-mt">Record not found</div><div style={{fontSize:14,color:"var(--mt)"}}>It may have been deleted. Undo from the toast if that was a mistake.</div><div className="rc-fa">{C}</div></div>);
+    const td=isoToday();const cust=r.customerId?(s.customers||[]).find(c=>c.id===+r.customerId):null;const dnc=r.status==="do-not-contact";const canSell=!comp||isSalesShop(r);const late=fuDue(r,td);
+    const up=patch=>d({type:"UPDATE",list,id:r.id,d:patch});
+    const setStatus=v=>{if(v===(r.status||""))return;up({status:v,log:[...(r.log||[]),{date:td,by:CURRENT_USER,type:"note",outcome:"Status set to "+pstOf(v)[1],notes:""}]});};
+    const kv=(l,v)=>v?(<div className="rc-kv"><div className="rc-fl">{l}</div><div style={{fontSize:14.5,whiteSpace:"pre-wrap"}}>{v}</div></div>):null;
+    return W(<div>
+      <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}><div className="rc-mt" style={{margin:0}}>{r.name}</div>{!comp&&r.priority&&<span className={"rc-pri p"+r.priority} title="Priority">{r.priority}</span>}<PBadge st={r.status}/></div>
+      <div style={{fontSize:14,color:"var(--tx2)",margin:"6px 0 12px"}}>{[comp?r.category:r.fleetType,r.city,r.region,kmTxt(r)&&kmTxt(r)+" from Medicine Hat"].filter(Boolean).join(" · ")}</div>
+      {dnc&&<div className="rc-ecm-ban bad">Do not contact. Keep this record for reference only.</div>}
+      {!comp&&r.pitch&&<div className="rc-pitch"><div className="rc-fl" style={{margin:"0 0 4px"}}>Pitch</div>{r.pitch}</div>}
+      <div className="rc-contact">{nb(r.phone)&&<a className="rc-bs" href={telHref(r.phone)}>📞 {nb(r.phone)}</a>}{nb(r.website)&&<a className="rc-bs" href={webHref(r.website)} target="_blank" rel="noopener noreferrer">🌐 {String(r.website).replace(/^https?:\/\//i,"").replace(/\/$/,"")}</a>}{(nb(r.address)||r.city)&&<a className="rc-bs" href={mapHref(r)} target="_blank" rel="noopener noreferrer">📍 Map</a>}</div>
+      <div className="rc-ecm-g2">{kv("Address",[nb(r.address),r.city].filter(Boolean).join(", "))}{kv("Contact",[r.contactName,r.contactRole].filter(Boolean).join(" · "))}</div>
+      <div className="rc-ecm-g2"><div className="rc-fg"><label className="rc-fl">Status</label><select className="rc-fi" aria-label="Status" value={r.status||""} onChange={e=>setStatus(e.target.value)} style={{appearance:"none"}}>{PST.map(([k,l])=>(<option key={k||"new"} value={k}>{l}</option>))}</select></div>
+        <div className="rc-kv"><div className="rc-fl">Next follow-up</div><div style={{fontSize:14.5,color:late?"var(--w)":"var(--tx)",fontWeight:late?600:400,paddingTop:8}}>{r.nextFollowUp?r.nextFollowUp+(late?" · due":""):"None set"}</div></div></div>
+      {comp?(<>
+        <div className="rc-ecm-sec">Where they stand</div>
+        <div className="rc-ecm-g">{kv("Duty class",r.duty)}{kv("Engine work",r.engineWork)}{kv("Specialty",r.specialty)}{kv("Mobile / 24 hr",r.mobile24hr)}<div className="rc-kv"><div className="rc-fl">Threat</div><Lvl v={r.threat} cols={THREAT_COL}/></div><div className="rc-kv"><div className="rc-fl">Sales prospect</div><Lvl v={r.salesProspect} cols={SALES_COL}/></div></div>
+        <div className="rc-ecm-g2"><div className="rc-fg"><label className="rc-fl">Sells engines?</label><select className="rc-fi" aria-label="Sells engines?" value={r.sellsEngines||""} onChange={e=>up({sellsEngines:e.target.value,lastChecked:td})} style={{appearance:"none"}}>{optsWith(SELLS_OPTS,r.sellsEngines).map(o=>(<option key={o} value={o}>{o}</option>))}</select></div><div className="rc-fg"><label className="rc-fl">Posted pricing?</label><select className="rc-fi" aria-label="Posted pricing?" value={r.postedPricing||""} onChange={e=>up({postedPricing:e.target.value,lastChecked:td})} style={{appearance:"none"}}>{optsWith(PRICING_OPTS,r.postedPricing).map(o=>(<option key={o} value={o}>{o}</option>))}</select></div></div>
+        <div style={{fontSize:12.5,color:"var(--mt)",margin:"-4px 0 6px"}}>{r.lastChecked?"Last checked "+r.lastChecked:"Not checked yet"}. Changing either answer stamps today's date.</div>
+      </>):(<>
+        <div className="rc-ecm-sec">The fleet</div>
+        <div className="rc-ecm-g">{kv("Haul",r.haul)}{kv("Fleet type",r.fleetType)}{kv("Trucks",r.truckCount)}</div>
+      </>)}
+      {(r.engines||[]).length>0&&<div className="rc-kv"><div className="rc-fl">Engines they run</div><div style={{display:"flex",gap:5,flexWrap:"wrap"}}>{r.engines.map(k=>(<span key={k} className="rc-fb" style={{cursor:"default",textTransform:"none",letterSpacing:0}}>{ecmFamLabel(k)}</span>))}</div></div>}
+      <div className="rc-ecm-g">{kv("Last contact",r.lastContact)}{kv("Flyer left",truthy(r.flyerLeft)?"Yes":"")}{comp&&kv("Trucks",r.truckCount)}</div>
+      {kv("Research notes",r.notes)}
+      {comp&&kv("My notes",r.myNotes)}
+      {cust&&<div className="rc-ecm-ban info"><span style={{flex:1}}>Converted to a customer: {cust.name}.</span><button className="rc-bs" onClick={()=>d({type:"MODAL",v:"cust-detail",d:cust})}>Open customer</button></div>}
+      {comp&&(<>
+        <div className="rc-ecm-sec">Price intel<span>What they charge, as we learn it</span></div>
+        <div className="rc-card" style={{padding:"2px 12px",marginBottom:10}}>
+          {(r.prices||[]).length===0?<div style={{fontSize:13,color:"var(--mt)",padding:"8px 0"}}>No prices yet.</div>:(r.prices||[]).slice().sort((a,b)=>String(b.date).localeCompare(String(a.date))).map(p=>(<div key={p.id} style={{display:"flex",gap:8,alignItems:"center",padding:"7px 0",borderBottom:"1px solid var(--ln2)",fontSize:13.5,flexWrap:"wrap"}}><span style={{color:"var(--mt)",width:86}}>{p.date}</span><span style={{flex:1,minWidth:140}}>{p.item}{p.source?<span style={{display:"block",fontSize:12,color:"var(--mt)"}}>{p.source}</span>:null}</span><b>{String(p.price).trim()!==""&&!isNaN(+p.price)?$$(+p.price):p.price}</b><button className="rc-bs rc-bsr" aria-label={"Remove price for "+p.item} onClick={()=>up({prices:(r.prices||[]).filter(x=>x.id!==p.id)})}>×</button></div>))}
+          <div className="rc-pi-add"><input className="rc-fi" type="date" aria-label="Price date" value={f.piDate||td} onChange={e=>set("piDate",e.target.value)}/><input className="rc-fi" list="pi-items" placeholder="Item, e.g. ISX15 long block" aria-label="Price item" value={f.piItem||""} onChange={e=>set("piItem",e.target.value)}/><input className="rc-fi" type="number" placeholder="$" aria-label="Price" value={f.piPrice||""} onChange={e=>set("piPrice",e.target.value)}/><input className="rc-fi" placeholder="Source" aria-label="Price source" value={f.piSrc||""} onChange={e=>set("piSrc",e.target.value)}/><button className="rc-bs" disabled={!String(f.piItem||"").trim()} onClick={()=>{up({prices:[...(r.prices||[]),{id:Date.now(),date:f.piDate||td,item:String(f.piItem).trim(),price:f.piPrice||"",source:String(f.piSrc||"").trim()}],lastChecked:td});sf(pp=>({...pp,piItem:"",piPrice:"",piSrc:""}));}}>+ Price</button></div>
+          <datalist id="pi-items">{["ISX15 long block","X15 long block","DD15 long block","DD13 long block","MX-13 long block","C15 long block","D13 long block","MP8 long block","Engine swap labour","In-frame overhaul","Out-of-frame overhaul","ECM tune","Shop labour rate"].map(o=>(<option key={o} value={o}/>))}</datalist>
+        </div>
+      </>)}
+      <div className="rc-ecm-sec">Activity</div>
+      <div className="rc-card" style={{padding:"2px 12px",marginBottom:6}}>{(r.log||[]).length===0?<div style={{fontSize:13,color:"var(--mt)",padding:"8px 0"}}>Nothing logged yet.</div>:(r.log||[]).slice().reverse().map((e,x)=>(<div key={x} style={{display:"flex",gap:8,padding:"7px 0",borderBottom:"1px solid var(--ln2)",fontSize:13.5,flexWrap:"wrap"}}><span style={{color:"var(--mt)",width:86,flexShrink:0}}>{e.date}</span><span style={{fontWeight:600,width:52,textTransform:"capitalize"}}>{e.type}</span><span style={{flex:1,minWidth:160}}>{e.outcome}{e.flyer?" · flyer left":""}{e.notes?<span style={{display:"block",color:"var(--tx2)",whiteSpace:"pre-wrap"}}>{e.notes}</span>:null}</span>{e.by&&e.by!=="shop"&&<span style={{fontSize:12,color:"var(--mt)"}}>{e.by}</span>}</div>))}</div>
+      <div className="rc-fa">{C}<button className="rc-bs rc-bsr" onClick={()=>{d({type:"DELETE",list,id:r.id});d({type:"CLOSE"});}}>Delete</button><button className="rc-bs" onClick={()=>d({type:"MODAL",v:"edit-pros",d:{...r,_list:list}})}>✎ Edit</button><button className="rc-bs" onClick={()=>d({type:"MODAL",v:"pros-log",d:{list,id:r.id,type:"note"}})}>+ Note</button>{canSell&&!cust&&!dnc&&<button className="rc-bs" onClick={()=>convertRec(list,r)}>✓ Convert to customer</button>}{canSell&&<button className="rc-ba" disabled={dnc} onClick={()=>d({type:"MODAL",v:"pros-log",d:{list,id:r.id}})}>📝 Log a visit</button>}</div>
+    </div>,"rc-wmod");}
+  if(s.modal==="edit-pros"){const list=(s.md&&s.md._list)||"prospects";const comp=list==="competitors";const engs=Array.isArray(f.engines)?f.engines:[];
+    const SF=(k,l,opts)=>(<div className="rc-fg"><label className="rc-fl">{l}</label><select className="rc-fi" value={f[k]||""} onChange={e=>set(k,e.target.value)} style={{appearance:"none"}}>{!opts.includes(f[k]||"")&&<option value={f[k]||""}>{f[k]||"—"}</option>}{opts.map(o=>(<option key={o} value={o}>{o}</option>))}</select></div>);
+    const TXA=(k,l)=>(<div className="rc-fg"><label className="rc-fl">{l}</label><textarea className="rc-fi" rows={2} value={f[k]||""} onChange={e=>set(k,e.target.value)} style={{resize:"vertical"}}/></div>);
+    const save=()=>{const name=String(f.name||"").trim();if(!name)return;const orig=resById(s,list,s.md.id)||{};
+      const keys=comp?["city","region","kmFromMH","address","phone","website","category","duty","engineWork","specialty","mobile24hr","threat","salesProspect","sellsEngines","postedPricing","notes","myNotes","contactName","contactRole","truckCount","nextFollowUp","lastContact","lastChecked"]:["city","region","kmFromMH","address","phone","website","haul","fleetType","priority","pitch","notes","contactName","contactRole","truckCount","nextFollowUp","lastContact"];
+      const patch={name,engines:engs,flyerLeft:truthy(f.flyerLeft)};keys.forEach(k=>{const v=f[k]??"";patch[k]=k==="kmFromMH"?(String(v).trim()===""?"":+v||0):(typeof v==="string"?v.trim():v);});
+      if(comp&&(patch.sellsEngines!==(orig.sellsEngines||"")||patch.postedPricing!==(orig.postedPricing||""))&&patch.lastChecked===(orig.lastChecked||""))patch.lastChecked=isoToday();
+      d({type:"UPDATE",list,id:s.md.id,d:patch});d({type:"BACK"});};
+    return W(<div><div className="rc-mt">{comp?"Edit Shop":"Edit Prospect"}</div>
+      {F("name","Name")}
+      <div className="rc-ecm-g">{F("city","City")}{F("region","Region")}{F("kmFromMH","km from Medicine Hat","number")}{F("address","Address")}{F("phone","Phone")}{F("website","Website")}</div>
+      {comp?(<div className="rc-ecm-g">{F("category","Category")}{F("duty","Duty class")}{F("engineWork","Engine work")}{F("specialty","Specialty")}{F("mobile24hr","Mobile / 24 hr")}{SF("threat","Threat",["High","Medium","Low"])}{SF("salesProspect","Sales prospect",["High","Medium","Low","Supplier?"])}{SF("sellsEngines","Sells engines?",SELLS_OPTS)}{SF("postedPricing","Posted pricing?",PRICING_OPTS)}{F("lastChecked","Last checked","date")}</div>):(<>
+        <div className="rc-ecm-g">{F("haul","Haul")}{F("fleetType","Fleet type")}{SF("priority","Priority",["A","B","C"])}</div>
+        {TXA("pitch","Pitch")}
+      </>)}
+      <div className="rc-ecm-sec">Working info</div>
+      <div className="rc-ecm-g">{F("contactName","Contact name")}{F("contactRole","Contact role")}{F("truckCount","Trucks","number")}{F("lastContact","Last contact","date")}{F("nextFollowUp","Next follow-up","date")}</div>
+      <div className="rc-fg"><label className="rc-fl">Engines they run</label><div style={{display:"flex",gap:5,flexWrap:"wrap"}}>{ECM_FAMS.map(([k,l])=>(<button key={k} type="button" className={"rc-fb"+(engs.includes(k)?" on":"")} aria-pressed={engs.includes(k)} onClick={()=>set("engines",engs.includes(k)?engs.filter(x=>x!==k):[...engs,k])} style={{textTransform:"none",letterSpacing:0,fontSize:12.5}}>{l}</button>))}</div></div>
+      <label style={{display:"flex",gap:8,alignItems:"center",fontSize:14,cursor:"pointer",margin:"0 0 12px"}}><input type="checkbox" checked={truthy(f.flyerLeft)} onChange={e=>set("flyerLeft",e.target.checked)}/> Flyer left</label>
+      {TXA("notes","Research notes")}
+      {comp&&TXA("myNotes","My notes")}
+      <div className="rc-fa"><button className="rc-bs" onClick={()=>d({type:"BACK"})}>Cancel</button><button className="rc-ba" onClick={save}>Save Changes</button></div>
+    </div>,"rc-wmod");}
+  if(s.modal==="pros-log"){const list=(s.md&&s.md.list)||"prospects";const r=resById(s,list,s.md&&s.md.id);
+    if(!r)return W(<div><div className="rc-mt">Record not found</div><div className="rc-fa">{C}</div></div>);
+    const td=isoToday();const type=f.lType||(s.md&&s.md.type)||"visit";const outcome=f.lOut!=null?f.lOut:"";
+    const sugg={"Interested":"interested","Wants a quote":"interested","Not a fit":"not-a-fit","Do not contact":"do-not-contact"}[outcome]||((r.status||"")===""?"contacted":(r.status||""));
+    const st=f.lSt!=null?f.lSt:(type==="note"?(r.status||""):sugg);
+    const next=f.lNext!=null?f.lNext:(r.nextFollowUp&&r.nextFollowUp>td?r.nextFollowUp:"");
+    const OUT=["Interested","Wants a quote","Not right now","Left info","No answer / closed","Not a fit","Do not contact"];
+    const ok=!!(String(outcome).trim()||String(f.lNotes||"").trim());
+    const save=()=>{if(!ok)return;const entry={date:td,by:CURRENT_USER,type,outcome:String(outcome).trim(),notes:String(f.lNotes||"").trim(),...(type==="visit"&&truthy(f.lFlyer)?{flyer:true}:{})};
+      d({type:"UPDATE",list,id:r.id,d:{log:[...(r.log||[]),entry],...(type!=="note"?{lastContact:td}:{}),nextFollowUp:next,status:st,...(entry.flyer?{flyerLeft:true}:{})}});d({type:"BACK"});};
+    return W(<div><div className="rc-mt" style={{marginBottom:4}}>{type==="note"?"Add a Note":"Log a "+({visit:"Visit",call:"Call",email:"Email"}[type])}</div><div style={{fontSize:14,color:"var(--tx2)",marginBottom:12}}>{r.name}{r.city?" · "+r.city:""}</div>
+      <div className="rc-fg"><label className="rc-fl">What happened</label><div className="rc-seg four" role="group" aria-label="Contact type">{[["visit","Visit"],["call","Call"],["email","Email"],["note","Note"]].map(([k,l])=>(<button key={k} type="button" className={type===k?"on":""} aria-pressed={type===k} onClick={()=>set("lType",k)}>{l}</button>))}</div></div>
+      {type!=="note"&&<div className="rc-fg"><label className="rc-fl">Outcome</label><div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:8}}>{OUT.map(o=>(<button key={o} type="button" className={"rc-fb"+(outcome===o?" on":"")} aria-pressed={outcome===o} onClick={()=>sf(pp=>({...pp,lOut:o,lSt:undefined}))} style={{textTransform:"none",letterSpacing:0}}>{o}</button>))}</div><input className="rc-fi" aria-label="Outcome" placeholder="Or type the outcome" value={outcome} onChange={e=>sf(pp=>({...pp,lOut:e.target.value}))}/></div>}
+      <div className="rc-fg"><label className="rc-fl">Notes</label><textarea className="rc-fi" rows={3} aria-label="Notes" value={f.lNotes||""} onChange={e=>set("lNotes",e.target.value)} style={{resize:"vertical"}}/></div>
+      {type==="visit"&&<label style={{display:"flex",gap:8,alignItems:"center",fontSize:14,cursor:"pointer",margin:"0 0 12px"}}><input type="checkbox" aria-label="Flyer left" checked={truthy(f.lFlyer)} onChange={e=>set("lFlyer",e.target.checked)}/> Flyer left</label>}
+      <div className="rc-fg"><label className="rc-fl">Next follow-up</label><div style={{display:"flex",gap:6,flexWrap:"wrap",alignItems:"center"}}><input className="rc-fi" type="date" aria-label="Next follow-up" value={next} onChange={e=>set("lNext",e.target.value)} style={{width:180}}/>{[["Today",0],["+1 week",7],["+2 weeks",14],["+1 month",30]].map(([l,n])=>(<button key={l} type="button" className="rc-fb" onClick={()=>set("lNext",addDays(td,n))}>{l}</button>))}{next&&<button type="button" className="rc-fb" onClick={()=>set("lNext","")}>None</button>}</div></div>
+      <div className="rc-fg"><label className="rc-fl">Status</label><select className="rc-fi" aria-label="Status" value={st} onChange={e=>set("lSt",e.target.value)} style={{appearance:"none",maxWidth:280}}>{PST.map(([k,l])=>(<option key={k||"new"} value={k}>{l}</option>))}</select></div>
+      <div className="rc-fa"><button className="rc-bs" onClick={()=>d({type:"BACK"})}>Cancel</button><button className="rc-ba" disabled={!ok} onClick={save}>Save</button></div>
+    </div>);}
+  if(s.modal==="pros-add"){const list=(s.md&&s.md.list)||"prospects";const comp=list==="competitors";const regs=[...new Set([...(s.prospects||[]),...(s.competitors||[])].map(r=>r.region).filter(Boolean))].sort();
+    const SF=(k,l,opts,dflt)=>(<div className="rc-fg"><label className="rc-fl">{l}</label><select className="rc-fi" value={f[k]||dflt||""} onChange={e=>set(k,e.target.value)} style={{appearance:"none"}}>{opts.map(o=>(<option key={o} value={o}>{o||"—"}</option>))}</select></div>);
+    const name=String(f.name||"").trim();
+    const save=()=>{if(!name)return;const base={id:Date.now(),name,city:String(f.city||"").trim(),region:f.region||"",kmFromMH:String(f.kmFromMH||"").trim()===""?"":+f.kmFromMH||0,address:String(f.address||"").trim(),phone:String(f.phone||"").trim(),website:String(f.website||"").trim(),notes:String(f.notes||"").trim()};
+      const rec=comp?compWork({...base,category:String(f.category||"").trim(),duty:f.duty||"HD",engineWork:"",sellsEngines:f.sellsEngines||"Unknown",postedPricing:f.postedPricing||"Not verified",mobile24hr:"",specialty:String(f.specialty||"").trim(),threat:f.threat||"Low",salesProspect:f.salesProspect||"Medium"}):resWork({...base,haul:String(f.haul||"").trim(),fleetType:f.fleetType||"",priority:f.priority||"B",pitch:String(f.pitch||"").trim()});
+      d({type:"ADD",list,d:rec,label:(comp?"Shop":"Prospect")+" added: "+name});d({type:"MODAL",v:"pros-rec",d:{list,id:rec.id}});};
+    return W(<div><div className="rc-mt">{comp?"Add a Shop":"Add a Prospect"}</div>
+      {F("name","Name")}
+      <div className="rc-ecm-g2">{F("city","City")}<div className="rc-fg"><label className="rc-fl">Region</label><input className="rc-fi" list="res-regions" value={f.region||""} onChange={e=>set("region",e.target.value)} placeholder="Region"/><datalist id="res-regions">{regs.map(x=>(<option key={x} value={x}/>))}</datalist></div>{F("kmFromMH","km from Medicine Hat","number")}{F("phone","Phone")}{F("address","Address")}{F("website","Website")}</div>
+      {comp?(<div className="rc-ecm-g2">{F("category","Category")}{SF("duty","Duty class",["HD","Both","LD","MD","Industrial","Off-highway"],"HD")}{F("specialty","Specialty")}{SF("threat","Threat",["Low","Medium","High"],"Low")}{SF("salesProspect","Sales prospect",["Medium","High","Low","Supplier?"],"Medium")}{SF("sellsEngines","Sells engines?",SELLS_OPTS,"Unknown")}</div>):(<>
+        <div className="rc-ecm-g2">{F("haul","Haul")}{SF("fleetType","Fleet type",["","Local Fleet","Small / Owner-Operator","Regional Carrier","Large / National (corporate maintenance)","Hotshot / Light-Duty"])}{SF("priority","Priority",["B","A","C"],"B")}</div>
+        <div className="rc-fg"><label className="rc-fl">Pitch</label><textarea className="rc-fi" rows={2} value={f.pitch||""} onChange={e=>set("pitch",e.target.value)} style={{resize:"vertical"}}/></div>
+      </>)}
+      <div className="rc-fg"><label className="rc-fl">Notes</label><textarea className="rc-fi" rows={2} value={f.notes||""} onChange={e=>set("notes",e.target.value)} style={{resize:"vertical"}}/></div>
+      <div className="rc-fa">{X}<button className="rc-ba" disabled={!name} onClick={save}>{comp?"Add Shop":"Add Prospect"}</button></div>
+    </div>);}
+  if(s.modal==="route-day"){const town=f.rTown||"";const region=f.rRegion||"";const picked=town||region;const skip=f.rSkip||[];
+    // Priority A fleets with no visit logged yet, minus customers, not-a-fits and do-not-contacts.
+    const cand=(s.prospects||[]).filter(r=>r.priority==="A"&&!visited(r)&&![...PST_OFF,"customer"].includes(r.status||""));
+    const tally=fn=>Object.entries(cand.reduce((o,r)=>{const k=fn(r);if(k)o[k]=(o[k]||0)+1;return o;},{})).sort((a,b)=>b[1]-a[1]||a[0].localeCompare(b[0]));
+    const towns=tally(r=>townOf(r.city)),regs=tally(r=>r.region);
+    const stops=!picked?[]:cand.filter(r=>town?String(r.city||"").toLowerCase().includes(town.toLowerCase()):r.region===region).sort((a,b)=>(+a.kmFromMH||0)-(+b.kmFromMH||0)||String(a.name||"").localeCompare(String(b.name||"")));
+    const on=stops.filter(r=>!skip.includes(r.id));
+    return W(<div><div className="rc-mt" style={{marginBottom:4}}>Route Day</div><div style={{fontSize:13,color:"var(--mt)",marginBottom:12,lineHeight:1.5}}>Priority A fleets you haven't visited yet, nearest first. Untick any you'll skip, then print the route sheet.</div>
+      <div className="rc-ecm-g2"><div className="rc-fg"><label className="rc-fl">Town</label><select className="rc-fi" aria-label="Town" value={town} onChange={e=>sf(pp=>({...pp,rTown:e.target.value,rRegion:"",rSkip:[]}))} style={{appearance:"none"}}><option value="">Pick a town…</option>{towns.map(([x,n])=>(<option key={x} value={x}>{x} · {n}</option>))}</select></div><div className="rc-fg"><label className="rc-fl">…or a region</label><select className="rc-fi" aria-label="Region" value={region} onChange={e=>sf(pp=>({...pp,rRegion:e.target.value,rTown:"",rSkip:[]}))} style={{appearance:"none"}}><option value="">Pick a region…</option>{regs.map(([x,n])=>(<option key={x} value={x}>{x} · {n}</option>))}</select></div></div>
+      {picked&&(stops.length===0?<div style={{fontSize:13.5,color:"var(--mt)",padding:"6px 0"}}>No Priority A fleets left to visit in {picked}.</div>:<div className="rc-card" style={{padding:"2px 12px",marginBottom:8,maxHeight:380,overflowY:"auto"}}>{stops.map(r=>(<label key={r.id} style={{display:"flex",gap:10,alignItems:"flex-start",padding:"8px 0",borderBottom:"1px solid var(--ln2)",cursor:"pointer"}}><input type="checkbox" aria-label={"Include "+r.name} checked={!skip.includes(r.id)} onChange={e=>set("rSkip",e.target.checked?skip.filter(x=>x!==r.id):[...skip,r.id])} style={{marginTop:4}}/><span style={{flex:1,minWidth:0}}><span style={{fontWeight:600,fontSize:14}}>{r.name}</span><span style={{display:"block",fontSize:12.5,color:"var(--mt)"}}>{[nb(r.address),r.city].filter(Boolean).join(", ")}{nb(r.phone)?" · "+nb(r.phone):""}</span></span><span style={{fontSize:12.5,color:"var(--tx2)",whiteSpace:"nowrap"}}>{kmTxt(r)}</span></label>))}</div>)}
+      {on.length>ROUTE_PAGE&&<div style={{fontSize:13,color:"var(--w)",margin:"2px 0 8px",lineHeight:1.5}}>{on.length} stops prints on about {Math.ceil(on.length/ROUTE_PAGE)} pages. One page holds {ROUTE_PAGE}, so untick a few to keep it to one sheet.</div>}
+      <div className="rc-fa">{C}<button className="rc-ba" disabled={!on.length} onClick={()=>printRoute(on,picked)}>🖨 Print route sheet{on.length?" · "+on.length+" stops":""}</button></div>
+    </div>);}
   if(s.modal==="add-inv")return W(<div><div className="rc-mt">New Invoice</div>{CS()}{ES()}{F("invNum","Invoice #")}<div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>{F("date","Date")}{F("due","Terms")}</div><div className="rc-fl">Items</div>{LI()}<div style={{fontSize:14,color:"var(--tx2)",textAlign:"right"}}>Sub: {$$(sub)} · GST: {$$(sub*.05)} · <strong style={{color:"var(--ac)"}}>Total: {$$(sub*1.05)}</strong></div><div className="rc-fa">{X}<button className="rc-ba" onClick={()=>{if(!(f.custId&&lines.some(l=>l.d)))return;const eid=+f.engineId||0;const nid=Date.now();const items=lines.filter(l=>l.d);d({type:"ADD",list:"invoices",d:{id:nid,invNum:f.invNum||"INV-"+String(nid).slice(-6),custId:+f.custId,engineId:eid,date:f.date||isoToday(),due:f.due||"Net 30",items,status:"pending"}});[...new Set(items.map(l=>l.jobId).filter(Boolean))].forEach(jid=>d({type:"UPDATE",list:"jobs",id:jid,d:{invoiceId:nid,charge:items.filter(l=>l.jobId===jid).reduce((a,l)=>a+(+l.q||0)*(+l.r||0),0)}}));[...new Set(items.map(l=>l.ecmJobId).filter(Boolean))].forEach(eid2=>d({type:"UPDATE",list:"ecmJobs",id:eid2,d:{invoiceId:nid,billed:items.filter(l=>l.ecmJobId===eid2).reduce((a,l)=>a+(+l.q||0)*(+l.r||0),0)}}));if(eid)d({type:"UPDATE",list:"inventory",id:eid,d:{status:"sold"}});d({type:"CLOSE"});}}>Create</button></div></div>);
 
   // EDIT forms
@@ -1892,6 +2193,37 @@ const CSS=`@import url('${FONTS}');
 .rc-ecm-em{border:1px solid var(--ln);border-radius:20px;padding:3px 10px;color:var(--tx2);}
 .rc-ecm-rh{font-size:13px;color:var(--mt);margin:0 2px 8px;line-height:1.5;}
 @media(max-width:700px){.rc-ecm-g{grid-template-columns:repeat(2,minmax(0,1fr));}.rc-ecm-ft,.rc-ecm-pr{grid-template-columns:minmax(0,1fr) minmax(0,1fr);}.rc-ecm-ph{display:none;}}
+.rc-tbl.rc-tbl-wrap th{white-space:normal;vertical-align:bottom;}.rc-tbl.rc-tbl-wrap th,.rc-tbl.rc-tbl-wrap td{padding-left:10px;padding-right:10px;}
+.rc-seg.four{grid-template-columns:repeat(4,1fr);}
+.rc-seg.four button{padding:8px 4px;font-size:13.5px;}
+.rc-pipe{display:grid;grid-template-columns:repeat(auto-fit,minmax(118px,1fr));gap:8px;margin-bottom:18px;}
+.rc-pipe-i{display:flex;flex-direction:column;align-items:flex-start;gap:2px;text-align:left;background:var(--sf);border:1px solid var(--ln);border-left:4px solid var(--pc);border-radius:10px;padding:9px 11px;cursor:pointer;box-shadow:var(--sh1);color:var(--tx);font-family:var(--fb);}
+.rc-pipe-i .n{font:700 23px/1.1 var(--fd);font-variant-numeric:tabular-nums;}
+.rc-pipe-i .l{font-size:12.5px;color:var(--mt);font-weight:600;}
+.rc-pipe-i.on{box-shadow:0 0 0 2px var(--pc);}
+.rc-pri{display:inline-flex;min-width:26px;height:26px;padding:0 4px;border-radius:7px;align-items:center;justify-content:center;font:700 14px var(--fd);border:1.5px solid var(--ln2);color:var(--tx2);}
+.rc-pri.pA{border-color:var(--ac);color:var(--act);background:var(--acs);}
+.rc-pri.pB{border-color:var(--b);color:var(--b);}
+.rc-pitch{border:1px solid color-mix(in srgb,var(--ac) 45%,transparent);background:var(--acs);border-radius:12px;padding:12px 14px;margin:0 0 12px;font-size:15px;line-height:1.5;color:var(--tx);}
+.rc-contact{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;}
+.rc-contact a{text-decoration:none;}
+.rc-kv{margin-bottom:12px;}
+.rc-pi-add{display:grid;grid-template-columns:140px minmax(0,1.4fr) 110px minmax(0,1fr) auto;gap:6px;padding:8px 0;align-items:center;}
+.rc-fu-row{display:flex;gap:10px;align-items:center;padding:8px 0;border-top:1px solid var(--ln2);flex-wrap:wrap;font-size:14px;}
+.rc-lnk{background:none;border:0;padding:0;font:600 14.5px var(--fb);color:var(--tx);cursor:pointer;text-align:left;}
+.rc-lnk:hover{color:var(--act);text-decoration:underline;}
+.rc-cmp td{min-width:130px;max-width:280px;vertical-align:top;font-size:13px;line-height:1.45;}
+.rc-cmp td.stick,.rc-cmp th.stick{position:sticky;left:0;z-index:2;min-width:180px;}
+.rc-cmp td.stick{background:var(--sf);font-weight:600;box-shadow:1px 0 0 var(--ln);}
+.rc-cmp th.stick{background:var(--sf2);}
+.rc-cmp tr.us td,.rc-tbl.rc-cmp tbody tr.us:hover td{background:var(--acs);font-weight:600;}
+.rc-cmp tr.us td.stick,.rc-tbl.rc-cmp tbody tr.us:hover td.stick{background:linear-gradient(var(--acs),var(--acs)),var(--sf);}
+.rc-cmp td.win{color:var(--g);}
+.rc-cmp td.lose{color:var(--r);}
+.rc-cmp td.ed{cursor:text;}
+.rc-cmp td.ed:hover{box-shadow:inset 0 0 0 1px var(--ln2);}
+.rc-cmp textarea{min-width:200px;font-size:13px;}
+@media(max-width:700px){.rc-pi-add{grid-template-columns:minmax(0,1fr) minmax(0,1fr);}}
 .rc-tbl tr.rc-grp td{background:var(--sf2);font-size:12.5px;font-weight:700;letter-spacing:.8px;text-transform:uppercase;color:var(--mt);padding:9px 14px;}
 .rc-seg.two button{padding:8px 6px;font-size:13.5px;}
 .rc-user{display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--mt);min-width:0;}
@@ -2082,6 +2414,8 @@ const ICO={
   cal:<><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/></>,
   team:<><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/></>,
   chart:<path d="M4 20V11M10 20V5M16 20v-7M21 20H3"/>,
+  target:<><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="4"/><circle cx="12" cy="12" r="1"/></>,
+  flag:<><path d="M5 21V4"/><path d="M5 4h11l-2 4 2 4H5"/></>,
   chip:<><rect x="7" y="7" width="10" height="10" rx="1.5"/><path d="M10 3v4M14 3v4M10 17v4M14 17v4M3 10h4M3 14h4M17 10h4M17 14h4"/></>,
   tag:<><path d="M3 12V4a1 1 0 0 1 1-1h8l9 9-9 9z"/><circle cx="7.5" cy="7.5" r="1.5"/></>,
   menu:<path d="M4 7h16M4 12h16M4 17h16"/>,
@@ -2110,15 +2444,15 @@ export default function App(){
   useEffect(()=>{if(!s.soldSplash)return;if(getSet(s).soundOn!==false)horn();const t=setTimeout(()=>d({type:"SPLASH",d:null}),6500);return()=>clearTimeout(t);},[s.soldSplash]);
   // Load data once authenticated (immediately in localStorage mode). Never loads/saves while logged out.
   useEffect(()=>{if(!authed){setLoading(false);return;}let off=false;setLoading(true);setLoadErr(false);(async()=>{try{const data=await loadAll();if(off)return;if(data.__loadError){setLoadErr(true);setLoading(false);return;}lastSaved.current=data;d({type:"LOAD",d:data});}catch(e){if(!off)setLoadErr(true);}if(!off)setLoading(false);})();return()=>{off=true;};},[authed]);
-  useEffect(()=>{if(loading||!authed||loadErr||!lastSaved.current)return;const t=setTimeout(()=>{const prev=lastSaved.current;const dirty=prev?STORE_KEYS.filter(k=>s[k]!==prev[k]):STORE_KEYS.slice();if(!dirty.length)return;saveAll(s,dirty,prev||{}).then(failed=>{const snap={...(lastSaved.current||{})};dirty.forEach(k=>{if(!(failed||[]).includes(k))snap[k]=s[k];});lastSaved.current=snap;if(failed&&failed.length)d({type:"TOAST",d:{msg:"⚠ Couldn't save changes — check your connection",t:Date.now()}});});},500);return()=>clearTimeout(t);},[s.customers,s.jobs,s.quotes,s.inventory,s.invoices,s.schedule,s.employees,s.expenses,s.leads,s.social,s.campaigns,s.contentCalendar,s.cores,s.shipments,s.commsLog,s.purchaseOrders,s.warranties,s.parts,s.timeEntries,s.wins,s.activity,s.settings,s.diagnoses,s.issues,s.brief,s.boms,s.bomSheets,s.vendors,s.services,s.ecmJobs,s.ecmFiles,loading,authed,loadErr]);
+  useEffect(()=>{if(loading||!authed||loadErr||!lastSaved.current)return;const t=setTimeout(()=>{const prev=lastSaved.current;const dirty=prev?STORE_KEYS.filter(k=>s[k]!==prev[k]):STORE_KEYS.slice();if(!dirty.length)return;saveAll(s,dirty,prev||{}).then(failed=>{const snap={...(lastSaved.current||{})};dirty.forEach(k=>{if(!(failed||[]).includes(k))snap[k]=s[k];});lastSaved.current=snap;if(failed&&failed.length)d({type:"TOAST",d:{msg:"⚠ Couldn't save changes — check your connection",t:Date.now()}});});},500);return()=>clearTimeout(t);},[s.customers,s.jobs,s.quotes,s.inventory,s.invoices,s.schedule,s.employees,s.expenses,s.leads,s.social,s.campaigns,s.contentCalendar,s.cores,s.shipments,s.commsLog,s.purchaseOrders,s.warranties,s.parts,s.timeEntries,s.wins,s.activity,s.settings,s.diagnoses,s.issues,s.brief,s.boms,s.bomSheets,s.vendors,s.services,s.ecmJobs,s.ecmFiles,s.prospects,s.competitors,s.compare,loading,authed,loadErr]);
   // Live sync: quietly re-pull the shop's data on window focus and every 60s
   // (cloud only, never while a modal is open or local changes are unsaved),
   // so a tab left open overnight can't overwrite the crew's newer work.
   useEffect(()=>{if(!usingCloud||!authed||loading)return;let busy=false;const refresh=async()=>{const before=sRef.current;const prev=lastSaved.current;if(busy||document.hidden||!prev||before.modal)return;if(STORE_KEYS.some(k=>before[k]!==prev[k]))return;busy=true;try{const data=await loadAll();const cur=sRef.current;if(!data.__loadError&&!cur.modal&&!STORE_KEYS.some(k=>cur[k]!==before[k])){lastSaved.current=data;d({type:"LOAD",d:data});}}catch(e){}finally{busy=false;}};const iv=setInterval(refresh,60000);window.addEventListener("focus",refresh);return()=>{clearInterval(iv);window.removeEventListener("focus",refresh);};},[authed,loading]);
   useEffect(()=>{const t=setInterval(()=>setTime(new Date()),60000);return()=>clearInterval(t);},[]);
   useEffect(()=>{if(s.toast){const t=setTimeout(()=>d({type:"TOAST",d:null}),s.toast.undo?5000:s.toast.long?6500:2200);return()=>clearTimeout(t);}},[s.toast]);
-  const TABL={overview:"Overview",inventory:"Engines",parts:"Parts",boms:"BOM",social:"Marketing",services:"Services",issues:"Issues",ecm:"ECM",customers:"Customers & Jobs",operations:"Operations",schedule:"Schedule",quotes:"Quotes",invoices:"Invoicing",employees:"Team",reports:"Reports"};
-  const NAV=[{t:"overview",i:"home"},{h:"Shop"},{t:"inventory",i:"eng"},{t:"boms",i:"clip"},{t:"parts",i:"box"},{t:"issues",i:"wrench"},{t:"ecm",i:"chip"},{h:"Sales"},{t:"social",i:"mega"},{t:"services",i:"tag"},{t:"quotes",i:"doc"},{t:"invoices",i:"cash"},{h:"Operations"},{t:"customers",i:"users"},{t:"operations",i:"truck"},{t:"schedule",i:"cal"},{h:"Business"},{t:"employees",i:"team"},{t:"reports",i:"chart"}];
+  const TABL={overview:"Overview",inventory:"Engines",parts:"Parts",boms:"BOM",social:"Marketing",services:"Services",prospects:"Prospects",competitors:"Competitors",issues:"Issues",ecm:"ECM",customers:"Customers & Jobs",operations:"Operations",schedule:"Schedule",quotes:"Quotes",invoices:"Invoicing",employees:"Team",reports:"Reports"};
+  const NAV=[{t:"overview",i:"home"},{h:"Shop"},{t:"inventory",i:"eng"},{t:"boms",i:"clip"},{t:"parts",i:"box"},{t:"issues",i:"wrench"},{t:"ecm",i:"chip"},{h:"Sales"},{t:"social",i:"mega"},{t:"prospects",i:"target"},{t:"competitors",i:"flag"},{t:"services",i:"tag"},{t:"quotes",i:"doc"},{t:"invoices",i:"cash"},{h:"Operations"},{t:"customers",i:"users"},{t:"operations",i:"truck"},{t:"schedule",i:"cal"},{h:"Business"},{t:"employees",i:"team"},{t:"reports",i:"chart"}];
   const splash=(<div className="rc-root" data-theme={theme} style={{display:"flex",alignItems:"center",justifyContent:"center",minHeight:"100vh"}}><style>{CSS}</style><div style={{textAlign:"center"}}><div className="rc-hi" style={{width:50,height:50,fontSize:24,margin:"0 auto 12px"}}>RC</div><div style={{fontFamily:"var(--fd)",fontSize:17.5,letterSpacing:2,textTransform:"uppercase",color:"var(--tx2)"}}>Loading...</div></div></div>);
   if(usingCloud&&!authReady)return splash;
   if(usingCloud&&!session)return <Login onAuthed={setSession} theme={theme}/>;
@@ -2154,6 +2488,8 @@ export default function App(){
       {s.tab==="invoices"&&<Invoicing s={s} d={d}/>}
       {s.tab==="operations"&&<Operations s={s} d={d}/>}
       {s.tab==="social"&&<Marketing s={s} d={d}/>}
+{s.tab==="prospects"&&<Prospects s={s} d={d}/>}
+{s.tab==="competitors"&&<Competitors s={s} d={d}/>}
       {s.tab==="schedule"&&<Schedule s={s} d={d}/>}
       {s.tab==="employees"&&<Emps s={s} d={d}/>}
       {s.tab==="reports"&&<Reports s={s}/>}
