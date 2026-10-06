@@ -10,6 +10,9 @@ import { ISSUE_SEED } from "./issuesSeed";
 import { BOM_SEED, VENDOR_SEED } from "./bomSeed";
 import { SERVICE_SEED, SERVICE_CATS } from "./servicesSeed";
 import { AREA_BY_ID, PLACE_GROUPS, PLACE_ORDER, STORE_IDS, SLOT_CAP, shopLocs, areaTitle } from "./shop3d/areas";
+import * as Tsh from "../supabase/functions/_shared/timesheet.js";
+import { readSheetFile } from "./lib/sheetfile";
+import { syncTimesheets, timesheetInfo, canSyncTimesheets } from "./lib/timesheets";
 const FONTS="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700;800&family=Public+Sans:wght@400;500;600;700&display=swap";
 
 // ═══════════════════════════════════════════════════════════════
@@ -19,13 +22,17 @@ const FONTS="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;
 // ═══════════════════════════════════════════════════════════════
 
 const EMPTY={
-  tab:"overview",modal:null,md:null,mstack:[],focus:null,
+  tab:"overview",modal:null,md:null,mstack:[],focus:null,tsFocus:null,
   boms:BOM_SEED,bomSheets:[],vendors:VENDOR_SEED,services:SERVICE_SEED,
   ecmJobs:[],      // ECM programming jobs — see ecmGuard and CLAUDE.md for the shape and the emissions rule
   ecmFiles:[],     // {id,jobId,path,name,size,type,at} — metadata only; the bytes live in the ecm-files bucket
   prospects:[],    // trucking fleets to cold-approach — seeded once from src/data/fleet-prospects.json (seedResearch)
   competitors:[],  // Alberta diesel / engine shops — seeded once from src/data/competitors.json
   compare:[],      // the Rollin Coal vs key competitors cheat sheet — seeded once from src/data/competitor-comparison.json
+  timesheets:[],       // synced timesheet days, one per employee + date (id "emp|2026-10-01"); see supabase/functions/_shared/timesheet.js
+  timesheetSources:[], // connected Google Sheets: {id, sheetUrl, sheetId, employeeId, title, lastSynced, lastError, tabs, days, warnings}
+  payPeriods:[],       // approved pay periods per employee: {id, emp, start, end, kind, approvedAt, approvedBy, hours, reg, ot}
+  tsPay:[],            // wages from the sheets, owner login only (stored as rc:owner:tsPay): {id:"emp|2026-10", emp, month, wage, otRate}
 
   wins:[],       // {id,ts,user,kind:"sale",name,sku,price,cost} — permanent wins feed
   activity:[],   // {id,ts,user,type,msg} — auto-captured shop log (capped)
@@ -142,7 +149,11 @@ const EMPTY={
   ],
 };
 
-const STORE_KEYS=["customers","jobs","timeEntries","quotes","inventory","invoices","schedule","employees","expenses","leads","social","campaigns","contentCalendar","cores","shipments","commsLog","purchaseOrders","warranties","parts","wins","activity","settings","diagnoses","issues","brief","boms","bomSheets","vendors","services","ecmJobs","ecmFiles","prospects","competitors","compare"];
+const STORE_KEYS=["customers","jobs","timeEntries","quotes","inventory","invoices","schedule","employees","expenses","leads","social","campaigns","contentCalendar","cores","shipments","commsLog","purchaseOrders","warranties","parts","wins","activity","settings","diagnoses","issues","brief","boms","bomSheets","vendors","services","ecmJobs","ecmFiles","prospects","competitors","compare","timesheets","timesheetSources","payPeriods","tsPay"];
+// Owner-only lists live under "rc:owner:<key>"; migration 0011 lets only the owner login read or write those
+// keys, and loadAll / saveAll never touch them for a staff login.
+const OWNER_KEYS=["tsPay"];
+const keyOf=k=>OWNER_KEYS.includes(k)?"rc:owner:"+k:"rc:"+k;
 
 // ── Shop activity log (who-did-what, auto-captured as a byproduct of work) ──
 let CURRENT_USER="shop";
@@ -197,12 +208,14 @@ const describeAdd=(list,d)=>{switch(list){
   case "employees":return "👷 Employee added: "+(d.name||"");
   case "diagnoses":return "🩺 Diagnosis logged: "+((d.symptoms||[]).join(", ")||"—")+(d.engineName?" — "+d.engineName:"");
   case "issues":return "📚 Common issue added: "+(d.title||"");
+  case "payPeriods":return "✅ "+(d.title||"Timesheet approved");
+  case "timesheetSources":return "🔗 Timesheet connected"+(d.empName?": "+d.empName:"");
   default:return null;}};
 function reducer(s,a){switch(a.type){
   case "TAB":return{...s,tab:a.v,mstack:[],focus:a.focus||null};case "MODAL":{const st=s.mstack||[];if(s.modal===a.v)return{...s,md:a.d||null};const ix=st.findIndex(x=>x.modal===a.v);if(ix>=0)return{...s,modal:a.v,md:a.d||null,mstack:st.slice(0,ix)};if(!s.modal)return{...s,modal:a.v,md:a.d||null,mstack:[]};return{...s,modal:a.v,md:a.d||null,mstack:[...st,{modal:s.modal,md:s.md}].slice(-8)};}
   case "BACK":{const st=s.mstack||[];if(!st.length)return{...s,modal:null,md:null};const p=st[st.length-1];return{...s,modal:p.modal,md:p.md,mstack:st.slice(0,-1)};}
   case "CLOSE":return{...s,modal:null,md:null,mstack:[]};
-  case "LOAD":return{...s,...a.d};case "RESET":return{...EMPTY,tab:s.tab};
+  case "LOAD":return{...s,...a.d};case "PUT":return{...s,...a.d,activity:a.act?pushAct(s,"update",a.act):s.activity,toast:a.label?{msg:a.label,long:!!a.long,t:Date.now()}:s.toast,...(a.close?{modal:null,md:null,mstack:[]}:{})};case "RESET":return{...EMPTY,tab:s.tab};
   case "ADD":{let d0=a.d;
     if(a.list==="inventory"&&d0&&(d0.cat==="Complete Engine"||d0.cat==="Core")&&d0.status)d0={...d0,stageDate:nowIso(),stageLog:[{st:d0.status,ts:nowIso()}],...(d0.status==="sold"?{soldDate:isoToday()}:{})};
     if(a.list==="ecmJobs"&&d0)d0=ecmGuard(null,d0).j;
@@ -576,7 +589,7 @@ const isoToday=()=>{const n=new Date();return new Date(n.getTime()-n.getTimezone
 // Shop settings live as a single row in the settings list
 const getSet=s=>((s.settings||[])[0])||{};
 // One-click JSON backup of every persisted list
-function exportBackup(s){try{const data={exported:new Date().toISOString(),app:"rollin-coal-dashboard",lists:{}};STORE_KEYS.forEach(k=>{data.lists[k]=s[k]||[];});const b=new Blob([JSON.stringify(data,null,2)],{type:"application/json"});const u=URL.createObjectURL(b);const a=document.createElement("a");a.href=u;a.download="rollin-coal-backup-"+isoToday()+".json";document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(u),4000);}catch(e){console.error("backup failed:",e);}}
+function exportBackup(s,owner){try{const data={exported:new Date().toISOString(),app:"rollin-coal-dashboard",lists:{}};STORE_KEYS.filter(k=>owner||!OWNER_KEYS.includes(k)).forEach(k=>{data.lists[k]=s[k]||[];});const b=new Blob([JSON.stringify(data,null,2)],{type:"application/json"});const u=URL.createObjectURL(b);const a=document.createElement("a");a.href=u;a.download="rollin-coal-backup-"+isoToday()+".json";document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(u),4000);}catch(e){console.error("backup failed:",e);}}
 // Website export: buyer-facing listing text/HTML for one engine — main
 // details, price, photo only. Never includes costs, parts log, or margins.
 function listingText(i){const L=[];L.push((i.name||"Engine").toUpperCase());const id=[];if(i.serial||i.esn)id.push("ESN "+(i.serial||i.esn));if(i.sku)id.push("SKU "+i.sku);if(id.length)L.push(id.join(" · "));const sp=[];if(i.year)sp.push("Year: "+i.year);if(i.ratedHp)sp.push("Rated HP: "+i.ratedHp);if(i.oilCap)sp.push("Oil capacity: "+i.oilCap);if(i.arrangement)sp.push("Arrangement: "+i.arrangement);if(sp.length)L.push(sp.join(" · "));if(i.condition)L.push("Condition: "+i.condition);if(i.notes)L.push("",i.notes);L.push("","Price: "+(+i.price>0?$$(+i.price)+" CAD":"Call for pricing"));L.push("","Rollin Coal — Canada's Diesel Engine Specialists","Medicine Hat, AB · 1-587-863-0505 · rollin-coal.ca");return L.join("\n");}
@@ -679,9 +692,9 @@ function horn(){try{const C=window.AudioContext||window.webkitAudioContext;if(!C
 // Storage
 // Save only the given (changed) lists, handing the adapter the previous
 // snapshot so table-backed lists can diff per-row instead of rewriting.
-async function saveAll(s,keys,prev){const failed=[];for(const k of (keys||STORE_KEYS)){try{await db.setItem("rc:"+k,JSON.stringify(s[k]||[]),prev&&prev[k]!=null?JSON.stringify(prev[k]||[]):undefined);}catch(e){failed.push(k);console.error("[rc save] "+k+" failed:",e&&e.message?e.message:e);}}return failed;}
-async function loadAll(){const d={};let m=null;try{m=await db.getAll(STORE_KEYS.map(k=>"rc:"+k));}catch(e){console.error("[rc load] batch failed:",e&&e.message?e.message:e);}if(!m){STORE_KEYS.forEach(k=>{d[k]=EMPTY[k]||[];});d.__loadError=true;return d;}let err=false;for(const k of STORE_KEYS){const r=m["rc:"+k];try{d[k]=(r!=null)?JSON.parse(r):(EMPTY[k]||[]);}catch(e){err=true;d[k]=EMPTY[k]||[];console.error("[rc load] "+k+" parse failed:",e&&e.message?e.message:e);}}if(err)d.__loadError=true;else await seedResearch(d);return d;}
-async function clearAll(){for(const k of STORE_KEYS){try{await db.removeItem("rc:"+k);}catch(e){}}}
+async function saveAll(s,keys,prev,owner){const failed=[];for(const k of (keys||STORE_KEYS)){if(!owner&&OWNER_KEYS.includes(k))continue;try{await db.setItem(keyOf(k),JSON.stringify(s[k]||[]),prev&&prev[k]!=null?JSON.stringify(prev[k]||[]):undefined);}catch(e){failed.push(k);console.error("[rc save] "+k+" failed:",e&&e.message?e.message:e);}}return failed;}
+async function loadAll(owner){const d={};let m=null;const keys=STORE_KEYS.filter(k=>owner||!OWNER_KEYS.includes(k));try{m=await db.getAll(keys.map(keyOf));}catch(e){console.error("[rc load] batch failed:",e&&e.message?e.message:e);}if(!m){STORE_KEYS.forEach(k=>{d[k]=EMPTY[k]||[];});d.__loadError=true;return d;}let err=false;for(const k of STORE_KEYS){if(!keys.includes(k)){d[k]=[];continue;}const r=m[keyOf(k)];try{d[k]=(r!=null)?JSON.parse(r):(EMPTY[k]||[]);}catch(e){err=true;d[k]=EMPTY[k]||[];console.error("[rc load] "+k+" parse failed:",e&&e.message?e.message:e);}}if(err)d.__loadError=true;else await seedResearch(d);return d;}
+async function clearAll(owner){for(const k of STORE_KEYS){if(!owner&&OWNER_KEYS.includes(k))continue;try{await db.removeItem(keyOf(k));}catch(e){}}}
 
 // Claude AI
 
@@ -1367,24 +1380,195 @@ function Schedule({s,d}){
 // ═══════════════════════════════════════════════════════════════
 // EMPLOYEES (compact — includes expenses)
 // ═══════════════════════════════════════════════════════════════
-function Emps({s,d}){
+function Emps({s,d,owner=true,isOwner=true,preview=false,setPreview=()=>{},syncTs}){
+  const[view,setView]=useState(()=>getPref("rc:teamView","team")==="timesheets"?"timesheets":"team");
+  const pick=v=>{setView(v);setPref("rc:teamView",v);};
+  const seg=(<div className="rc-seg two rc-ts-seg" role="group" aria-label="Team or timesheets">{[["team","Team"],["timesheets","Timesheets"]].map(([k,l])=>(<button key={k} className={view===k?"on":""} aria-pressed={view===k} onClick={()=>pick(k)}>{l}</button>))}</div>);
+  if(view==="timesheets")return(<div>{seg}<Timesheets s={s} d={d} owner={owner} isOwner={isOwner} preview={preview} setPreview={setPreview} syncTs={syncTs}/></div>);
+  const wk0=Tsh.weekStart(isoToday());const wkMin=(s.employees||[]).reduce((a,e)=>a+Object.values(Tsh.computeDays(tsRowsOf(s,e.id)).days).filter(x=>x.date>=wk0).reduce((b,x)=>b+x.min,0),0);
   const payroll=(s.employees||[]).reduce((a,e)=>a+(e.rate||0)*(e.hrs||0),0);
   // Tech productivity
   const techJobs={};(s.jobs||[]).forEach(j=>{if(j.tech)techJobs[j.tech]=(techJobs[j.tech]||0)+1;});
   const techComplete={};(s.jobs||[]).filter(j=>j.status==="complete").forEach(j=>{if(j.tech)techComplete[j.tech]=(techComplete[j.tech]||0)+1;});
-  return (<div>
-    <div className="rc-g4"><Stat label="Team" value={(s.employees||[]).length}/><Stat label="Active" value={(s.employees||[]).filter(e=>e.status==="active").length}/><Stat label="Weekly Payroll" value={$$(payroll)}/><Stat label="Monthly Est." value={$$(payroll*4.33)}/></div>
+  return (<div>{seg}
+    <div className="rc-g4"><Stat label="Team" value={(s.employees||[]).length}/><Stat label="Active" value={(s.employees||[]).filter(e=>e.status==="active").length}/>{owner?<><Stat label="Weekly Payroll" value={$$(payroll)}/><Stat label="Monthly Est." value={$$(payroll*4.33)}/></>:<><Stat label="Timesheets" value={(s.timesheetSources||[]).length} sub="connected"/><Stat label="Paid hours this week" value={fH(wkMin)}/></>}</div>
     <SH title="Team"><button className="rc-ba" onClick={()=>d({type:"MODAL",v:"add-emp"})}>+ Employee</button></SH>
-    {(s.employees||[]).length===0?(<Empty icon="🧑‍🔧" title="No Employees" sub="Add team" action={()=>d({type:"MODAL",v:"add-emp"})} label="+ Add"/>):(<><Tbl headers={["Name","Role","Rate","Hrs","Weekly","Jobs","Completed","Status",""]}>{(s.employees||[]).map(e=>{const nick=e.nick||e.name;return (<tr key={e.id}><td className="rc-tn" style={{cursor:"pointer"}} onClick={()=>d({type:"MODAL",v:"emp-detail",d:e})}>{e.name}</td><td style={{fontSize:13,color:"var(--ac)"}}>{e.role}</td><td style={{fontSize:13}}>${e.rate||0}/hr</td><td style={{fontSize:13}}>{e.hrs||0}</td><td style={{fontWeight:600}}>{$$((e.rate||0)*(e.hrs||0))}</td><td style={{fontSize:13}}>{techJobs[nick]||0}</td><td style={{fontSize:13,color:"var(--g)"}}>{techComplete[nick]||0}</td><td><Badge s={e.status}/></td><td><BtnRow><button className="rc-bs" onClick={()=>d({type:"MODAL",v:"edit-emp",d:e})} style={{fontSize:14.5}}>✎</button><button className="rc-bs" onClick={()=>d({type:"UPDATE",list:"employees",id:e.id,d:{status:e.status==="active"?"on-leave":"active"}})} style={{fontSize:14.5}}>{e.status==="active"?"⏸":"▶"}</button></BtnRow></td></tr>);})}</Tbl>
+    {(s.employees||[]).length===0?(<Empty icon="🧑‍🔧" title="No Employees" sub="Add team" action={()=>d({type:"MODAL",v:"add-emp"})} label="+ Add"/>):(<><Tbl headers={owner?["Name","Role","Rate","Hrs","Weekly","Jobs","Completed","Status",""]:["Name","Role","Hrs","Jobs","Completed","Status",""]}>{(s.employees||[]).map(e=>{const nick=e.nick||e.name;return (<tr key={e.id}><td className="rc-tn" style={{cursor:"pointer"}} onClick={()=>d({type:"MODAL",v:"emp-detail",d:e})}>{e.name}</td><td style={{fontSize:13,color:"var(--ac)"}}>{e.role}</td>{owner&&<td style={{fontSize:13}}>${e.rate||0}/hr</td>}<td style={{fontSize:13}}>{e.hrs||0}</td>{owner&&<td style={{fontWeight:600}}>{$$((e.rate||0)*(e.hrs||0))}</td>}<td style={{fontSize:13}}>{techJobs[nick]||0}</td><td style={{fontSize:13,color:"var(--g)"}}>{techComplete[nick]||0}</td><td><Badge s={e.status}/></td><td><BtnRow><button className="rc-bs" onClick={()=>d({type:"MODAL",v:"edit-emp",d:e})} style={{fontSize:14.5}}>✎</button><button className="rc-bs" onClick={()=>d({type:"UPDATE",list:"employees",id:e.id,d:{status:e.status==="active"?"on-leave":"active"}})} style={{fontSize:14.5}}>{e.status==="active"?"⏸":"▶"}</button></BtnRow></td></tr>);})}</Tbl>
     <SH title="Expenses"><button className="rc-ba" onClick={()=>d({type:"MODAL",v:"add-expense"})}>+ Expense</button></SH>
     <Tbl headers={["Category","Amount","Freq","Notes",""]}>{(s.expenses||[]).map(e=>(<tr key={e.id}><td className="rc-tn">{e.cat}</td><td style={{fontWeight:600}}>{$$(e.amount)}</td><td style={{fontSize:13,color:"var(--tx2)"}}>{e.freq}</td><td style={{fontSize:13,color:"var(--mt)"}}>{e.notes}</td><td><BtnRow><button className="rc-bs" onClick={()=>d({type:"MODAL",v:"edit-expense",d:e})} style={{fontSize:14.5}}>✎</button><button className="rc-bs rc-bsr" onClick={()=>d({type:"DELETE",list:"expenses",id:e.id})} style={{fontSize:14.5}}>×</button></BtnRow></td></tr>))}</Tbl></>)}
   </div>);
 }
 
 // ═══════════════════════════════════════════════════════════════
+// TIMESHEETS — hours from each employee's Google Sheets timesheet (Team → Timesheets)
+// ═══════════════════════════════════════════════════════════════
+// Parsing, Alberta overtime, the day flags and the merge rules are shared with the
+// timesheet-sync Edge Function: supabase/functions/_shared/timesheet.js (Tsh).
+// Wages and pay (tsPay, gross pay) only show when `owner` is true.
+const fH=m=>Tsh.fmtH(m);
+const fmtWhen=iso=>{const t=new Date(iso);if(!iso||isNaN(t))return "";const same=t.toDateString()===new Date().toDateString();return (same?"today":t.toLocaleDateString("en-US",{month:"short",day:"numeric"}))+", "+t.toLocaleTimeString("en-US",{hour:"numeric",minute:"2-digit"});};
+const tsRowsOf=(s,emp)=>(s.timesheets||[]).filter(r=>String(r.emp)===String(emp));
+const tsTech=(e,t)=>{const k=String(t||"").trim().toLowerCase();return !!k&&[e.nick,e.name].filter(Boolean).some(n=>String(n).trim().toLowerCase()===k);};
+// Hours on jobs by date for one person: work-order time, diagnoses and ECM jobs, by the date logged.
+function tsJobHours(s,e){const m={};const add=(dt,h)=>{if(dt&&+h>0)m[dt]=(m[dt]||0)+(+h);};(s.timeEntries||[]).forEach(t=>{if(tsTech(e,t.tech))add(t.date,t.hours);});(s.diagnoses||[]).forEach(x=>{if(tsTech(e,x.tech))add(x.date,x.hours);});(s.ecmJobs||[]).forEach(j=>{if(tsTech(e,j.tech))add(j.date,j.hours);});return m;}
+const tsJobIn=(jh,a,b)=>Object.keys(jh).reduce((t,k)=>k>=a&&k<=b?t+jh[k]:t,0);
+// Pay for a date: the sheet's wage for that month, else the Team pay rate.
+const tsPayFor=(s,e)=>date=>Tsh.payFor(s.tsPay,e.id,date)||(+e.rate>0?{wage:+e.rate,otRate:1.5,team:true}:null);
+const tsSet=s=>{const st=getSet(s);return{kind:st.payPeriod||"monthly",anchor:st.payAnchor||""};};
+const tsRule=w=>w.rule==="weekly"?"44-hour weekly rule":w.rule==="daily"?"daily rule (over 8 h a day)":"no overtime";
+const tsSrcName=(s,x)=>{const em=(s.employees||[]).find(e=>String(e.id)===String(x.employeeId));return x.title||(em?em.name+"'s timesheet":"Sheet "+String(x.sheetId||"").slice(0,10)+"…");};
+// One person's pay period: the days in it (overtime split over whole Monday weeks, even
+// when a week crosses into another period), the weeks it touches, totals, flags, pay.
+// Unallocated = paid hours not on any job, worked out day by day.
+function tsPeriod(s,e,P){
+  const rows=tsRowsOf(s,e.id),calc=Tsh.computeDays(rows),jh=tsJobHours(s,e);
+  const inP=rows.filter(r=>r.date>=P.start&&r.date<=P.end).sort((a,b)=>a.date<b.date?-1:1);
+  const un=dt=>Math.max(0,((calc.days[dt]||{}).min||0)/60-(jh[dt]||0));
+  const wk=[...new Set(inP.map(r=>Tsh.weekStart(r.date)))].sort().map(w=>{const W=calc.weeks[w];return{...W,rows:inP.filter(r=>Tsh.weekStart(r.date)===w),outside:W.dates.filter(x=>x<P.start||x>P.end),job:tsJobIn(jh,W.start,W.end),unalloc:W.dates.reduce((a,x)=>a+un(x),0)};});
+  const ds=inP.map(r=>calc.days[r.date]);
+  const tot={min:ds.reduce((a,x)=>a+x.min,0),reg:ds.reduce((a,x)=>a+x.regMin,0),ot:ds.reduce((a,x)=>a+x.otMin,0)};
+  const flags={};inP.forEach(r=>{flags[r.date]=Tsh.dayFlags(r,calc.days[r.date]);});
+  const over=Object.keys(jh).filter(k=>k>=P.start&&k<=P.end&&jh[k]-((calc.days[k]||{}).min||0)/60>0.01).sort();
+  return{rows:inP,calc,jh,wk,tot,job:tsJobIn(jh,P.start,P.end),unalloc:inP.reduce((a,r)=>a+un(r.date),0),over,flags,pay:Tsh.payTotals(ds,tsPayFor(s,e)),
+    appr:(s.payPeriods||[]).find(p=>String(p.emp)===String(e.id)&&p.start===P.start&&p.end===P.end)||null,pending:inP.filter(r=>r.pending)};}
+// Notes → links to what we have: an engine's stock #, a unit # on a work order or ECM job,
+// a WO # on a teardown worksheet. Returns [] when nothing matches.
+const reEsc=t=>String(t).replace(/[.*+?^${}()|[\]\\]/g,"\\$&");
+const normU=t=>String(t||"").toUpperCase().replace(/[^A-Z0-9]/g,"");
+function tsLinks(s,txt){const t=String(txt||"");if(!t)return [];const hits=[];
+  (s.inventory||[]).filter(i=>i.sku&&String(i.sku).trim().length>=3).forEach(i=>{const m=t.match(new RegExp("(^|[^A-Za-z0-9])("+reEsc(String(i.sku).trim())+")(?![A-Za-z0-9])","i"));if(m)hits.push({at:m.index+m[1].length,len:m[2].length,to:{v:"part-detail",d:i},tip:"Open engine "+i.sku});});
+  t.replace(/\b(?:unit|truck)\s*#?\s*([A-Za-z0-9][A-Za-z0-9-]*)/gi,(m0,u,at)=>{const nu=normU(u);const ej=(s.ecmJobs||[]).find(j=>j.unit&&normU(j.unit)===nu);const jb=(s.jobs||[]).find(j=>String(j.vehicle||"").split(/[^A-Za-z0-9-]+/).some(x=>x&&normU(x)===nu));const to=ej?{v:"ecm-job",d:{id:ej.id}}:jb?{v:"job-detail",d:jb}:null;if(nu&&to)hits.push({at,len:m0.length,to,tip:ej?"Open the ECM job for unit "+u:"Open the work order for unit "+u});return m0;});
+  t.replace(/\b(?:w\.?o\.?|work\s*order)\s*#?\s*([A-Za-z0-9][A-Za-z0-9-]*)/gi,(m0,w,at)=>{const nw=normU(w);const jb=(s.jobs||[]).find(j=>j.wo&&normU(j.wo)===nw);const sh=(s.bomSheets||[]).find(x=>x.wo&&normU(x.wo)===nw);const eng=sh?(s.inventory||[]).find(i=>i.id===+sh.engineId):null;const to=jb?{v:"job-detail",d:jb}:eng?{v:"part-detail",d:{...eng,ptab:"bom"}}:null;if(nw&&to)hits.push({at,len:m0.length,to,tip:"Open WO "+w});return m0;});
+  hits.sort((a,b)=>a.at-b.at);const out=[];let p=0;hits.forEach(h=>{if(h.at<p)return;if(h.at>p)out.push(t.slice(p,h.at));out.push({text:t.slice(h.at,h.at+h.len),to:h.to,tip:h.tip});p=h.at+h.len;});if(p<t.length)out.push(t.slice(p));
+  return out.some(x=>typeof x!=="string")?out:[];}
+function TsNote({s,d,txt}){const parts=tsLinks(s,txt);if(!parts.length)return <>{txt||""}</>;return <>{parts.map((p,k)=>typeof p==="string"?<span key={k}>{p}</span>:<button key={k} className="rc-lnk rc-ts-ln" title={p.tip} onClick={()=>d({type:"MODAL",v:p.to.v,d:p.to.d})}>{p.text}</button>)}</>;}
+const TS_FIELDS={start:"Start",finish:"Finish",unpaidBreakMin:"Unpaid break",notes:"Notes",sTotal:"Sheet total",sReg:"Sheet regular",sOT:"Sheet OT"};
+// What changed on a day flagged after approval: "Finish: 4:30 PM → 6:30 PM".
+const tsDiff=r=>{const p=r.pending||{};if(p.removed)return ["The day was removed from the sheet"];const v=p.vals||{};return Object.keys(TS_FIELDS).filter(k=>String(r[k]??"")!==String(v[k]??"")).map(k=>TS_FIELDS[k]+": "+((r[k]??"")===""?"blank":r[k])+" → "+((v[k]??"")===""?"blank":v[k]));};
+
+// The pay-period summary for printing: black and white, one Letter page for a month.
+const TS_PRINT='@page{size:letter portrait;margin:10mm 11mm;}body{padding:0;font-size:11px;line-height:1.35;}.head{border-bottom-color:#000;padding-bottom:5px;margin-bottom:7px;}.logo{background:#000;width:34px;height:34px;font-size:16px;}h1{font-size:20px;}.meta{font-size:10px;line-height:1.45;}.sub{color:#000;}h2{border-left-color:#000;font-size:12.5px;margin:7px 0 2px;}.en{font-size:20px;}.esn{font-size:10.5px;margin-top:1px;}.st{margin-top:4px;font-size:9.5px;padding:1px 8px;}.tt{align-items:flex-end;margin-bottom:5px;}table.pay td{padding:1.5px 6px;font-size:11px;line-height:1.3;}.sm{display:grid;grid-template-columns:repeat(4,auto);gap:4px 16px;text-align:right;}.sm div{font-family:"Barlow Condensed",sans-serif;font-weight:800;font-size:17px;}.sm span{display:block;font-family:"IBM Plex Mono",monospace;font-weight:400;font-size:9.5px;letter-spacing:1px;text-transform:uppercase;color:#555;}'+
+  'table.ts th{text-align:left;font-size:9.5px;letter-spacing:1px;text-transform:uppercase;border-bottom:1.5px solid #000;padding:3px 5px;}table.ts th.num{text-align:right;}table.ts td{padding:1px 5px;font-size:10.5px;line-height:1.25;border-bottom:1px solid #ddd;}td.nt{font-size:9.5px;color:#333;}tr.off td{color:#888;}tr.wk td{background:none;border-top:1px solid #000;border-bottom:1px solid #000;font-size:10px;font-weight:600;white-space:nowrap;}tr.wk td.num{font-size:11px;}tr.tot td{background:none!important;border-top:2px solid #000;font-weight:800;font-size:12px;}.dim{color:#555;font-style:italic;font-size:11px;}'+
+  '.sig{display:grid;grid-template-columns:2fr 1fr 2fr 1fr;gap:18px;margin-top:18px;}.sig div{border-top:1px solid #000;padding-top:2px;font-size:9.5px;color:#333;}.foot{margin-top:10px;padding-top:5px;font-size:9.5px;}.st{border-color:#000;}';
+function printTimesheet(s,e,P,owner){
+  const esc=t=>String(t==null?"":t).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+  const T=tsPeriod(s,e,P),lab=Tsh.periodLabel(P);let rows="";
+  T.wk.forEach(w=>{
+    w.rows.forEach(r=>{const c=T.calc.days[r.date];const fl=(T.flags[r.date]||[]).filter(f=>f.lv!=="info");
+      rows+='<tr'+(c.min?'':' class="off"')+'><td>'+esc(Tsh.shortDate(r.date))+'</td><td>'+esc(r.day)+'</td><td>'+esc(r.start)+'</td><td>'+esc(r.finish)+'</td><td class="num">'+(c.min?fH(c.min):"")+'</td><td class="num">'+(c.min?fH(c.regMin):"")+'</td><td class="num">'+(c.otMin?fH(c.otMin):"")+'</td><td class="nt">'+esc(r.notes)+(fl.length?' <b>&#9873; '+esc(fl.map(f=>f.short||f.msg).join("; "))+'</b>':'')+(r.pending?' <b>[changed after approval]</b>':'')+'</td></tr>';});
+    rows+='<tr class="wk"><td colspan="4">Week of '+esc(Tsh.shortDate(w.start))+' &middot; '+(w.rule==="weekly"?"44-hour rule":w.rule==="daily"?"daily rule":"no OT")+'</td><td class="num">'+fH(w.min)+'</td><td class="num">'+fH(w.regMin)+'</td><td class="num">'+fH(w.otMin)+'</td><td class="nt">over 8 a day '+fH(w.dailyMin)+' &middot; over 44 a week '+fH(w.weeklyMin)+(w.outside.length?' &middot; counts '+w.outside.length+' day'+(w.outside.length===1?'':'s')+' outside this period':'')+'</td></tr>';});
+  rows+='<tr class="tot"><td colspan="4">Total &middot; '+esc(lab)+'</td><td class="num">'+fH(T.tot.min)+'</td><td class="num">'+fH(T.tot.reg)+'</td><td class="num">'+fH(T.tot.ot)+'</td><td></td></tr>';
+  const pf=tsPayFor(s,e);const ws=[...new Set(T.rows.map(r=>{const p=pf(r.date);return p?p.wage+"|"+p.otRate:"";}).filter(Boolean))];const one=ws.length===1?ws[0].split("|").map(Number):null;
+  const pay=owner?'<h2>Gross pay</h2><table class="pay"><tr><td>Regular '+fH(T.pay.regMin)+' h'+(one?' &times; '+$$(one[0]):'')+'</td><td class="num">'+$$(T.pay.regPay)+'</td></tr><tr><td>Overtime '+fH(T.pay.otMin)+' h'+(one?' &times; '+$$(one[0]*one[1])+' ('+one[1]+'&times;)':'')+'</td><td class="num">'+$$(T.pay.otPay)+'</td></tr><tr class="tot"><td>Gross pay, before deductions (CPP, EI, tax)</td><td class="num">'+$$(T.pay.gross)+'</td></tr></table>'+(T.pay.missing.length?'<p class="dim">No wage on file for '+esc(T.pay.missing.map(Tsh.monthLabel).join(", "))+', so those hours are not in the total.</p>':''):'';
+  const st=T.appr?'Approved '+esc(new Date(T.appr.approvedAt).toLocaleDateString("en-US",{year:"numeric",month:"short",day:"numeric"}))+(T.appr.approvedBy?' by '+esc(T.appr.approvedBy):''):'Not approved yet';
+  const html='<!doctype html><html><head><meta charset="utf-8"><title>Timesheet · '+esc(e.name)+' · '+esc(lab)+'</title>'+SHEET_STYLE+'<style>'+TS_PRINT+'</style></head><body>'+
+    '<div class="head"><div class="brand"><div class="logo">RC</div><div><h1>Rollin Coal</h1><div class="sub">Pay period summary</div></div></div><div class="meta"><strong>Timesheet</strong><br>Printed '+new Date().toLocaleDateString("en-US",{year:"numeric",month:"long",day:"numeric"})+'<br>2040 11th Ave NW, Medicine Hat, AB</div></div>'+
+    '<div class="tt"><div><div class="en">'+esc(e.name)+'</div><div class="esn">'+(e.role?esc(e.role)+' &middot; ':'')+esc(lab)+' ('+esc(Tsh.shortDate(P.start))+' to '+esc(Tsh.shortDate(P.end))+')</div><span class="st">'+st+'</span></div><div class="sm"><div><span>Hours</span>'+fH(T.tot.min)+'</div><div><span>Regular</span>'+fH(T.tot.reg)+'</div><div><span>Overtime</span>'+fH(T.tot.ot)+'</div><div><span>Unallocated</span>'+T.unalloc.toFixed(2)+'</div></div></div>'+
+    '<table class="ts"><thead><tr><th>Date</th><th>Day</th><th>Start</th><th>Finish</th><th class="num">Hours</th><th class="num">Regular</th><th class="num">OT</th><th>Notes</th></tr></thead><tbody>'+rows+'</tbody></table>'+pay+
+    '<div class="sig"><div>Employee signature</div><div>Date</div><div>Approved by</div><div>Date</div></div>'+
+    '<div class="foot"><span>Hours worked out from Start and Finish'+(T.rows.some(r=>+r.unpaidBreakMin>0)?' less unpaid breaks':'')+'. Overtime by Alberta&#39;s rule: over 8 h a day or 44 h a week, whichever is more.</span><span>Rollin Coal &middot; confidential</span></div>'+
+    '<scr'+'ipt>window.onload=function(){setTimeout(function(){window.print();},300);};</scr'+'ipt></body></html>';
+  const w=window.open("","_blank","width=920,height=1080");if(!w)return;
+  w.document.open();w.document.write(html);w.document.close();
+}
+
+function Timesheets({s,d,owner,isOwner,preview,setPreview,syncTs}){
+  const emps=[...(s.employees||[])].sort((a,b)=>(a.status==="active"?0:1)-(b.status==="active"?0:1)||String(a.name||"").localeCompare(String(b.name||"")));
+  const has=new Set((s.timesheets||[]).map(r=>String(r.emp)));
+  const[emp,setEmp]=useState(()=>{const e0=emps.find(x=>has.has(String(x.id)))||emps[0];return e0?String(e0.id):"";});
+  const[per,setPer]=useState("");const[busy,setBusy]=useState(false);const[open,setOpen]=useState(null);
+  // An upload lands on the person and period it brought in; after a sync, show someone who has days.
+  useEffect(()=>{if(s.tsFocus){setEmp(String(s.tsFocus.emp));setPer(s.tsFocus.start||"");setOpen(null);}},[s.tsFocus]);
+  useEffect(()=>{if(has.size&&!has.has(emp)){const e0=emps.find(x=>has.has(String(x.id)));if(e0){setEmp(String(e0.id));setPer("");}}},[s.timesheets]);
+  const e=emps.find(x=>String(x.id)===emp)||null;
+  const{kind,anchor}=tsSet(s);
+  const dates=e?tsRowsOf(s,e.id).map(r=>r.date):[];
+  const periods=Tsh.periodList(dates,kind,anchor,isoToday());
+  const latest=dates.length?Tsh.periodOf(dates.reduce((a,b)=>a>b?a:b),kind,anchor).start:"";
+  const P=periods.find(p=>p.start===per)||periods.find(p=>p.start===latest)||periods[0];
+  const T=e&&P?tsPeriod(s,e,P):null;
+  const srcs=s.timesheetSources||[];
+  const last=srcs.map(x=>x.lastSynced).filter(Boolean).sort().pop();
+  const errs=srcs.filter(x=>x.lastError);
+  const sync=async()=>{if(busy||!syncTs)return;setBusy(true);let r=null;try{r=await syncTs();}finally{setBusy(false);}
+    const R=(r&&r.results)||[];
+    if(r&&r.error&&!R.length){d({type:"TOAST",d:{msg:"⚠ "+r.error,long:true,t:Date.now()}});return;}
+    const ok=R.filter(x=>x.ok),bad=R.length-ok.length,n=k=>ok.reduce((a,x)=>a+(x[k]||0),0);
+    d({type:"TOAST",d:{msg:!R.length?((r&&r.note)||"Nothing to sync yet. Connect a sheet in Settings."):(ok.length?"✓ Synced "+ok.length+" sheet"+(ok.length===1?"":"s")+": "+n("added")+" new, "+n("updated")+" changed"+(n("flagged")?", "+n("flagged")+" changed after approval":""):"")+(bad?(ok.length?" · ":"⚠ ")+bad+" sheet"+(bad===1?"":"s")+" failed, see above":""),long:true,t:Date.now()}});};
+  const flagN=T?T.rows.filter(r=>(T.flags[r.date]||[]).some(f=>f.lv!=="info")).length:0;
+  const approve=()=>{if(!T)return;d({type:"ADD",list:"payPeriods",d:{emp:e.id,empName:e.name,start:P.start,end:P.end,kind:P.kind,title:"Timesheet approval · "+e.name+" · "+Tsh.periodLabel(P),approvedAt:nowIso(),approvedBy:CURRENT_USER,hours:+fH(T.tot.min),reg:+fH(T.tot.reg),ot:+fH(T.tot.ot)},label:"✓ Approved: "+e.name+", "+Tsh.periodLabel(P)+". These days are locked now."});};
+  const putRows=(fn,act,label)=>d({type:"PUT",d:{timesheets:(s.timesheets||[]).map(fn).filter(Boolean)},act,label});
+  const putPay=(fn,act,label)=>d({type:"PUT",d:{tsPay:(s.tsPay||[]).map(fn)},act,label});
+  const wagePend=owner&&e&&P?(s.tsPay||[]).filter(p=>String(p.emp)===String(e.id)&&p.pending&&p.month+"-01"<=P.end&&Tsh.monthEnd(p.month)>=P.start):[];
+  const pf=e?tsPayFor(s,e):null;
+  const ws=T&&pf?[...new Set(T.rows.map(r=>{const p=pf(r.date);return p?p.wage+"|"+p.otRate+"|"+(p.team?1:0):"";}).filter(Boolean))]:[];
+  const one=ws.length===1?ws[0].split("|").map(Number):null;
+  const crew=P?emps.filter(x=>has.has(String(x.id))).map(x=>({x,t:tsPeriod(s,x,P)})).filter(o=>o.t.rows.length):[];
+  return(<div>
+    <div className="rc-ts-bar">
+      <select className="rc-fi rc-ts-sel" aria-label="Employee" value={emp} onChange={ev=>{setEmp(ev.target.value);setPer("");setOpen(null);}}>{emps.length===0&&<option value="">No team members yet</option>}{emps.map(x=>(<option key={x.id} value={String(x.id)}>{x.name}{has.has(String(x.id))?"":" · no timesheet yet"}</option>))}</select>
+      <select className="rc-fi rc-ts-sel" aria-label="Pay period" value={P?P.start:""} onChange={ev=>{setPer(ev.target.value);setOpen(null);}}>{periods.map(p=>(<option key={p.start} value={p.start}>{Tsh.periodLabel(p)}{e&&(s.payPeriods||[]).some(a=>String(a.emp)===String(e.id)&&a.start===p.start&&a.end===p.end)?" · approved":""}</option>))}</select>
+      <button className="rc-ba" onClick={sync} disabled={busy||!canSyncTimesheets} title={canSyncTimesheets?"Pull every connected sheet from Google now":"Needs the cloud setup (SETUP.md)"}>{busy?"Syncing…":"⟳ Sync now"}</button>
+      <button className="rc-bs" onClick={()=>d({type:"MODAL",v:"ts-import",d:{emp}})}>⬆ Upload CSV / Excel</button>
+      <button className="rc-bs" disabled={!T||!T.rows.length} onClick={()=>printTimesheet(s,e,P,owner)}>🖨 Print</button>
+      <button className="rc-bs" onClick={()=>d({type:"MODAL",v:"ts-settings"})}>⚙ Settings</button>
+      {isOwner&&<button className={"rc-fb"+(preview?" on":"")} aria-pressed={preview} onClick={()=>setPreview(!preview)} title="See what a staff login sees: hours, no dollar amounts">{preview?"Back to owner view":"Preview as staff"}</button>}
+    </div>
+    <div className="rc-ts-status">{canSyncTimesheets?(last?"Last synced: "+fmtWhen(last):"Not synced yet")+" · "+srcs.length+" sheet"+(srcs.length===1?"":"s")+" connected · syncs by itself every day at about 6 AM":"Google sync needs the cloud setup (SETUP.md). Meanwhile, upload a CSV or Excel export."}</div>
+    {errs.length>0&&<div className="rc-ts-err" role="alert">{errs.map(x=>(<div key={x.id}><b>{tsSrcName(s,x)}:</b> {x.lastError}</div>))}</div>}
+    {!owner&&<div className="rc-ts-note">{preview?"Previewing as staff: ":""}Hours only. Wages and pay show on the owner's login.</div>}
+    {!e?<Empty icon="🕒" title="No team members yet" sub="Add your team, then connect their timesheets" action={()=>d({type:"MODAL",v:"add-emp"})} label="+ Employee"/>:
+    !T||!T.rows.length?<Empty icon="🕒" title={"No timesheet for "+e.name+" in "+Tsh.periodLabel(P)} sub={srcs.some(x=>String(x.employeeId)===emp)?"Sync to pull it in from Google Sheets, or upload an export.":"Connect their Google Sheet in Settings, or upload an export."} action={()=>d(srcs.some(x=>String(x.employeeId)===emp)?{type:"MODAL",v:"ts-import",d:{emp}}:{type:"MODAL",v:"ts-settings"})} label={srcs.some(x=>String(x.employeeId)===emp)?"Upload an export":"Connect a sheet"}/>:
+    (<>
+      <div className="rc-g4">
+        <Stat label="Hours" value={fH(T.tot.min)} sub={T.rows.filter(r=>T.calc.days[r.date].min>0).length+" days worked"}/>
+        <Stat label="Regular" value={fH(T.tot.reg)}/>
+        <Stat label="Overtime" value={fH(T.tot.ot)} sub={T.wk.some(w=>w.rule==="weekly")?"incl. the 44-hour weekly rule":"over 8 h a day"}/>
+        {owner?<Stat label="Gross pay" value={$$(T.pay.gross)} sub="before deductions"/>:<Stat label="Unallocated" value={T.unalloc.toFixed(2)} sub="paid, not on a job"/>}
+      </div>
+      <div className="rc-ts-appr">
+        {T.appr?(<><span className="rc-ts-ok">✓ Approved {fmtWhen(T.appr.approvedAt)}{T.appr.approvedBy?" by "+T.appr.approvedBy:""}. These days are locked.</span>{owner&&<button className="rc-bs" onClick={()=>d({type:"DELETE",list:"payPeriods",id:T.appr.id})}>Reopen</button>}</>)
+        :(<>{flagN>0&&<span className="rc-ts-cnt">⚠ {flagN} day{flagN===1?"":"s"} to check</span>}{owner?<button className="rc-ba" onClick={approve}>✓ Approve {Tsh.periodLabel(P)}</button>:<span className="rc-ts-note" style={{margin:0}}>Not approved yet. The owner approves pay periods.</span>}</>)}
+      </div>
+      {T.pending.length>0&&<div className="rc-card rc-ts-pend">
+        <div className="rc-ts-ph">Changed after approval · {T.pending.length}</div>
+        <div className="rc-ts-note">The sheet changed after this period was approved. Nothing was overwritten: the approved numbers stay until {owner?"you choose":"the owner chooses"}.</div>
+        {T.pending.map(r=>(<div key={r.id} className="rc-ts-pr"><div><b>{Tsh.shortDate(r.date)} ({r.day})</b> <span>{tsDiff(r).join(" · ")}</span></div>{owner&&<BtnRow><button className="rc-bs" onClick={()=>putRows(x=>x.id===r.id?Tsh.keepApproved(x):x,"🔒 Kept the approved hours · "+e.name+" · "+Tsh.shortDate(r.date),"Kept the approved numbers")}>Keep approved</button><button className="rc-ba" onClick={()=>putRows(x=>x.id===r.id?Tsh.acceptPending(x,nowIso()):x,"✏ Timesheet change taken after approval · "+e.name+" · "+Tsh.shortDate(r.date),r.pending.removed?"Day removed":"Updated to the sheet's numbers")}>{r.pending.removed?"Remove the day":"Use the new numbers"}</button></BtnRow>}</div>))}
+      </div>}
+      {wagePend.length>0&&<div className="rc-card rc-ts-pend">
+        <div className="rc-ts-ph">Wage changed after approval</div>
+        {wagePend.map(p=>(<div key={p.id} className="rc-ts-pr"><div><b>{Tsh.monthLabel(p.month)}</b> <span>Wage {$$(p.wage)} → {$$(p.pending.wage)}{(+p.otRate||1.5)!==(+p.pending.otRate||1.5)?" · OT rate "+(p.otRate||1.5)+"× → "+p.pending.otRate+"×":""}</span></div><BtnRow><button className="rc-bs" onClick={()=>putPay(x=>x.id===p.id?(({pending,...rest})=>({...rest,keep:pending.sig}))(x):x,"🔒 Kept the approved wage · "+e.name+" · "+Tsh.monthLabel(p.month),"Kept the approved wage")}>Keep approved</button><button className="rc-ba" onClick={()=>putPay(x=>x.id===p.id?(({pending,keep,...rest})=>({...rest,wage:pending.wage,otRate:pending.otRate,at:nowIso()}))(x):x,"✏ New wage taken · "+e.name+" · "+Tsh.monthLabel(p.month),"Wage updated")}>Use the new wage</button></BtnRow></div>))}
+      </div>}
+      <div className="rc-card"><table className="rc-tbl rc-ts-tbl"><thead><tr><th>Date</th><th>Day</th><th>Start</th><th>Finish</th><th className="n">Hours</th><th className="n">Regular</th><th className="n">OT</th><th className="n">On jobs</th><th>Notes</th><th></th></tr></thead><tbody>
+        {T.wk.map(w=>(<React.Fragment key={w.start}>
+          {w.rows.map(r=>{const c=T.calc.days[r.date],fl=T.flags[r.date]||[],lv=fl.some(f=>f.lv==="bad")?"bad":fl.some(f=>f.lv==="warn")?"warn":fl.length?"info":"",jh=T.jh[r.date]||0,lk=Tsh.lockedBy(s.payPeriods,e.id,r.date);
+            return(<React.Fragment key={r.date}><tr className={(c.min?"":"off")+(r.pending?" pend":"")}>
+              <td className="rc-tn">{Tsh.shortDate(r.date)}</td><td>{r.day}</td><td>{r.start}</td><td>{r.finish}</td>
+              <td className="n">{c.min?fH(c.min):"—"}</td><td className="n">{c.min?fH(c.regMin):""}</td><td className="n">{c.otMin?fH(c.otMin):""}</td><td className="n">{jh?jh.toFixed(2):""}</td>
+              <td className="nt"><TsNote s={s} d={d} txt={r.notes}/></td>
+              <td style={{whiteSpace:"nowrap"}}>{lv&&<button className={"rc-ts-flag "+lv} aria-expanded={open===r.date} title={fl.map(f=>f.msg).join(" ")} onClick={()=>setOpen(open===r.date?null:r.date)}>{lv==="info"?"ⓘ":"⚠"} {fl.length}</button>}{r.pending&&<span className="rc-ts-flag warn" title="Changed after approval">changed</span>}{lk&&!r.pending&&<span className="rc-ts-lock" title="In an approved pay period">🔒</span>}</td>
+            </tr>{open===r.date&&<tr className="why"><td colSpan={10}>{fl.map((f,k)=>(<div key={k} className={"rc-ts-whyl "+f.lv}>{f.msg}</div>))}</td></tr>}</React.Fragment>);})}
+          <tr className="wk"><td colSpan={4}>Week of {Tsh.shortDate(w.start)} · {tsRule(w)}{w.outside.length?" · counts "+w.outside.length+" day"+(w.outside.length===1?"":"s")+" outside this period":""}<div className="rc-ts-dim">Over 8 a day: {fH(w.dailyMin)} · over 44 a week: {fH(w.weeklyMin)}</div></td><td className="n">{fH(w.min)}</td><td className="n">{fH(w.regMin)}</td><td className="n">{fH(w.otMin)}</td><td className="n">{w.job.toFixed(2)}</td><td colSpan={2}>Unallocated {w.unalloc.toFixed(2)} h</td></tr>
+        </React.Fragment>))}
+        <tr className="tot"><td colSpan={4}>Total · {Tsh.periodLabel(P)}</td><td className="n">{fH(T.tot.min)}</td><td className="n">{fH(T.tot.reg)}</td><td className="n">{fH(T.tot.ot)}</td><td className="n">{T.job.toFixed(2)}</td><td colSpan={2}>Unallocated {T.unalloc.toFixed(2)} h</td></tr>
+      </tbody></table></div>
+      {owner&&<div className="rc-ts-pay">
+        <div><span className="rc-ml">Gross pay</span><b>{$$(T.pay.gross)}</b><span className="rc-ts-dim">before deductions (CPP, EI, tax)</span></div>
+        <div className="rc-ts-dim">Regular {fH(T.pay.regMin)} h{one?" × "+$$(one[0]):""} = {$$(T.pay.regPay)} · Overtime {fH(T.pay.otMin)} h{one?" × "+$$(one[0]*one[1])+" ("+one[1]+"×)":""} = {$$(T.pay.otPay)}{!one&&ws.length>1?" · each month at its own wage":""}</div>
+        {one&&one[2]===1&&<div className="rc-ts-dim">Wage from the Team pay rate (${e.rate}/hr) because the sheet's wage hasn't come in yet.</div>}
+        {T.pay.missing.length>0&&<div className="rc-ts-errl">No wage for {T.pay.missing.map(Tsh.monthLabel).join(", ")}, so those hours aren't in the total.</div>}
+      </div>}
+      <div className="rc-ts-util">Paid {fH(T.tot.min)} h · on jobs {T.job.toFixed(2)} h · <b>unallocated {T.unalloc.toFixed(2)} h</b>{T.tot.min>0?" ("+Math.round(T.unalloc/(T.tot.min/60)*100)+"%)":""}. On jobs counts work-order time, diagnoses and ECM jobs logged under {e.nick||e.name}.{T.over.length>0&&<> More time on jobs than on the timesheet on {T.over.map(Tsh.shortDate).join(", ")}.</>}</div>
+    </>)}
+    {crew.length>1&&<><SH title={"Everyone · "+Tsh.periodLabel(P)}/><Tbl headers={["Employee","Hours","Regular","OT",...(owner?["Gross pay"]:[]),"Unallocated","To check","Status"]}>{crew.map(({x,t})=>{const n=t.rows.filter(r=>(t.flags[r.date]||[]).some(f=>f.lv!=="info")).length;return(<tr key={x.id}><td className="rc-tn"><button className="rc-lnk" onClick={()=>{setEmp(String(x.id));setOpen(null);}}>{x.name}</button></td><td>{fH(t.tot.min)}</td><td>{fH(t.tot.reg)}</td><td>{fH(t.tot.ot)}</td>{owner&&<td>{$$(t.pay.gross)}</td>}<td>{t.unalloc.toFixed(2)}</td><td style={{color:n?"var(--w)":"var(--ft)"}}>{n||"—"}</td><td>{t.pending.length?<span style={{color:"var(--w)",fontWeight:600}}>Changed after approval</span>:t.appr?<span style={{color:"var(--g)",fontWeight:600}}>Approved</span>:<span style={{color:"var(--mt)"}}>Open</span>}</td></tr>);})}</Tbl></>}
+  </div>);
+}
+
+
+// ═══════════════════════════════════════════════════════════════
 // REPORTS (enhanced with all new data)
 // ═══════════════════════════════════════════════════════════════
-function Reports({s}){
+function Reports({s,owner=true}){
   const totalRev=(s.invoices||[]).filter(i=>i.status==="paid").reduce((a,inv)=>a+invTot(inv),0);
   const avgTkt=(s.invoices||[]).length>0?(s.invoices||[]).reduce((a,inv)=>a+invTot(inv),0)/s.invoices.length:0;
   const overhead=(s.expenses||[]).reduce((a,e)=>a+(e.amount||0),0);
@@ -1404,7 +1588,7 @@ function Reports({s}){
     <SH title="Business Report"><button className="rc-ba rc-noprint" onClick={()=>window.print()}>🖨 Print</button></SH>
     <div className="rc-g6">
       <Stat label="Revenue (Paid)" value={$K(totalRev)}/><Stat label="Engine Sales" value={$K(engRev)} sub={directSold.length+(directSold.length===1?" engine sold":" engines sold")}/><Stat label="Pending" value={$K(pendRev)}/><Stat label="Avg Invoice" value={$$(avgTkt)}/>
-      <Stat label="Quote Conversion" value={quoteConv.toFixed(0)+"%"}/><Stat label="Overhead/mo" value={$K(overhead)}/><Stat label="Payroll/mo" value={$K(payroll)}/>
+      <Stat label="Quote Conversion" value={quoteConv.toFixed(0)+"%"}/><Stat label="Overhead/mo" value={$K(overhead)}/>{owner&&<Stat label="Payroll/mo" value={$K(payroll)}/>}
     </div>
     <div className="rc-g6">
       <Stat label="Freight Costs" value={$$(totalFreight)}/><Stat label="Core Deposits Pending" value={$$(coreDeposits)}/><Stat label="Active Warranties" value={(s.warranties||[]).filter(w=>w.status==="active").length}/>
@@ -1436,7 +1620,7 @@ function Reports({s}){
       <div style={{fontFamily:"var(--fd)",fontWeight:700,fontSize:15.5,letterSpacing:2,textTransform:"uppercase",color:"var(--tx2)",marginBottom:12}}>Profit & Loss</div>
       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:16}}>
         <div><div className="rc-ml">Revenue</div>{[["Paid",totalRev],["Engine Sales",engRev],["Pending",pendRev]].map(([l,v],i)=>(<div key={i} style={{display:"flex",justifyContent:"space-between",padding:"3px 0",fontSize:14}}><span style={{color:"var(--tx2)"}}>{l}</span><span style={{color:"var(--g)",fontWeight:600}}>{$$(v)}</span></div>))}<div style={{display:"flex",justifyContent:"space-between",paddingTop:6,fontSize:14.5,fontWeight:700,borderTop:"1px solid var(--ln)",marginTop:4}}><span>Total</span><span style={{color:"var(--g)"}}>{$$(totalRev+engRev+pendRev)}</span></div></div>
-        <div><div className="rc-ml">Costs</div>{[["Overhead",overhead],["Payroll",payroll],["Freight",totalFreight],["Engine Cost",engCogs]].map(([l,v],i)=>(<div key={i} style={{display:"flex",justifyContent:"space-between",padding:"3px 0",fontSize:14}}><span style={{color:"var(--tx2)"}}>{l}</span><span style={{color:"var(--r)",fontWeight:600}}>{$$(v)}</span></div>))}<div style={{display:"flex",justifyContent:"space-between",paddingTop:6,fontSize:14.5,fontWeight:700,borderTop:"1px solid var(--ln)",marginTop:4}}><span>Total</span><span style={{color:"var(--r)"}}>{$$(overhead+payroll+totalFreight+engCogs)}</span></div></div>
+        <div><div className="rc-ml">Costs</div>{[["Overhead",overhead],...(owner?[["Payroll",payroll]]:[]),["Freight",totalFreight],["Engine Cost",engCogs]].map(([l,v],i)=>(<div key={i} style={{display:"flex",justifyContent:"space-between",padding:"3px 0",fontSize:14}}><span style={{color:"var(--tx2)"}}>{l}</span><span style={{color:"var(--r)",fontWeight:600}}>{$$(v)}</span></div>))}<div style={{display:"flex",justifyContent:"space-between",paddingTop:6,fontSize:14.5,fontWeight:700,borderTop:"1px solid var(--ln)",marginTop:4}}><span>Total</span><span style={{color:"var(--r)"}}>{$$(overhead+payroll+totalFreight+engCogs)}</span></div></div>
         <div><div className="rc-ml">Net</div><div style={{fontFamily:"var(--fd)",fontWeight:800,fontSize:24,color:(totalRev+engRev-overhead-payroll-totalFreight-engCogs)>=0?"var(--g)":"var(--r)",marginTop:8}}>{$$(totalRev+engRev-overhead-payroll-totalFreight-engCogs)}</div><div style={{fontSize:12,color:"var(--mt)",marginTop:4}}>{(totalRev+engRev-overhead-payroll-totalFreight-engCogs)>=0?"Profitable":"Net Loss"}</div></div>
       </div>
     </div>
@@ -1492,7 +1676,20 @@ function Reports({s}){
           <Tbl headers={["Week of","Visits","Calls and emails"]}>{weeks.map(w=>(<tr key={w}><td className="rc-tn">{w}</td><td>{vc[w]||0}</td><td>{cc[w]||0}</td></tr>))}</Tbl></>}
         {Cm.length>0&&<><SH title="Competitors by Region"/><Tbl headers={["Category",...cregs,"Total"]}>{cats.map(c=>(<tr key={c}><td className="rc-tn">{c}</td>{cregs.map(rg=>{const n=Cm.filter(r=>(r.category||"—")===c&&(r.region||"—")===rg).length;return(<td key={rg} style={{color:n?"var(--tx)":"var(--ft)"}}>{n||"—"}</td>);})}<td style={{fontWeight:600}}>{Cm.filter(r=>(r.category||"—")===c).length}</td></tr>))}<tr><td className="rc-tn">Total</td>{cregs.map(rg=>(<td key={rg} style={{fontWeight:600}}>{Cm.filter(r=>(r.region||"—")===rg).length}</td>))}<td style={{fontWeight:700}}>{Cm.length}</td></tr></Tbl></>}
       </>);})()}
-    {techRows.length>0&&<><SH title="Labor by Technician"/><div className="rc-card" style={{padding:16}}><div style={{display:"flex",justifyContent:"space-between",fontSize:13,color:"var(--mt)",marginBottom:10}}><span>{laborHrs}h logged</span><span style={{color:"var(--ac)",fontWeight:600}}>{$$(laborVal)} labour cost at tech pay</span></div>{techRows.map(([tech,v],i)=>(<div key={i} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"5px 0",borderBottom:i<techRows.length-1?"1px solid var(--ln)":"none",fontSize:14}}><span style={{fontFamily:"var(--fd)",fontWeight:600}}>{tech}</span><span style={{display:"flex",gap:16,alignItems:"center"}}><span style={{color:"var(--tx2)"}}>{v.hours}h</span><span style={{color:"var(--ac)",fontWeight:600,width:80,textAlign:"right"}}>{$$(v.val)}</span></span></div>))}</div></>}
+    {(s.timesheets||[]).length>0&&(()=>{
+      // Timesheets: hours and overtime per person per month (last 6 months with days), labour cost (owner only), unallocated hours by week.
+      const per=(s.employees||[]).filter(e=>(s.timesheets||[]).some(r=>String(r.emp)===String(e.id))).map(e=>({e,c:Tsh.computeDays(tsRowsOf(s,e.id)),jh:tsJobHours(s,e),pf:tsPayFor(s,e)}));
+      const months=[...new Set((s.timesheets||[]).map(r=>String(r.date).slice(0,7)))].sort().reverse().slice(0,6);
+      const rows=[];per.forEach(({e,c,jh,pf})=>months.forEach(m=>{const ds=Object.values(c.days).filter(x=>x.date.startsWith(m));if(!ds.length)return;const pay=Tsh.payTotals(ds,pf);rows.push({e,m,min:ds.reduce((a,x)=>a+x.min,0),reg:pay.regMin,ot:pay.otMin,gross:pay.gross,missing:pay.missing.length>0,job:tsJobIn(jh,m+"-01",Tsh.monthEnd(m)),un:ds.reduce((a,x)=>a+Math.max(0,x.min/60-(jh[x.date]||0)),0)});}));
+      const wk0=Tsh.weekStart(isoToday());const wrow=[7,6,5,4,3,2,1,0].map(k=>{const w=Tsh.addDaysISO(wk0,-7*k),end=Tsh.addDaysISO(w,6);let paid=0,job=0,un=0;per.forEach(({c,jh})=>{Object.values(c.days).filter(x=>x.date>=w&&x.date<=end).forEach(x=>{paid+=x.min/60;un+=Math.max(0,x.min/60-(jh[x.date]||0));});job+=tsJobIn(jh,w,end);});return{w,paid,job,un};});
+      const top=Math.max(1,...wrow.map(x=>x.un));
+      return(<><SH title="Timesheets"/>
+        <Tbl headers={["Employee","Month","Hours","Regular","OT",...(owner?["Labour cost"]:[]),"On jobs","Unallocated"]}>{rows.map(r=>(<tr key={r.e.id+"-"+r.m}><td className="rc-tn">{r.e.name}</td><td>{Tsh.monthLabel(r.m)}</td><td>{fH(r.min)}</td><td>{fH(r.reg)}</td><td style={{color:r.ot?"var(--w)":"var(--ft)"}}>{fH(r.ot)}</td>{owner&&<td style={{fontWeight:600}}>{$$(r.gross)}{r.missing?" *":""}</td>}<td>{r.job.toFixed(2)}</td><td>{r.un.toFixed(2)}</td></tr>))}</Tbl>
+        {owner&&rows.some(r=>r.missing)&&<div className="rc-ts-dim" style={{margin:"-8px 0 16px"}}>* No wage on file for part of that month, so those hours are left out of the labour cost.</div>}
+        <SH title="Unallocated Hours by Week"/>
+        <Tbl headers={["Week of","Paid","On jobs","Unallocated",""]}>{wrow.map(x=>(<tr key={x.w}><td className="rc-tn">{Tsh.shortDate(x.w)}</td><td>{x.paid.toFixed(2)}</td><td>{x.job.toFixed(2)}</td><td>{x.un.toFixed(2)}{x.paid>0?" ("+Math.round(x.un/x.paid*100)+"%)":""}</td><td style={{width:"34%"}}><div className="rc-ts-meter"><span style={{width:(x.un/top*100)+"%"}}/></div></td></tr>))}</Tbl>
+      </>);})()}
+    {techRows.length>0&&<><SH title="Labor by Technician"/><div className="rc-card" style={{padding:16}}><div style={{display:"flex",justifyContent:"space-between",fontSize:13,color:"var(--mt)",marginBottom:10}}><span>{laborHrs}h logged</span>{owner&&<span style={{color:"var(--ac)",fontWeight:600}}>{$$(laborVal)} labour cost at tech pay</span>}</div>{techRows.map(([tech,v],i)=>(<div key={i} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"5px 0",borderBottom:i<techRows.length-1?"1px solid var(--ln)":"none",fontSize:14}}><span style={{fontFamily:"var(--fd)",fontWeight:600}}>{tech}</span><span style={{display:"flex",gap:16,alignItems:"center"}}><span style={{color:"var(--tx2)"}}>{v.hours}h</span>{owner&&<span style={{color:"var(--ac)",fontWeight:600,width:80,textAlign:"right"}}>{$$(v.val)}</span>}</span></div>))}</div></>}
     <div className="rc-print-only" style={{marginTop:24,paddingTop:10,borderTop:"2px solid #ccc",fontSize:12,color:"#999",display:"flex",justifyContent:"space-between"}}><span>Rollin Coal — Confidential</span><span>{td}</span></div>
   </div>);
 }
@@ -1500,13 +1697,15 @@ function Reports({s}){
 // ═══════════════════════════════════════════════════════════════
 // MODAL SYSTEM (all modals — add/edit/detail)
 // ═══════════════════════════════════════════════════════════════
-function Modals({s,d}){
+function Modals({s,d,owner=true,isOwner=owner,syncTs}){
   const sRef2=useRef(s);sRef2.current=s;
-  const[f,sf]=useState({});const[lines,setLines]=useState([{d:"",q:1,r:0}]);const[ptab,setPtab]=useState("overview");const lastEng=useRef(null);const[etab,setEtab]=useState("intake");const lastEcm=useRef(null);const[uploading,setUploading]=useState(false);
+  const[f,sf]=useState({});const[lines,setLines]=useState([{d:"",q:1,r:0}]);const[ptab,setPtab]=useState("overview");const lastEng=useRef(null);const[etab,setEtab]=useState("intake");const lastEcm=useRef(null);const[uploading,setUploading]=useState(false);const[tsInfo,setTsInfo]=useState(null);const[tsBusy,setTsBusy]=useState(false);
   const set=(k,v)=>sf(p=>({...p,[k]:v}));
   useEffect(()=>{if(!s.modal){lastEng.current=null;lastEcm.current=null;}
     // Reset the form for the modal first; the per-modal prefills below merge on top of it.
     if(s.modal&&s.modal.startsWith("edit-")&&s.md){const item={...s.md};if(Array.isArray(item.vehicles))item.vehicles=item.vehicles.join(", ");if(Array.isArray(item.tags))item.tags=item.tags.join(", ");if(Array.isArray(item.specialties))item.specialties=item.specialties.join(", ");if(Array.isArray(item.certs))item.certs=item.certs.join(", ");if(Array.isArray(item.models))item.models=item.models.join(", ");Object.keys(item).forEach(k=>{if(k!=="id"&&typeof item[k]==="number")item[k]=String(item[k]);});sf(item);}else{const m=s.md||{};sf({...(m.cat?{cat:m.cat}:{}),...(m.status?{status:m.status}:{}),...(m.custId?{custId:String(m.custId)}:{}),...(m.engineId?{engineId:m.engineId,engineName:m.engineName}:{}),...(m.prefill||{})});}
+    if(s.modal==="ts-import"&&s.md&&s.md.emp)sf(pp=>({...pp,tsEmp:String(s.md.emp)}));
+    if(s.modal==="ts-settings"){if(canSyncTimesheets)timesheetInfo().then(r=>setTsInfo(r));const used=new Set((sRef2.current.timesheetSources||[]).map(x=>String(x.employeeId)));const fe=(sRef2.current.employees||[]).find(e=>e.status!=="on-leave"&&!used.has(String(e.id)));if(fe)sf(pp=>({...pp,tsEmp:String(fe.id)}));}
     if(s.modal==="bom-note"&&s.md){const e0=(sRef2.current.inventory||[]).find(x=>x.id===+s.md.engineId);const sh0=(sRef2.current.bomSheets||[]).find(x=>+x.engineId===+((e0&&e0.id)||0));const r0=((sh0&&sh0.rows)||{})[s.md.lineId]||{};sf(pp=>({...pp,bnMeas:r0.meas||"",bnPn:r0.pn||"",bnUrl:r0.url||""}));}if(s.modal==="edit-bom"&&s.md){const b0=s.md;sf(pp=>({...pp,bmLabel:b0.label||"",bmFamily:b0.family||"",bmModel:b0.model||"",bmMatch:(b0.match||[]).join(", "),bmRev:b0.rev||"",bmNote:b0.note||"",bmWatch:b0.watch||"",bmRule:b0.rule||""}));}if(s.modal==="add-bom"&&s.md&&s.md.cloneOf){const b1=(sRef2.current.boms||[]).find(x=>x.id===+s.md.cloneOf);if(b1)sf(pp=>({...pp,bmLabel:"",bmFamily:"",bmModel:"",bmMatch:"",bmRev:b1.rev||"1.0",bmNote:b1.note||""}));}if(s.modal==="add-bomline"&&s.md){const k0=s.md.kind||"decide";sf(pp=>({...pp,blSec:s.md.sec||"",blQty:k0==="order"?"1":"",blPart:"",blNote:"",blKind:k0,blMach:false}));}if(s.modal==="edit-bomline"&&s.md){const l0=s.md;sf(pp=>({...pp,blSec:l0.sec||"",blQty:l0.qty||"1",blPart:l0.part||"",blNote:l0.note||"",blKind:lineKind(l0),blMach:!!l0.mach}));}if(s.modal==="bom-sheet"&&s.md){const sh1=(sRef2.current.bomSheets||[]).find(x=>+x.engineId===+s.md.engineId);if(sh1)sf(pp=>({...pp,bsWo:sh1.wo||"",bsTech:sh1.tech||"",bsDate:sh1.date||"",bsDone:sh1.dateDone||"",bsCore:sh1.coreSource||"",bsNotes:sh1.notes||""}));}if(s.modal==="part-detail"){const eid=s.md&&s.md.id;if(s.md&&s.md.ptab)setPtab(s.md.ptab);else if(eid!==lastEng.current)setPtab("overview");lastEng.current=eid;}if(s.modal==="ecm-job"){const eid=s.md&&s.md.id;if(s.md&&s.md.etab)setEtab(s.md.etab);else if(eid!==lastEcm.current)setEtab("intake");lastEcm.current=eid;}setLines(s.md&&Array.isArray(s.md.prefillItems)&&s.md.prefillItems.length?s.md.prefillItems:[{d:"",q:1,r:0}]);},[s.modal]);
   if(!s.modal)return null;
   const W=(ch,cls)=>(<div className={"rc-ov"+(cls?" "+cls:"")} onClick={()=>d({type:"CLOSE"})}><div className="rc-mod" onClick={e=>e.stopPropagation()}>{(s.mstack||[]).length>0&&<button className="rc-fb" onClick={()=>d({type:"BACK"})} style={{marginBottom:10}}>← Back</button>}{ch}</div></div>);
@@ -1554,7 +1753,7 @@ function Modals({s,d}){
   if(s.modal==="inv-detail"){const inv=s.md;const sb=(inv.items||[]).reduce((a,i)=>a+i.q*i.r,0);return W(<div><div className="rc-mt">{inv.invNum||inv.id}</div><div style={{display:"flex",justifyContent:"space-between",marginBottom:12}}><div><div className="rc-fl">Customer</div><div style={{fontFamily:"var(--fd)",fontWeight:600}}>{cn(s.customers,inv.custId)}</div></div><div style={{textAlign:"right"}}><div className="rc-fl">Status</div><Badge s={inv.status}/></div></div><div className="rc-fl">Line Items</div><div style={{background:"var(--sf2)",borderRadius:6,padding:10,marginBottom:12}}>{(inv.items||[]).map((it,i)=>(<div key={i} style={{display:"flex",justifyContent:"space-between",padding:"5px 0",borderBottom:i<inv.items.length-1?"1px solid var(--ln)":"none",fontSize:14}}><span style={{flex:1}}>{it.d}{it.svcId?<span style={{fontSize:11,fontWeight:600,letterSpacing:.5,color:"var(--act)",marginLeft:7}}>SERVICE</span>:null}{it.ecmJobId?<span style={{fontSize:11,fontWeight:600,letterSpacing:.5,color:"var(--act)",marginLeft:7}}>ECM</span>:null}</span><span style={{width:40,textAlign:"center",color:"var(--mt)"}}>×{it.q}</span><span style={{width:80,textAlign:"right",fontWeight:600}}>{$$(it.q*it.r)}</span></div>))}</div>{[["Subtotal",sb],["GST",sb*.05],["Total",sb*1.05]].map(([l,v],i)=>(<div key={i} style={{display:"flex",justifyContent:"space-between",padding:"2px 0",fontSize:i===2?14:12,fontWeight:i===2?700:400,color:i===2?"var(--ac)":"var(--tx2)"}}><span>{l}</span><span>{$$(v)}</span></div>))}<div className="rc-fa">{C}{inv.status==="pending"&&<button className="rc-ba" onClick={()=>{d({type:"UPDATE",list:"invoices",id:inv.id,d:{status:"paid"}});d({type:"CLOSE"});}}>Mark Paid</button>}</div></div>);}
   if(s.modal==="quote-detail"){const q=s.md;const sb=qTot(q);return W(<div><div className="rc-mt">{q.quoteNum||"Quote"}</div><div style={{display:"flex",justifyContent:"space-between",marginBottom:12}}><div><div className="rc-fl">Customer</div><div style={{fontFamily:"var(--fd)",fontWeight:600}}>{cn(s.customers,q.custId)}</div></div><Badge s={q.status}/></div>{q.description&&<div style={{fontSize:14,color:"var(--tx2)",marginBottom:10}}>{q.description}</div>}<div className="rc-fl">Items</div><div style={{background:"var(--sf2)",borderRadius:6,padding:10,marginBottom:12}}>{(q.items||[]).map((it,i)=>(<div key={i} style={{display:"flex",justifyContent:"space-between",padding:"5px 0",borderBottom:i<q.items.length-1?"1px solid var(--ln)":"none",fontSize:14}}><span style={{flex:1}}>{it.d}{it.svcId?<span style={{fontSize:11,fontWeight:600,letterSpacing:.5,color:"var(--act)",marginLeft:7}}>SERVICE</span>:null}</span><span style={{width:80,textAlign:"right",fontWeight:600}}>{$$(it.q*it.r)}</span></div>))}</div>{[["Sub",sb],["GST",sb*.05],["Total",sb*1.05]].map(([l,v],i)=>(<div key={i} style={{display:"flex",justifyContent:"space-between",padding:"2px 0",fontSize:i===2?14:12,fontWeight:i===2?700:400,color:i===2?"var(--ac)":"var(--tx2)"}}><span>{l}</span><span>{$$(v)}</span></div>))}<div className="rc-fa">{C}{q.status==="approved"&&<button className="rc-ba" onClick={()=>{d({type:"ADD",list:"invoices",d:{invNum:"INV-"+Date.now().toString().slice(-6),custId:q.custId,date:today(),due:"Net 30",items:q.items,status:"pending"}});d({type:"CLOSE"});}}>→ Invoice</button>}</div></div>);}
   if(s.modal==="appt-detail"){const a=s.md;return W(<div><div className="rc-mt">Appointment</div>{[["Customer",cn(s.customers,a.custId)],["Service",a.service],["Date",a.date],["Time",a.time],["Tech",a.tech],...(a.notes?[["Notes",a.notes]]:[])].map(([l,v],i)=>(<div key={i} className="rc-fg"><div className="rc-fl">{l}</div><div style={{fontSize:14.5}}>{v}</div></div>))}<div className="rc-fg"><div className="rc-fl">Status</div><Badge s={a.status}/></div><div className="rc-fa">{C}{a.ecmJobId&&<button className="rc-bs" onClick={()=>d({type:"MODAL",v:"ecm-job",d:{id:+a.ecmJobId,etab:"follow"}})}>Open ECM job</button>}{a.status==="pending"&&<button className="rc-ba" onClick={()=>{d({type:"UPDATE",list:"schedule",id:a.id,d:{status:"confirmed"}});d({type:"CLOSE"});}}>Confirm</button>}</div></div>);}
-  if(s.modal==="emp-detail"){const e=s.md;return W(<div><div className="rc-mt">Employee</div><div style={{fontFamily:"var(--fd)",fontWeight:700,fontSize:21}}>{e.name}</div><div style={{fontSize:14,color:"var(--ac)",marginBottom:10}}>{e.role}</div><div className="rc-3c" style={{marginBottom:12}}><div><div className="rc-ml">Rate</div><div className="rc-mv">${e.rate}/hr</div></div><div><div className="rc-ml">Hrs</div><div className="rc-mv">{e.hrs}</div></div><div><div className="rc-ml">Hired</div><div className="rc-mv" style={{fontSize:14.5}}>{e.hireDate}</div></div></div>{e.phone&&<div className="rc-fg"><div className="rc-fl">Phone</div><div style={{fontSize:14}}>{e.phone}</div></div>}{(e.specialties||[]).length>0&&<div className="rc-fg"><div className="rc-fl">Specialties</div><div style={{fontSize:14,color:"var(--tx2)"}}>{e.specialties.join(", ")}</div></div>}{(e.certs||[]).length>0&&<div className="rc-fg"><div className="rc-fl">Certs</div><div style={{fontSize:14,color:"var(--g)"}}>{e.certs.join(", ")}</div></div>}<div className="rc-fa">{C}<button className="rc-bs" onClick={()=>d({type:"MODAL",v:"edit-emp",d:e})}>✎</button><button className="rc-ba" onClick={()=>{d({type:"UPDATE",list:"employees",id:e.id,d:{status:e.status==="active"?"on-leave":"active"}});d({type:"CLOSE"});}}>{e.status==="active"?"Leave":"Activate"}</button></div></div>);}
+  if(s.modal==="emp-detail"){const e=s.md;return W(<div><div className="rc-mt">Employee</div><div style={{fontFamily:"var(--fd)",fontWeight:700,fontSize:21}}>{e.name}</div><div style={{fontSize:14,color:"var(--ac)",marginBottom:10}}>{e.role}</div><div className="rc-3c" style={{marginBottom:12}}>{owner&&<div><div className="rc-ml">Rate</div><div className="rc-mv">${e.rate}/hr</div></div>}<div><div className="rc-ml">Hrs</div><div className="rc-mv">{e.hrs}</div></div><div><div className="rc-ml">Hired</div><div className="rc-mv" style={{fontSize:14.5}}>{e.hireDate}</div></div></div>{e.phone&&<div className="rc-fg"><div className="rc-fl">Phone</div><div style={{fontSize:14}}>{e.phone}</div></div>}{(e.specialties||[]).length>0&&<div className="rc-fg"><div className="rc-fl">Specialties</div><div style={{fontSize:14,color:"var(--tx2)"}}>{e.specialties.join(", ")}</div></div>}{(e.certs||[]).length>0&&<div className="rc-fg"><div className="rc-fl">Certs</div><div style={{fontSize:14,color:"var(--g)"}}>{e.certs.join(", ")}</div></div>}<div className="rc-fa">{C}<button className="rc-bs" onClick={()=>d({type:"MODAL",v:"edit-emp",d:e})}>✎</button><button className="rc-ba" onClick={()=>{d({type:"UPDATE",list:"employees",id:e.id,d:{status:e.status==="active"?"on-leave":"active"}});d({type:"CLOSE"});}}>{e.status==="active"?"Leave":"Activate"}</button></div></div>);}
 
   if(s.modal==="add-bom"){const src=s.md&&s.md.cloneOf?bomById(s,s.md.cloneOf):null;
     return W(<div><div className="rc-mt">{src?"Clone Worksheet":"New Worksheet"}</div>
@@ -1692,7 +1891,7 @@ function Modals({s,d}){
       {F("notes","Notes")}
       <div className="rc-fa">{X}{!ok&&<span style={{fontSize:12.5,color:"var(--mt)",alignSelf:"center"}}>{svc?"Pick a customer and a service":"Pick the engine"}</span>}<button className="rc-ba" disabled={!ok} onClick={save}>{ed?"Save Changes":"Open Work Order"}</button></div>
     </div>);}
-  if(s.modal==="add-time"){const job=s.md&&s.md.job;return W(<div><div className="rc-mt">Log Time{job&&job.service?" — "+job.service:""}</div><div className="rc-fg"><label className="rc-fl">Technician</label><select className="rc-fi" value={f.tech||""} onChange={e=>{const v=e.target.value;const emp=(s.employees||[]).find(x=>(x.nick||x.name)===v);set("tech",v);if(emp)set("rate",String(emp.rate||0));}} style={{appearance:"none"}}><option value="">Select tech...</option>{(s.employees||[]).filter(e=>e.status==="active").map(e=>(<option key={e.id} value={e.nick||e.name}>{e.name}{e.rate?` · $${e.rate}/hr`:""}</option>))}</select></div>{[["date","Date"],["hours","Hours","number"],["rate","Rate ($/hr)","number"],["notes","Notes"]].map(([k,l,t])=>F(k,l,t))}<div className="rc-fa">{X}<button className="rc-ba" onClick={()=>{if(!(job&&f.tech&&+f.hours>0))return;d({type:"ADD",list:"timeEntries",d:{jobId:job.id,tech:f.tech,date:f.date||isoToday(),hours:+f.hours||0,rate:+f.rate||0,notes:f.notes||""},label:"Time logged"});d({type:"MODAL",v:"job-detail",d:job});}}>Save</button></div></div>);}
+  if(s.modal==="add-time"){const job=s.md&&s.md.job;return W(<div><div className="rc-mt">Log Time{job&&job.service?" — "+job.service:""}</div><div className="rc-fg"><label className="rc-fl">Technician</label><select className="rc-fi" value={f.tech||""} onChange={e=>{const v=e.target.value;const emp=(s.employees||[]).find(x=>(x.nick||x.name)===v);set("tech",v);if(emp)set("rate",String(emp.rate||0));}} style={{appearance:"none"}}><option value="">Select tech...</option>{(s.employees||[]).filter(e=>e.status==="active").map(e=>(<option key={e.id} value={e.nick||e.name}>{e.name}{owner&&e.rate?` · $${e.rate}/hr`:""}</option>))}</select></div>{[["date","Date"],["hours","Hours","number"],["rate","Rate ($/hr)","number"],["notes","Notes"]].filter(([k])=>owner||k!=="rate").map(([k,l,t])=>F(k,l,t))}<div className="rc-fa">{X}<button className="rc-ba" onClick={()=>{if(!(job&&f.tech&&+f.hours>0))return;d({type:"ADD",list:"timeEntries",d:{jobId:job.id,tech:f.tech,date:f.date||isoToday(),hours:+f.hours||0,rate:+f.rate||0,notes:f.notes||""},label:"Time logged"});d({type:"MODAL",v:"job-detail",d:job});}}>Save</button></div></div>);}
   if(s.modal==="part-detail"){const i=engById(s,s.md&&s.md.id)||s.md;const eng=isEngine(i);const cb=costBasis(i);const tm=trueMargin(i);const mp=marginPct(i);
     if(!eng){return W(<div><div className="rc-mt">{i.name}</div>{i.photo&&<img src={i.photo} alt="" style={{width:"100%",maxHeight:240,objectFit:"cover",borderRadius:5,border:"1px solid var(--ln)",marginBottom:12}}/>}<div className="rc-3c" style={{marginBottom:12}}><div><div className="rc-ml">SKU</div><div className="rc-mv" style={{fontSize:14.5}}>{i.sku}</div></div><div><div className="rc-ml">Price</div><div className="rc-mv" style={{color:"var(--ac)"}}>{i.price>0?$$(i.price):"Core"}</div></div><div><div className="rc-ml">Qty</div><div className="rc-mv">{i.qty}</div></div></div>{i.notes&&<div className="rc-fg"><div className="rc-fl">Notes</div><div style={{fontSize:14,color:"var(--tx2)"}}>{i.notes}</div></div>}<div className="rc-fa">{C}<button className="rc-bs" onClick={()=>d({type:"MODAL",v:"edit-part",d:i})}>✎ Edit</button></div></div>);}
     const lk=engLinks(s,i.id);const cur=engStatus(i);
@@ -1819,7 +2018,7 @@ function Modals({s,d}){
       <div className="rc-fa">{C}{engStatus(i)==="available"&&<button className="rc-ba" onClick={()=>d({type:"MODAL",v:"sell-engine",d:{engineId:i.id}})}>Sell Engine →</button>}<button className="rc-bs" onClick={()=>d({type:"MODAL",v:"export-engine",d:i})}>🌐 Export</button><button className="rc-bs" onClick={()=>printEngine(s,i)}>🖨 Print</button><button className="rc-bs" onClick={()=>d({type:"MODAL",v:"edit-part",d:i})}>✎ Edit</button></div></div>);}
   if(s.modal==="add-part"){const eng=isEngine({cat:f.cat});return W(<div><div className="rc-mt">Add {eng?"Engine":"Part"}</div>{PH()}{[["name","Name"],["sku","SKU"],["cat","Category"]].map(([k,l,t])=>F(k,l,t))}{eng?(<><div className="rc-fl" style={{marginTop:8}}>Engine identity</div><div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>{F("serial","ESN / Serial")}{F("cpl","CPL / AR#")}{F("arrangement","Arrangement")}{F("year","Year")}{F("ratedHp","Rated HP")}{F("oilCap","Oil Capacity")}</div>{F("sourceCore","Source Core")}{F("condition","Condition")}<div className="rc-fg"><label className="rc-fl">Lifecycle Status</label><select className="rc-fi" value={f.status||"available"} onChange={e=>set("status",e.target.value)} style={{appearance:"none"}}>{ENG_STATUSES.map(st=>(<option key={st} value={st}>{engStatusLabel(st)}</option>))}</select></div><div className="rc-fl" style={{marginTop:8}}>Cost basis breakdown</div><div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>{F("costCore","Core Purchase","number")}{F("costFreight","Inbound Freight","number")}{F("costParts","Parts Kit (flat $ — itemized log is on the passport)","number")}{F("costLabor","Machine + Assembly","number")}</div>{F("price","Sell Price","number")}</>):(<>{[["cost","Cost","number"],["price","Price","number"],["qty","Qty","number"],["reorder","Reorder","number"],["condition","Condition"],["serial","Serial"]].map(([k,l,t])=>F(k,l,t))}</>)}{F("notes","Notes")}<div className="rc-fa">{X}<button className="rc-ba" disabled={uploading} onClick={()=>{if(!(f.name&&f.sku))return;const d2=eng?{...f,cat:f.cat||"Complete Engine",status:f.status||"available",qty:1,reorder:0,price:+f.price||0,cost:+f.cost||0,costCore:+f.costCore||0,costFreight:+f.costFreight||0,costParts:+f.costParts||0,costLabor:+f.costLabor||0}:{...f,qty:+f.qty||0,reorder:+f.reorder||2,price:+f.price||0,cost:+f.cost||0};d({type:"ADD",list:"inventory",d:d2});}}>Save</button></div></div>);}
   if(s.modal==="add-appt")return W(<div><div className="rc-mt">Book Appointment</div>{CS()}{[["date","Date (YYYY-MM-DD)"],["time","Time"],["duration","Duration (min)","number"]].map(([k,l,t])=>F(k,l,t))}{TS()}{F("service","Service")}<div className="rc-fa">{X}<button className="rc-ba" onClick={()=>f.custId&&f.service&&d({type:"ADD",list:"schedule",d:{...f,custId:+f.custId,duration:+f.duration||120,status:"pending"}})}>Save</button></div></div>);
-  if(s.modal==="add-emp")return FM("Add Employee",[["name","Name"],["nick","Short Name"],["role","Role"],["phone","Phone"],["rate","Rate ($/hr)","number"],["hrs","Hours/Week","number"],["specialties","Specialties (comma sep)"],["certs","Certs (comma sep)"],["hireDate","Hire Date"]],()=>f.name&&d({type:"ADD",list:"employees",d:{...f,rate:+f.rate||0,hrs:+f.hrs||0,status:"active",specialties:(f.specialties||"").split(",").map(x=>x.trim()).filter(Boolean),certs:(f.certs||"").split(",").map(x=>x.trim()).filter(Boolean)}}));
+  if(s.modal==="add-emp")return FM("Add Employee",[["name","Name"],["nick","Short Name"],["role","Role"],["phone","Phone"],["rate","Rate ($/hr)","number"],["hrs","Hours/Week","number"],["specialties","Specialties (comma sep)"],["certs","Certs (comma sep)"],["hireDate","Hire Date"]].filter(([k])=>owner||k!=="rate"),()=>f.name&&d({type:"ADD",list:"employees",d:{...f,rate:+f.rate||0,hrs:+f.hrs||0,status:"active",specialties:(f.specialties||"").split(",").map(x=>x.trim()).filter(Boolean),certs:(f.certs||"").split(",").map(x=>x.trim()).filter(Boolean)}}));
   if(s.modal==="add-expense")return FM("Add Expense",[["cat","Category"],["amount","Amount ($)","number"],["freq","Frequency"],["notes","Notes"]],()=>f.cat&&d({type:"ADD",list:"expenses",d:{...f,amount:+f.amount||0}}));
   if(s.modal==="add-lead")return FM("Add Lead",[["name","Name"],["phone","Phone"],["interest","Interest"],["source","Source"],["province","Province"],["notes","Notes"]],()=>f.name&&d({type:"ADD",list:"leads",d:{...f,status:"new",date:today()}}));
   if(s.modal==="add-social")return FM("Add Social",[["platform","Platform"],["handle","Handle"],["followers","Followers","number"],["posts","Posts","number"],["engagement","Engagement (%)","number"]],()=>f.platform&&d({type:"ADD",list:"social",d:{...f,followers:+f.followers||0,posts:+f.posts||0,engagement:+f.engagement||0}}));
@@ -2168,10 +2367,10 @@ function Modals({s,d}){
 
   // EDIT forms
   if(s.modal==="edit-cust")return EFM("Edit Customer","customers",[["name","Name"],["phone","Phone"],["email","Email"],["type","Type"],["province","Province"],["vehicles","Vehicles"],["spent","Spent","number"],["visits","Visits","number"],["notes","Notes"],["tags","Tags"]],f=>({...f,spent:+f.spent||0,visits:+f.visits||0,vehicles:(f.vehicles||"").split(",").map(v=>v.trim()).filter(Boolean),tags:(f.tags||"").split(",").map(t=>t.trim()).filter(Boolean)}));
-  if(s.modal==="edit-time")return W(<div><div className="rc-mt">Edit Time</div><div className="rc-fg"><label className="rc-fl">Technician</label><select className="rc-fi" value={f.tech||""} onChange={e=>{const v=e.target.value;const emp=(s.employees||[]).find(x=>(x.nick||x.name)===v);set("tech",v);if(emp)set("rate",String(emp.rate||0));}} style={{appearance:"none"}}><option value="">Select tech...</option>{(s.employees||[]).filter(e=>e.status==="active").map(e=>(<option key={e.id} value={e.nick||e.name}>{e.name}</option>))}</select></div>{[["date","Date"],["hours","Hours","number"],["rate","Rate ($/hr)","number"],["notes","Notes"]].map(([k,l,t])=>F(k,l,t))}<div className="rc-fa">{X}<button className="rc-ba" onClick={()=>{d({type:"UPDATE",list:"timeEntries",id:s.md.id,d:{tech:f.tech,date:f.date,hours:+f.hours||0,rate:+f.rate||0,notes:f.notes||""}});const jb=(s.jobs||[]).find(x=>x.id===s.md.jobId);d(jb?{type:"MODAL",v:"job-detail",d:jb}:{type:"CLOSE"});}}>Save</button></div></div>);
+  if(s.modal==="edit-time")return W(<div><div className="rc-mt">Edit Time</div><div className="rc-fg"><label className="rc-fl">Technician</label><select className="rc-fi" value={f.tech||""} onChange={e=>{const v=e.target.value;const emp=(s.employees||[]).find(x=>(x.nick||x.name)===v);set("tech",v);if(emp)set("rate",String(emp.rate||0));}} style={{appearance:"none"}}><option value="">Select tech...</option>{(s.employees||[]).filter(e=>e.status==="active").map(e=>(<option key={e.id} value={e.nick||e.name}>{e.name}</option>))}</select></div>{[["date","Date"],["hours","Hours","number"],["rate","Rate ($/hr)","number"],["notes","Notes"]].filter(([k])=>owner||k!=="rate").map(([k,l,t])=>F(k,l,t))}<div className="rc-fa">{X}<button className="rc-ba" onClick={()=>{d({type:"UPDATE",list:"timeEntries",id:s.md.id,d:{tech:f.tech,date:f.date,hours:+f.hours||0,rate:+f.rate||0,notes:f.notes||""}});const jb=(s.jobs||[]).find(x=>x.id===s.md.jobId);d(jb?{type:"MODAL",v:"job-detail",d:jb}:{type:"CLOSE"});}}>Save</button></div></div>);
   if(s.modal==="edit-part"){const eng=isEngine({cat:f.cat});return W(<div><div className="rc-mt">Edit {eng?"Engine":"Part"}</div>{PH()}{[["name","Name"],["sku","SKU"],["cat","Category"]].map(([k,l,t])=>F(k,l,t))}{eng?(<><div className="rc-fl" style={{marginTop:8}}>Engine identity</div><div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>{F("serial","ESN / Serial")}{F("cpl","CPL / AR#")}{F("arrangement","Arrangement")}{F("year","Year")}{F("ratedHp","Rated HP")}{F("oilCap","Oil Capacity")}</div>{F("sourceCore","Source Core")}{F("condition","Condition")}<div className="rc-fg"><label className="rc-fl">Lifecycle Status</label><select className="rc-fi" value={f.status||"available"} onChange={e=>set("status",e.target.value)} style={{appearance:"none"}}>{ENG_STATUSES.map(st=>(<option key={st} value={st}>{engStatusLabel(st)}</option>))}</select></div><div className="rc-fl" style={{marginTop:8}}>Cost basis breakdown</div><div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>{F("costCore","Core Purchase","number")}{F("costFreight","Inbound Freight","number")}{F("costParts","Parts Kit (flat $ — itemized log is on the passport)","number")}{F("costLabor","Machine + Assembly","number")}</div>{F("price","Sell Price","number")}</>):(<>{[["cost","Cost","number"],["price","Price","number"],["qty","Qty","number"],["reorder","Reorder","number"],["condition","Condition"],["serial","Serial"]].map(([k,l,t])=>F(k,l,t))}</>)}{F("notes","Notes")}<div className="rc-fa">{X}<button className="rc-ba" disabled={uploading} onClick={()=>{d({type:"UPDATE",list:"inventory",id:s.md.id,d:{...f,qty:+f.qty||(eng?1:0),reorder:+f.reorder||0,price:+f.price||0,cost:+f.cost||0,costCore:+f.costCore||0,costFreight:+f.costFreight||0,costParts:+f.costParts||0,costLabor:+f.costLabor||0}});d({type:"CLOSE"});}}>Save Changes</button></div></div>);}
   if(s.modal==="edit-appt")return W(<div><div className="rc-mt">Edit Appointment</div>{CS()}{[["date","Date"],["time","Time"],["duration","Duration","number"]].map(([k,l,t])=>F(k,l,t))}{TS()}{F("service","Service")}<div className="rc-fg"><label className="rc-fl">Status</label><select className="rc-fi" value={f.status||"pending"} onChange={e=>set("status",e.target.value)} style={{appearance:"none"}}><option value="pending">Pending</option><option value="confirmed">Confirmed</option></select></div><div className="rc-fa">{X}<button className="rc-ba" onClick={()=>{d({type:"UPDATE",list:"schedule",id:s.md.id,d:{...f,custId:+f.custId||s.md.custId,duration:+f.duration||120}});d({type:"CLOSE"});}}>Save</button></div></div>);
-  if(s.modal==="edit-emp")return EFM("Edit Employee","employees",[["name","Name"],["nick","Short Name"],["role","Role"],["phone","Phone"],["rate","Rate","number"],["hrs","Hours","number"],["specialties","Specialties"],["certs","Certs"],["hireDate","Hired"]],f=>({...f,rate:+f.rate||0,hrs:+f.hrs||0,specialties:(f.specialties||"").split(",").map(x=>x.trim()).filter(Boolean),certs:(f.certs||"").split(",").map(x=>x.trim()).filter(Boolean)}));
+  if(s.modal==="edit-emp")return EFM("Edit Employee","employees",[["name","Name"],["nick","Short Name"],["role","Role"],["phone","Phone"],["rate","Rate","number"],["hrs","Hours","number"],["specialties","Specialties"],["certs","Certs"],["hireDate","Hired"]].filter(([k])=>owner||k!=="rate"),f=>({...f,rate:+f.rate||0,hrs:+f.hrs||0,specialties:(f.specialties||"").split(",").map(x=>x.trim()).filter(Boolean),certs:(f.certs||"").split(",").map(x=>x.trim()).filter(Boolean)}));
   if(s.modal==="edit-expense")return EFM("Edit Expense","expenses",[["cat","Category"],["amount","Amount","number"],["freq","Frequency"],["notes","Notes"]],f=>({...f,amount:+f.amount||0}));
   if(s.modal==="edit-lead")return EFM("Edit Lead","leads",[["name","Name"],["phone","Phone"],["interest","Interest"],["source","Source"],["province","Province"],["notes","Notes"]],f=>f);
   if(s.modal==="edit-social")return EFM("Edit Social","social",[["platform","Platform"],["handle","Handle"],["followers","Followers","number"],["posts","Posts","number"],["engagement","Engage (%)","number"]],f=>({...f,followers:+f.followers||0,posts:+f.posts||0,engagement:+f.engagement||0}));
@@ -2246,7 +2445,63 @@ function Modals({s,d}){
       <div className="rc-fa">{C}<button className="rc-bs" onClick={()=>copy(listingHtml(i),"HTML")}>Copy as HTML</button><button className="rc-ba" onClick={()=>copy(txt,"Listing")}>📋 Copy text</button></div></div>);}
   if(s.modal==="shop-log"){const acts=s.activity||[];const groups=[];let cur=null;acts.forEach(x=>{const day=(x.ts||"").slice(0,10);if(!cur||cur.day!==day){cur={day,items:[]};groups.push(cur);}cur.items.push(x);});return W(<div><div className="rc-mt">Shop Log</div><p style={{fontSize:12,color:"var(--mt)",marginBottom:12}}>Recorded automatically as the crew works — status moves, time logged, photos, invoices, adds and deletes, with who did it. Keeps the last 400 events.</p>{acts.length===0?(<div style={{fontSize:14,color:"var(--mt)",padding:"10px 0"}}>Nothing recorded yet. Move a card on the Reman Board or log time on a job and it'll show up here.</div>):groups.map(g=>(<div key={g.day} style={{marginBottom:12}}><div className="rc-fl" style={{marginBottom:4,color:"var(--ac)"}}>{g.day===isoToday()?"Today · "+g.day:g.day}</div>{g.items.map(x=>(<div key={x.id} className="rc-act"><span className="rc-act-t">{(x.ts||"").slice(11,16)}</span><span className="rc-act-u">{x.user}</span><span style={{flex:1,minWidth:0}}>{x.msg}</span></div>))}</div>))}<div className="rc-fa">{C}</div></div>);}
   if(s.modal==="set-goal"){const cur=(s.settings||[])[0];return W(<div><div className="rc-mt">Monthly Goal</div><div className="rc-fg"><label className="rc-fl">Revenue target ($ / month)</label><input className="rc-fi" type="number" placeholder={String((cur&&cur.monthlyGoal)||50000)} value={f.monthlyGoal||""} onChange={e=>set("monthlyGoal",e.target.value)}/></div><p style={{fontSize:12,color:"var(--mt)",marginBottom:10}}>Drives the goal bar on Overview. Beating a previous month's total triggers the Best Month banner.</p><div className="rc-fa">{X}<button className="rc-ba" onClick={()=>{const v=+f.monthlyGoal||0;if(!v)return;if(cur)d({type:"UPDATE",list:"settings",id:cur.id,d:{monthlyGoal:v}});else d({type:"ADD",list:"settings",d:{monthlyGoal:v},label:"Goal saved"});d({type:"CLOSE"});}}>Save</button></div></div>);}
-  if(s.modal==="confirm-reset")return W(<div><div className="rc-mt">Reset All Data?</div><p style={{fontSize:14,color:"var(--tx2)",marginBottom:10,lineHeight:1.6}}>This permanently deletes <strong>everything</strong> — engines, customers, invoices, wins, the lot. Download a backup first.</p><button className="rc-bs" style={{marginBottom:12}} onClick={()=>exportBackup(s)}>⬇ Download backup (JSON)</button><div className="rc-fg"><label className="rc-fl">Type RESET to confirm</label><input className="rc-fi" value={f.resetConfirm||""} onChange={e=>set("resetConfirm",e.target.value)} placeholder="RESET"/></div><div className="rc-fa">{C}<button className="rc-ba" disabled={(f.resetConfirm||"")!=="RESET"} style={{background:(f.resetConfirm||"")==="RESET"?"var(--r)":"var(--rs)",borderColor:"var(--r)",opacity:(f.resetConfirm||"")==="RESET"?1:.5,cursor:(f.resetConfirm||"")==="RESET"?"pointer":"not-allowed"}} onClick={async()=>{if((f.resetConfirm||"")!=="RESET")return;await clearAll();d({type:"RESET"});d({type:"CLOSE"});}}>Reset</button></div></div>);
+  // ── Timesheets: connected sheets, the service account to share with, the pay period ──
+  if(s.modal==="ts-settings"){const srcs=s.timesheetSources||[];const emps=s.employees||[];const st=tsSet(s);const sid=Tsh.extractSheetId(f.tsUrl||"");const dup=!!sid&&srcs.some(x=>x.sheetId===sid);const sa=(tsInfo&&tsInfo.saEmail)||"";
+    const saveSet=patch=>{const cur=(s.settings||[])[0];if(cur)d({type:"UPDATE",list:"settings",id:cur.id,d:patch});else d({type:"ADD",list:"settings",d:patch,keep:true,label:"Saved"});};
+    const syncOne=async x=>{if(tsBusy||!syncTs)return;setTsBusy(true);let r=null;try{r=await syncTs(x.id);}finally{setTsBusy(false);}const R=((r&&r.results)||[]).find(y=>String(y.id)===String(x.id));d({type:"TOAST",d:{msg:R?(R.ok?"✓ "+tsSrcName(s,x)+": "+(R.added||0)+" new, "+(R.updated||0)+" changed"+(R.flagged?", "+R.flagged+" changed after approval":""):"⚠ "+R.error):"⚠ "+((r&&r.error)||"Sync failed"),long:true,t:Date.now()}});};
+    return W(<div>
+      <div className="rc-mt">Timesheet settings</div>
+      <div className="rc-fl">Share each timesheet with this address</div>
+      {canSyncTimesheets?(sa?<div className="rc-ts-sa"><code>{sa}</code><button className="rc-bs" onClick={()=>{try{navigator.clipboard.writeText(sa);d({type:"TOAST",d:{msg:"Copied",t:Date.now()}});}catch(e){}}}>Copy</button></div>:<div className="rc-ts-note">{tsInfo&&tsInfo.error?tsInfo.error:tsInfo&&tsInfo.configured===false?"Google access isn't set up yet: add the GOOGLE_SA_JSON secret (SETUP.md, step 5).":"Looking up the service account…"}</div>)
+        :<div className="rc-ts-note">Google sync needs the cloud setup (SETUP.md). Until then, upload CSV or Excel exports from Team → Timesheets.</div>}
+      <div className="rc-ts-note">In the Google Sheet: Share → paste the address → Viewer → untick "Notify people" → Share. Never use "Publish to the web"; the sheets hold wages.</div>
+      <div className="rc-fl" style={{marginTop:14}}>Connected timesheets · {srcs.length}</div>
+      {srcs.length===0?<div className="rc-ts-note">None yet. Add one below.</div>:srcs.map(x=>{const em=emps.find(y=>String(y.id)===String(x.employeeId));const off=x.sheetName&&em&&![em.name,em.nick].filter(Boolean).some(n=>String(n).trim().toLowerCase()===String(x.sheetName).trim().toLowerCase());return(<div key={x.id} className="rc-ts-src">
+        <div className="rc-ts-srch"><a className="rc-lnk" href={x.sheetUrl||"https://docs.google.com/spreadsheets/d/"+x.sheetId} target="_blank" rel="noreferrer">{tsSrcName(s,x)}</a>
+          <select className="rc-fi" aria-label="Whose timesheet" value={String(x.employeeId||"")} onChange={ev=>{const m=emps.find(y=>String(y.id)===ev.target.value);d({type:"UPDATE",list:"timesheetSources",id:x.id,d:{employeeId:m?m.id:null,empName:m?m.name:""}});}}><option value="">Pick a team member…</option>{emps.map(y=>(<option key={y.id} value={String(y.id)}>{y.name}</option>))}</select></div>
+        <div className="rc-ts-dim">{x.lastSynced?"Synced "+fmtWhen(x.lastSynced)+(x.days?" · "+x.days+" days":"")+((x.tabs||[]).length?" · "+x.tabs.join(", "):""):"Not synced yet"}{off?" · the sheet's Employee cell says "+x.sheetName:""}</div>
+        {x.lastError&&<div className="rc-ts-errl">{x.lastError}</div>}
+        {(x.warnings||[]).length>0&&<details className="rc-ts-wd"><summary>{x.warnings.length} note{x.warnings.length===1?"":"s"} from the last sync</summary>{x.warnings.map((w,k)=>(<div key={k}>{w}</div>))}</details>}
+        <BtnRow><button className="rc-bs" disabled={!canSyncTimesheets||tsBusy} onClick={()=>syncOne(x)}>{tsBusy?"Syncing…":"⟳ Sync this one"}</button><button className="rc-bs rc-bsr" onClick={()=>d({type:"DELETE",list:"timesheetSources",id:x.id})}>Remove</button></BtnRow>
+      </div>);})}
+      {srcs.length>0&&<div className="rc-ts-dim">Removing a sheet keeps the days already pulled in.</div>}
+      <div className="rc-fl" style={{marginTop:16}}>Add a timesheet</div>
+      <div className="rc-fg"><input className="rc-fi" aria-label="Google Sheets link" value={f.tsUrl||""} onChange={ev=>set("tsUrl",ev.target.value)} placeholder="Paste the Google Sheets link"/></div>
+      {f.tsUrl&&<div className={sid&&!dup?"rc-ts-dim":"rc-ts-errl"} style={{marginTop:-6,marginBottom:8}}>{sid?(dup?"That sheet is already connected.":"Sheet ID: "+sid):"That doesn't look like a Google Sheets link."}</div>}
+      <div className="rc-fg"><label className="rc-fl">Whose timesheet</label><select className="rc-fi" value={f.tsEmp||""} onChange={ev=>set("tsEmp",ev.target.value)} style={{appearance:"none"}}><option value="">Pick a team member…</option>{emps.map(y=>(<option key={y.id} value={String(y.id)}>{y.name}</option>))}</select></div>
+      <div className="rc-fa" style={{justifyContent:"flex-start"}}><button className="rc-ba" disabled={!sid||dup||!f.tsEmp} onClick={()=>{const m=emps.find(y=>String(y.id)===f.tsEmp);if(!sid||dup||!m)return;d({type:"ADD",list:"timesheetSources",d:{sheetUrl:f.tsUrl.trim(),sheetId:sid,employeeId:m.id,empName:m.name,addedAt:nowIso()},keep:true,label:"Timesheet connected. Sync now to pull it in."});sf(pp=>({...pp,tsUrl:"",tsEmp:""}));}}>+ Connect</button></div>
+      <div className="rc-fl" style={{marginTop:16}}>Pay period</div>
+      <div className="rc-fg"><select className="rc-fi" aria-label="Pay period" value={st.kind} onChange={ev=>saveSet({payPeriod:ev.target.value})} style={{appearance:"none"}}><option value="monthly">Monthly (matches the month tabs)</option><option value="semimonthly">Twice a month (1st to 15th, 16th to month end)</option><option value="biweekly">Every two weeks</option></select></div>
+      {st.kind==="biweekly"&&<div className="rc-fg"><label className="rc-fl">First day of any pay period</label><input className="rc-fi" type="date" value={st.anchor||""} onChange={ev=>saveSet({payAnchor:ev.target.value})}/></div>}
+      <div className="rc-fa">{C}</div>
+    </div>);}
+  // ── Timesheets: a CSV / .xlsx export through the same reader as the Google sync ──
+  if(s.modal==="ts-import"){const emps=s.employees||[];const parsed=f.tsParsed||null;const chosen=parsed?(f.tsTab&&f.tsTab!=="all"?parsed.filter(x=>x.name===f.tsTab):parsed):[];
+    const pick=async ev=>{const file=ev.target.files&&ev.target.files[0];ev.target.value="";if(!file)return;sf(pp=>({...pp,tsErr:"",tsReading:true,tsParsed:null}));
+      try{const tabs=await readSheetFile(file);const yr=new Date().getFullYear();const res=tabs.filter(t=>!Tsh.SKIP_TAB.test(t.name)).map(t=>({name:t.name,p:Tsh.parseTab(t.grid,t.name,{year:yr})})).filter(x=>x.p.header&&x.p.rows.length);
+        if(!res.length)throw new Error("No timesheet in that file: there's no header row with a \"Date\" cell and days under it.");
+        const nm=(res.find(x=>x.p.employee)||{p:{}}).p.employee||"";const g=nm?emps.find(y=>[y.name,y.nick].filter(Boolean).some(n=>String(n).trim().toLowerCase()===nm.trim().toLowerCase())):null;
+        sf(pp=>({...pp,tsParsed:res,tsFile:file.name,tsTab:"all",tsEmp:g?String(g.id):pp.tsEmp||"",tsReading:false}));}
+      catch(err){sf(pp=>({...pp,tsErr:(err&&err.message)||String(err),tsReading:false}));}};
+    const go=()=>{const m=emps.find(y=>String(y.id)===f.tsEmp);if(!m||!chosen.length)return;let st={timesheets:s.timesheets||[],tsPay:s.tsPay||[],payPeriods:s.payPeriods||[]};const tot={added:0,updated:0,same:0,flagged:0};const at=nowIso();
+      chosen.forEach(x=>{const r=Tsh.applyImport(st,x.p,{emp:m.id,now:at,withPay:isOwner});st={...st,timesheets:r.timesheets,tsPay:r.tsPay};Object.keys(tot).forEach(k=>{tot[k]+=r.stats[k]||0;});});
+      const p0=Tsh.periodOf(chosen.map(x=>x.p.rows[0].date).sort().pop(),tsSet(s).kind,tsSet(s).anchor);const foc={tsFocus:{emp:m.id,start:p0.start,t:Date.now()}};
+      d({type:"PUT",d:isOwner?{timesheets:st.timesheets,tsPay:st.tsPay,...foc}:{timesheets:st.timesheets,...foc},act:"⬆ Timesheet uploaded · "+m.name+" · "+chosen.map(x=>x.name).join(", "),label:"Imported "+chosen.map(x=>x.name).join(", ")+": "+tot.added+" new, "+tot.updated+" changed"+(tot.flagged?", "+tot.flagged+" changed after approval (flagged, not overwritten)":"")+(tot.same?", "+tot.same+" unchanged":""),long:true,close:true});};
+    return W(<div>
+      <div className="rc-mt">Upload a timesheet export</div>
+      <p className="rc-ts-note">For a sheet that isn't shared with the service account yet. In Google Sheets use File → Download → Microsoft Excel (.xlsx) for every month at once, or Comma-separated values (.csv) for the tab you're on. It goes through the same reader as the Google sync.</p>
+      <div className="rc-fg"><label className="rc-fl" htmlFor="ts-file">File</label><input id="ts-file" className="rc-fi" type="file" accept=".csv,.xlsx,.xlsm,.tsv,.txt" onChange={pick}/></div>
+      {f.tsReading&&<div className="rc-ts-note">Reading…</div>}
+      {f.tsErr&&<div className="rc-ts-errl" role="alert">{f.tsErr}</div>}
+      {parsed&&<>
+        {parsed.length>1&&<div className="rc-fg"><label className="rc-fl">Tabs</label><select className="rc-fi" value={f.tsTab||"all"} onChange={ev=>set("tsTab",ev.target.value)} style={{appearance:"none"}}><option value="all">All {parsed.length} month tabs</option>{parsed.map(x=>(<option key={x.name} value={x.name}>{x.name}</option>))}</select></div>}
+        <div className="rc-fg"><label className="rc-fl">Whose timesheet</label><select className="rc-fi" value={f.tsEmp||""} onChange={ev=>set("tsEmp",ev.target.value)} style={{appearance:"none"}}><option value="">Pick a team member…</option>{emps.map(y=>(<option key={y.id} value={String(y.id)}>{y.name}</option>))}</select></div>
+        {chosen.map(x=>(<div key={x.name} className="rc-ts-prev"><b>{x.name}</b> · {x.p.rows.length} days · {x.p.rows.filter(r=>r.start||r.finish).length} with times{x.p.employee?" · the sheet says "+x.p.employee:""}{owner&&x.p.wage?" · wage "+$$(x.p.wage)+", OT "+x.p.otRate+"×":""}{x.p.oldTemplate?" · older template (unpaid break column)":""}{x.p.warnings.length>0&&<div className="rc-ts-dim">{x.p.warnings.join(" ")}</div>}</div>))}
+        {!isOwner&&<div className="rc-ts-note">Wages aren't saved from a staff login. The owner's sync or upload adds them.</div>}
+      </>}
+      <div className="rc-fa">{X}<button className="rc-ba" disabled={!parsed||!f.tsEmp||!chosen.length} onClick={go}>Import</button></div>
+    </div>);}
+  if(s.modal==="confirm-reset")return W(<div><div className="rc-mt">Reset All Data?</div><p style={{fontSize:14,color:"var(--tx2)",marginBottom:10,lineHeight:1.6}}>This permanently deletes <strong>everything</strong> — engines, customers, invoices, wins, the lot. Download a backup first.</p><button className="rc-bs" style={{marginBottom:12}} onClick={()=>exportBackup(s,isOwner)}>⬇ Download backup (JSON)</button><div className="rc-fg"><label className="rc-fl">Type RESET to confirm</label><input className="rc-fi" value={f.resetConfirm||""} onChange={e=>set("resetConfirm",e.target.value)} placeholder="RESET"/></div><div className="rc-fa">{C}<button className="rc-ba" disabled={(f.resetConfirm||"")!=="RESET"} style={{background:(f.resetConfirm||"")==="RESET"?"var(--r)":"var(--rs)",borderColor:"var(--r)",opacity:(f.resetConfirm||"")==="RESET"?1:.5,cursor:(f.resetConfirm||"")==="RESET"?"pointer":"not-allowed"}} onClick={async()=>{if((f.resetConfirm||"")!=="RESET")return;await clearAll(isOwner);d({type:"RESET"});d({type:"CLOSE"});}}>Reset</button></div></div>);
   return null;
 }
 
@@ -2386,6 +2641,58 @@ const CSS=`@import url('${FONTS}');
 .rc-s3-loc{font-size:12px;color:var(--mt);margin-top:2px;cursor:pointer;width:fit-content;}
 .rc-s3-loc:hover,.rc-s3-loc:focus-visible{color:var(--act);text-decoration:underline;outline:none;}
 .rc-s3-pass{display:block;font-size:13px;font-weight:500;color:var(--act);margin:0 0 8px;}
+.rc-ts-seg{max-width:300px;margin:0 0 16px;}
+.rc-ts-seg button{padding:8px 0;font-size:13.5px;}
+.rc-ts-bar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:0 0 8px;}
+.rc-ts-sel{width:auto;min-width:170px;flex:0 1 240px;appearance:none;}
+.rc-ts-status{font-size:13px;color:var(--mt);margin:0 0 12px;line-height:1.5;}
+.rc-ts-err{font-size:13.5px;color:var(--r);background:var(--rs);border-radius:10px;padding:10px 12px;margin:0 0 14px;line-height:1.5;display:grid;gap:4px;}
+.rc-ts-errl{font-size:13px;color:var(--r);margin:4px 0;line-height:1.45;}
+.rc-ts-note{font-size:13px;color:var(--mt);line-height:1.5;margin:4px 0 10px;}
+.rc-ts-dim{font-size:12.5px;color:var(--mt);line-height:1.5;}
+.rc-ts-appr{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:0 0 14px;}
+.rc-ts-ok{font-size:14px;font-weight:600;color:var(--g);}
+.rc-ts-cnt{font-size:13.5px;font-weight:600;color:var(--w);}
+.rc-ts-tbl th,.rc-ts-tbl td{padding:8px 10px;white-space:nowrap;}
+.rc-ts-tbl td.nt,.rc-ts-tbl tr.wk td,.rc-ts-tbl tr.why td,.rc-ts-tbl tr.tot td{white-space:normal;}
+.rc-ts-tbl th.n,.rc-ts-tbl td.n{text-align:right;white-space:nowrap;}
+.rc-ts-tbl td.nt{max-width:260px;color:var(--tx2);font-size:13px;}
+.rc-ts-tbl tr.off td{color:var(--mt);}
+.rc-ts-tbl tr.pend td{background:var(--ws);}
+.rc-ts-tbl tr.wk td{background:var(--sf2);font-size:12.5px;color:var(--tx2);border-bottom:1px solid var(--ln);}
+.rc-ts-tbl tr.wk td.n{font-weight:700;color:var(--tx);font-size:13.5px;}
+.rc-ts-tbl tr.tot td{font-weight:800;border-top:2px solid var(--ln);font-size:14px;}
+.rc-ts-tbl tr.why td{background:var(--sf2);padding:6px 12px 10px;}
+.rc-ts-flag{display:inline-flex;align-items:center;gap:4px;border-radius:999px;padding:2px 8px;margin-right:4px;font:700 12px/1.5 var(--fb);border:0;white-space:nowrap;cursor:pointer;}
+.rc-ts-flag.bad{color:var(--r);background:var(--rs);}
+.rc-ts-flag.warn{color:var(--w);background:var(--ws);}
+.rc-ts-flag.info{color:var(--b);background:var(--bs);}
+.rc-ts-lock{font-size:13px;opacity:.75;}
+.rc-ts-whyl{font-size:13px;line-height:1.5;padding:2px 0 2px 10px;border-left:3px solid var(--ln);margin:3px 0;color:var(--tx2);}
+.rc-ts-whyl.bad{border-color:var(--r);}.rc-ts-whyl.warn{border-color:var(--w);}.rc-ts-whyl.info{border-color:var(--b);}
+.rc-ts-ln{font-size:13px;font-weight:600;color:var(--act);}
+.rc-ts-pay{border:1px solid var(--ln);border-radius:12px;background:var(--sf);box-shadow:var(--sh1);padding:14px 16px;margin:0 0 14px;display:grid;gap:6px;}
+.rc-ts-pay>div:first-child{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;}
+.rc-ts-pay b{font:800 26px/1 var(--fd);letter-spacing:.02em;color:var(--tx);}
+.rc-ts-util{font-size:13.5px;color:var(--tx2);margin:0 0 20px;line-height:1.55;}
+.rc-ts-pend{padding:14px 16px;border-color:var(--w);}
+.rc-ts-ph{font:700 15px/1.2 var(--fd);letter-spacing:.06em;text-transform:uppercase;color:var(--w);margin-bottom:4px;}
+.rc-ts-pr{display:flex;flex-wrap:wrap;justify-content:space-between;gap:8px;align-items:center;border-top:1px solid var(--ln2);padding:9px 0;}
+.rc-ts-pr span{font-size:13px;color:var(--tx2);}
+.rc-ts-sa{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:4px 0;}
+.rc-ts-sa code{font-size:13px;background:var(--sf2);border:1px solid var(--ln);border-radius:8px;padding:6px 9px;word-break:break-all;color:var(--tx);}
+.rc-ts-src{border-top:1px solid var(--ln2);padding:10px 0;display:grid;gap:6px;}
+.rc-ts-srch{display:flex;gap:8px;align-items:center;flex-wrap:wrap;justify-content:space-between;}
+.rc-ts-srch select{width:auto;min-width:170px;appearance:none;}
+.rc-ts-wd{font-size:12.5px;color:var(--w);}
+.rc-ts-wd summary{cursor:pointer;}
+.rc-ts-wd div{color:var(--tx2);padding:2px 0 2px 12px;}
+.rc-ts-prev{font-size:13.5px;line-height:1.5;border:1px solid var(--ln);border-radius:10px;padding:9px 11px;margin:0 0 8px;}
+.rc-ts-prevbar{margin-left:auto;white-space:nowrap;}
+.rc-ts-meter{height:8px;border-radius:9px;background:var(--sf2);overflow:hidden;}
+.rc-ts-meter span{display:block;height:100%;background:var(--w);border-radius:9px;}
+@media(max-width:700px){.rc-ts-sel{flex:1 1 100%;}.rc-ts-tbl td.nt{max-width:none;}.rc-ts-prevbar{margin-left:0;}}
+@media print{.rc-ts-bar,.rc-ts-seg,.rc-ts-prevbar{display:none!important;}}
 @media(max-width:1100px){.rc-s3-wrap{grid-template-columns:minmax(0,1fr);}.rc-s3-side{max-height:none;}}
 @media(max-width:700px){.rc-s3-stage{height:68vh;height:68dvh;min-height:400px;}.rc-seg.rc-s3-seg{min-width:0;flex:1 1 100%;}.rc-s3-hint{white-space:normal;text-align:center;width:calc(100% - 24px);}}
 @media(prefers-reduced-motion:reduce){.rc-s3-bar span{transition:none;}}
@@ -2602,6 +2909,10 @@ export default function App(){
   const chooseTheme=k=>{setThemePref(k);setPref("rc:theme",k);};
   const[session,setSession]=useState(null);const[authReady,setAuthReady]=useState(!usingCloud);
   const authed=!usingCloud||!!session;
+  // The owner login (app_metadata.role "owner", set by an admin: SETUP.md) is the only one that loads and shows wages
+  // (rc:owner:* keys, migration 0011). Local mode has no logins, so it's the owner. "Preview as staff" shows the owner what staff see.
+  const isOwner=!usingCloud||!!(session&&session.user&&session.user.app_metadata&&session.user.app_metadata.role==="owner");
+  const[preview,setPreview]=useState(false);const ownerView=isOwner&&!preview;
   // Auth bootstrap (cloud only): read any existing session, then subscribe to login/logout.
   useEffect(()=>{if(!usingCloud)return;let sub;(async()=>{try{setSession(await getSession());}catch(e){}setAuthReady(true);sub=onAuthChange(ns=>setSession(ns));})();return()=>{try{if(sub)sub.unsubscribe();}catch(e){}};},[]);
   // Attribute activity-log entries to the signed-in user
@@ -2609,12 +2920,17 @@ export default function App(){
   // SOLD splash: air horn (unless muted) + auto-dismiss
   useEffect(()=>{if(!s.soldSplash)return;if(getSet(s).soundOn!==false)horn();const t=setTimeout(()=>d({type:"SPLASH",d:null}),6500);return()=>clearTimeout(t);},[s.soldSplash]);
   // Load data once authenticated (immediately in localStorage mode). Never loads/saves while logged out.
-  useEffect(()=>{if(!authed){setLoading(false);return;}let off=false;setLoading(true);setLoadErr(false);(async()=>{try{const data=await loadAll();if(off)return;if(data.__loadError){setLoadErr(true);setLoading(false);return;}lastSaved.current=data;d({type:"LOAD",d:data});}catch(e){if(!off)setLoadErr(true);}if(!off)setLoading(false);})();return()=>{off=true;};},[authed]);
-  useEffect(()=>{if(loading||!authed||loadErr||!lastSaved.current)return;const t=setTimeout(()=>{const prev=lastSaved.current;const dirty=prev?STORE_KEYS.filter(k=>s[k]!==prev[k]):STORE_KEYS.slice();if(!dirty.length)return;saveAll(s,dirty,prev||{}).then(failed=>{const snap={...(lastSaved.current||{})};dirty.forEach(k=>{if(!(failed||[]).includes(k))snap[k]=s[k];});lastSaved.current=snap;if(failed&&failed.length)d({type:"TOAST",d:{msg:"⚠ Couldn't save changes — check your connection",t:Date.now()}});});},500);return()=>clearTimeout(t);},[s.customers,s.jobs,s.quotes,s.inventory,s.invoices,s.schedule,s.employees,s.expenses,s.leads,s.social,s.campaigns,s.contentCalendar,s.cores,s.shipments,s.commsLog,s.purchaseOrders,s.warranties,s.parts,s.timeEntries,s.wins,s.activity,s.settings,s.diagnoses,s.issues,s.brief,s.boms,s.bomSheets,s.vendors,s.services,s.ecmJobs,s.ecmFiles,s.prospects,s.competitors,s.compare,loading,authed,loadErr]);
+  useEffect(()=>{if(!authed){setLoading(false);return;}let off=false;setLoading(true);setLoadErr(false);(async()=>{try{const data=await loadAll(isOwner);if(off)return;if(data.__loadError){setLoadErr(true);setLoading(false);return;}lastSaved.current=data;d({type:"LOAD",d:data});}catch(e){if(!off)setLoadErr(true);}if(!off)setLoading(false);})();return()=>{off=true;};},[authed,isOwner]);
+  useEffect(()=>{if(loading||!authed||loadErr||!lastSaved.current)return;const t=setTimeout(()=>{const prev=lastSaved.current;const dirty=prev?STORE_KEYS.filter(k=>s[k]!==prev[k]):STORE_KEYS.slice();if(!dirty.length)return;saveAll(s,dirty,prev||{},isOwner).then(failed=>{const snap={...(lastSaved.current||{})};dirty.forEach(k=>{if(!(failed||[]).includes(k))snap[k]=s[k];});lastSaved.current=snap;if(failed&&failed.length)d({type:"TOAST",d:{msg:"⚠ Couldn't save changes — check your connection",t:Date.now()}});});},500);return()=>clearTimeout(t);},[s.customers,s.jobs,s.quotes,s.inventory,s.invoices,s.schedule,s.employees,s.expenses,s.leads,s.social,s.campaigns,s.contentCalendar,s.cores,s.shipments,s.commsLog,s.purchaseOrders,s.warranties,s.parts,s.timeEntries,s.wins,s.activity,s.settings,s.diagnoses,s.issues,s.brief,s.boms,s.bomSheets,s.vendors,s.services,s.ecmJobs,s.ecmFiles,s.prospects,s.competitors,s.compare,s.timesheets,s.timesheetSources,s.payPeriods,s.tsPay,loading,authed,loadErr]);
   // Live sync: quietly re-pull the shop's data on window focus and every 60s
   // (cloud only, never while a modal is open or local changes are unsaved),
   // so a tab left open overnight can't overwrite the crew's newer work.
-  useEffect(()=>{if(!usingCloud||!authed||loading)return;let busy=false;const refresh=async()=>{const before=sRef.current;const prev=lastSaved.current;if(busy||document.hidden||!prev||before.modal)return;if(STORE_KEYS.some(k=>before[k]!==prev[k]))return;busy=true;try{const data=await loadAll();const cur=sRef.current;if(!data.__loadError&&!cur.modal&&!STORE_KEYS.some(k=>cur[k]!==before[k])){lastSaved.current=data;d({type:"LOAD",d:data});}}catch(e){}finally{busy=false;}};const iv=setInterval(refresh,60000);window.addEventListener("focus",refresh);return()=>{clearInterval(iv);window.removeEventListener("focus",refresh);};},[authed,loading]);
+  useEffect(()=>{if(!usingCloud||!authed||loading)return;let busy=false;const refresh=async()=>{const before=sRef.current;const prev=lastSaved.current;if(busy||document.hidden||!prev||before.modal)return;if(STORE_KEYS.some(k=>before[k]!==prev[k]))return;busy=true;try{const data=await loadAll(isOwner);const cur=sRef.current;if(!data.__loadError&&!cur.modal&&!STORE_KEYS.some(k=>cur[k]!==before[k])){lastSaved.current=data;d({type:"LOAD",d:data});}}catch(e){}finally{busy=false;}};const iv=setInterval(refresh,60000);window.addEventListener("focus",refresh);return()=>{clearInterval(iv);window.removeEventListener("focus",refresh);};},[authed,loading,isOwner]);
+  // Timesheet sync: save anything pending first (an approval, a new sheet), let the Edge Function read Google and
+  // write the results, then reload just the timesheet lists.
+  const flush=async()=>{const cur=sRef.current,prev=lastSaved.current;if(!prev)return [];const dirty=STORE_KEYS.filter(k=>cur[k]!==prev[k]);if(!dirty.length)return [];const failed=await saveAll(cur,dirty,prev,isOwner);const snap={...(lastSaved.current||{})};dirty.forEach(k=>{if(!failed.includes(k))snap[k]=cur[k];});lastSaved.current=snap;return failed;};
+  const reloadKeys=async ks=>{const use=ks.filter(k=>isOwner||!OWNER_KEYS.includes(k));try{const m=await db.getAll(use.map(keyOf));const part={};use.forEach(k=>{const v=m[keyOf(k)];try{part[k]=v!=null?JSON.parse(v):[];}catch(e){}});lastSaved.current={...(lastSaved.current||{}),...part};d({type:"LOAD",d:part});}catch(e){console.error("[rc] timesheet reload failed:",e&&e.message?e.message:e);}};
+  const syncTs=async sourceId=>{const failed=await flush();if(failed.length)return{error:"Couldn't save your changes first, so the sync didn't run. Check your connection."};const r=await syncTimesheets(sourceId);if(r&&(r.ok||(r.results||[]).length))await reloadKeys(["timesheets","timesheetSources","payPeriods","tsPay"]);return r;};
   useEffect(()=>{const t=setInterval(()=>setTime(new Date()),60000);return()=>clearInterval(t);},[]);
   useEffect(()=>{if(s.toast){const t=setTimeout(()=>d({type:"TOAST",d:null}),s.toast.undo?5000:s.toast.long?6500:2200);return()=>clearTimeout(t);}},[s.toast]);
   const TABL={overview:"Overview",inventory:"Engines",shop3d:"Shop 3D",parts:"Parts",boms:"BOM",social:"Marketing",services:"Services",prospects:"Prospects",competitors:"Competitors",issues:"Issues",ecm:"ECM",customers:"Customers & Jobs",operations:"Operations",schedule:"Schedule",quotes:"Quotes",invoices:"Invoicing",employees:"Team",reports:"Reports"};
@@ -2632,14 +2948,14 @@ export default function App(){
         <div className="rc-sfoot">
           <div className="rc-seg" role="group" aria-label="Colour theme">{THEMES.map(([k,ic,l])=>(<button key={k} className={themePref===k?"on":""} aria-pressed={themePref===k} title={k==="auto"?"Follow this device's light/dark setting":l+" theme"} onClick={()=>chooseTheme(k)}><span aria-hidden="true">{ic}</span>{l}</button>))}</div>
           {usingCloud&&session&&<div className="rc-user"><span className="rc-dot"/><span>{session.user&&session.user.email}</span></div>}
-          <div className="rc-links"><button className="rc-link" onClick={()=>exportBackup(s)} title="Download a JSON backup of all shop data">Backup</button><button className="rc-link" onClick={()=>d({type:"MODAL",v:"confirm-reset"})}>Reset</button>{usingCloud&&session&&<button className="rc-link" onClick={async()=>{await signOut();setSession(null);}}>Sign out</button>}</div>
+          <div className="rc-links"><button className="rc-link" onClick={()=>exportBackup(s,isOwner)} title="Download a JSON backup of all shop data">Backup</button><button className="rc-link" onClick={()=>d({type:"MODAL",v:"confirm-reset"})}>Reset</button>{usingCloud&&session&&<button className="rc-link" onClick={async()=>{await signOut();setSession(null);}}>Sign out</button>}</div>
         </div>
       </aside>
       <div className="rc-scrim" onClick={()=>setNavOpen(false)}/>
       <main className="rc-main">
         <div className="rc-top">
           <button className="rc-menu" aria-label="Open the menu" onClick={()=>setNavOpen(true)}><Ico n="menu"/></button>
-          <div style={{minWidth:0}}><h1 className="rc-pt">{TABL[s.tab]||"Overview"}</h1><div className="rc-psub">{time.toLocaleDateString("en-US",{weekday:"long",month:"long",day:"numeric"})} · Medicine Hat, AB</div></div>
+          <div style={{minWidth:0}}><h1 className="rc-pt">{TABL[s.tab]||"Overview"}</h1><div className="rc-psub">{time.toLocaleDateString("en-US",{weekday:"long",month:"long",day:"numeric"})} · Medicine Hat, AB</div></div>{preview&&<button className="rc-fb on rc-ts-prevbar" onClick={()=>setPreview(false)}>👁 Previewing as staff · back to owner view</button>}
         </div>
         <div className="rc-body">
       {s.tab==="overview"&&<Overview s={s} d={d}/>}
@@ -2658,12 +2974,12 @@ export default function App(){
 {s.tab==="prospects"&&<Prospects s={s} d={d}/>}
 {s.tab==="competitors"&&<Competitors s={s} d={d}/>}
       {s.tab==="schedule"&&<Schedule s={s} d={d}/>}
-      {s.tab==="employees"&&<Emps s={s} d={d}/>}
-      {s.tab==="reports"&&<Reports s={s}/>}
+      {s.tab==="employees"&&<Emps s={s} d={d} owner={ownerView} isOwner={isOwner} preview={preview} setPreview={setPreview} syncTs={syncTs}/>}
+      {s.tab==="reports"&&<Reports s={s} owner={ownerView}/>}
         </div>
       </main>
     </div>
-    <Modals s={s} d={d}/>
+    <Modals s={s} d={d} owner={ownerView} isOwner={isOwner} syncTs={syncTs}/>
     {s.soldSplash&&(()=>{const w=s.soldSplash;const m=(+w.price||0)-(+w.cost||0);const soundOn=getSet(s).soundOn!==false;return(<div className="rc-splash" onClick={()=>d({type:"SPLASH",d:null})}>
       <button className="rc-bs rc-splash-mute" onClick={e=>{e.stopPropagation();const cur=(s.settings||[])[0];if(cur)d({type:"UPDATE",list:"settings",id:cur.id,d:{soundOn:!soundOn}});else d({type:"ADD",list:"settings",d:{soundOn:!soundOn},label:soundOn?"Horn muted":"Horn on"});}}>{soundOn?"🔊":"🔇"}</button>
       <div className="rc-splash-in">

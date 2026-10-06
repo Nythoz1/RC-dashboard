@@ -77,10 +77,14 @@ The app is a static Vite SPA — any static host works; these steps are for Verc
 | AI calls       | `src/lib/ai.js` → `supabase/functions/ai` |
 | DB schema      | `supabase/migrations/0001_init.sql`, `0002_auth.sql` |
 | Auth           | `src/lib/auth.js` (email/password login gate) |
+| Timesheets     | `supabase/functions/timesheet-sync` (reads the Google Sheets daily + on "Sync now"), shared parser + overtime math in `supabase/functions/_shared/timesheet.js`, CSV / Excel upload in `src/lib/sheetfile.js` |
+| Owner-only data | `supabase/migrations/0011_timesheets.sql` (wages under `rc:owner:*`, only the owner login can read them) |
+| Tests          | `npm test` (parser, overtime, merge, the sync function in Node) · `node smoke.mjs` (browser walk-through) |
 
 ## Notes
 
 - **Security:** with Supabase configured, the app requires an email/password login and the database is locked to authenticated users (`0002_auth.sql`); the AI function rejects anyone who isn't signed in. Accounts are invite-only — create them in the Supabase dashboard and keep public sign-up disabled. On localStorage (no `.env`) the app runs open for local dev. See `CLAUDE.md` → Auth & security.
+- **Timesheets:** setup for the Google Sheets sync (service account, secret, sharing the sheets, the owner login) is click-by-click in `SETUP.md`.
 - **Data model:** the app stores each entity list as one JSON row. The roadmap for a fully relational schema (real foreign keys for the engine ↔ invoice/core/warranty/shipment links) is documented in `CLAUDE.md`.
 
 See `CLAUDE.md` for architecture, conventions, and how to extend safely.

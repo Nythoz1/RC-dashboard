@@ -10,3 +10,6 @@ dist-ssr
 
 # smoke.mjs screenshots
 shot-*.png
+
+# smoke.mjs cloud-mode build (mock Supabase)
+dist-smoke-cloud
