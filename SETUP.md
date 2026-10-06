@@ -4,17 +4,17 @@
 
 Each employee gets a login. When they sign in they see their timesheet and nothing else: the whole month, today at the top with a **Full day** button (8:00 AM to 4:00 PM, Monday to Friday), and any earlier day they can fix. Days that haven't happened yet can't be filled in. The database enforces these rules, not just the screen, so they hold even if someone goes around the app.
 
-Steps 1 to 3 are done once. Step 4 is done for each employee.
+Steps 1 to 3 are done once. Step 4 is done for each employee. On the shop's Supabase project, steps 1 and 2 were done on October 6, 2026.
 
 ### Step 1. Update the database
 
-Ask Claude to "apply migrations 0010 and 0011". Or do it yourself:
+Ask Claude to "apply migrations 0010, 0011 and 0012". Or do it yourself:
 
 1. In Supabase, click **SQL Editor** → **New query**.
 2. Open `supabase/migrations/0010_ecm_files_bucket.sql` from the repo, copy all of it, paste it in, and click **Run**.
-3. Do the same with `supabase/migrations/0011_timesheets.sql`.
+3. Do the same with `supabase/migrations/0011_timesheets.sql`, then `supabase/migrations/0012_ts_locked_invoker.sql`.
 
-Run 0010 first, because 0011 tightens the file bucket rules that 0010 creates. Both should finish without an error, and both are safe to run again.
+Run them in that order, because 0011 tightens the file bucket rules that 0010 creates. Each should finish without an error, and each is safe to run again.
 
 ### Step 2. Deploy the functions
 
@@ -32,7 +32,9 @@ supabase functions deploy brief --no-verify-jwt --project-ref ssvcappeflsgickdzm
 
 ### Step 3. Make your login the owner
 
-The owner login gives out logins, sees wages and gross pay, and approves pay periods.
+The owner login gives out logins, sees wages and gross pay, and approves pay periods. There can be more than one owner.
+
+If the login doesn't exist yet, make it first: in Supabase, click **Authentication** → **Users** → **Add user** → **Create new user**, type the email and a password, tick **Auto Confirm User**, and click **Create user**.
 
 1. In Supabase, click **SQL Editor** → **New query**, paste this, and put your own login email in it:
 
@@ -56,6 +58,8 @@ Nobody can make themselves the owner. Only you, in Supabase, can set it.
 3. Type their email. A temporary password is already filled in.
 4. Leave **Employee: their own timesheet only** picked, and click **Create login**.
 5. Click **Copy** and send them the website, email and password.
+
+If they already have a login, for example one made in Supabase earlier, their email shows under **Already has a login?**. Tap it, pick their access, and click **Link this login**. Their password stays the same.
 
 They can change the password after signing in, with **Password** at the top right.
 

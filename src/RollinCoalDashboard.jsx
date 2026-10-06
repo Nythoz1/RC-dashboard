@@ -2521,6 +2521,8 @@ function Modals({s,d,owner=true,who={role:"owner"}}){
     </div>);}
   // ── Team: a login for a team member (owner, cloud) ──
   if(s.modal==="emp-login"&&s.md){const e=s.md.emp;const L=loginFor(logins,e);const busy=!!f.lgBusy;
+    // A login that already exists (made in Supabase before, or for office staff) can be linked instead of created.
+    const all=(logins&&logins.list)||[];const typed=String(f.lgEmail||"").trim().toLowerCase();const ex=typed?all.find(l=>String(l.email||"").toLowerCase()===typed)||null:null;const loose=all.filter(l=>l.role!=="owner"&&l.employeeId==null);const canLink=!!ex&&ex.role!=="owner"&&ex.employeeId==null;
     const run=async(fn,after)=>{if(busy)return;sf(pp=>({...pp,lgBusy:true,lgErr:"",lgMsg:null}));let r=null;try{r=await fn();}finally{sf(pp=>({...pp,lgBusy:false}));}if(!r||r.error){sf(pp=>({...pp,lgErr:(r&&r.error)||"Something went wrong."}));return;}await refreshLogins();if(after)after(r);};
     const copy=t=>{try{navigator.clipboard.writeText(t);d({type:"TOAST",d:{msg:"Copied",t:Date.now()}});}catch(err){}};
     const site=typeof window!=="undefined"?window.location.origin:"";
@@ -2528,14 +2530,17 @@ function Modals({s,d,owner=true,who={role:"owner"}}){
     if(!canManageLogins)return W(<div><div className="rc-mt">Login for {e.name}</div><p className="rc-ts-note">Logins need the cloud setup (SETUP.md). In this copy, use “See {firstName(e.name)}'s screen” under Team, Timesheets to try what an employee sees.</p><div className="rc-fa">{C}</div></div>);
     return W(<div>
       <div className="rc-mt">Login for {e.name}</div>
-      {f.lgMsg&&<div className="rc-ts-okbox"><b>{f.lgMsg.title}</b><p>Give these to {firstName(e.name)}. They can change the password after signing in.</p>{card(f.lgMsg.email,f.lgMsg.pw)}</div>}
+      {f.lgMsg&&<div className="rc-ts-okbox"><b>{f.lgMsg.title}</b>{f.lgMsg.pw?<><p>Give these to {firstName(e.name)}. They can change the password after signing in.</p>{card(f.lgMsg.email,f.lgMsg.pw)}</>:<p>{firstName(e.name)} signs in with the password they already have. If they need a new one, use New password below.</p>}</div>}
       {f.lgErr&&<div className="rc-ts-errl" role="alert">{f.lgErr}</div>}
       {!L?(f.lgMsg?<div className="rc-fa">{C}</div>:<>
         <p className="rc-ts-note">With a login, {firstName(e.name)} signs in on a phone or computer and fills in their own hours. They won't see anything else in the dashboard.</p>
         <div className="rc-fg"><label className="rc-fl" htmlFor="lg-email">Email</label><input id="lg-email" className="rc-fi" type="email" autoComplete="off" value={f.lgEmail||""} onChange={ev=>set("lgEmail",ev.target.value)} placeholder="name@example.com"/></div>
-        <div className="rc-fg"><label className="rc-fl" htmlFor="lg-pass">Temporary password</label><div style={{display:"flex",gap:8}}><input id="lg-pass" className="rc-fi" autoComplete="off" value={f.lgPass||""} onChange={ev=>set("lgPass",ev.target.value)}/><button className="rc-bs" onClick={()=>set("lgPass",makePassword())}>New</button></div></div>
+        {loose.length>0&&<div className="rc-ts-chips rc-ts-loose"><span className="rc-ts-dim">Already has a login? Tap it to link it:</span>{loose.map(l=>(<button key={l.id} type="button" className={"rc-fb"+(typed===String(l.email||"").toLowerCase()?" on":"")} onClick={()=>set("lgEmail",l.email)}>{l.email}</button>))}</div>}
+        {ex&&ex.role==="owner"&&<div className="rc-ts-note">That's an owner login. It already sees everything.</div>}
+        {ex&&ex.role!=="owner"&&ex.employeeId!=null&&<div className="rc-ts-note">That login belongs to {ex.name||"another team member"}.</div>}
+        {!ex&&<div className="rc-fg"><label className="rc-fl" htmlFor="lg-pass">Temporary password</label><div style={{display:"flex",gap:8}}><input id="lg-pass" className="rc-fi" autoComplete="off" value={f.lgPass||""} onChange={ev=>set("lgPass",ev.target.value)}/><button className="rc-bs" onClick={()=>set("lgPass",makePassword())}>New</button></div></div>}
         <div className="rc-fg"><span className="rc-fl">Access</span><div className="rc-ts-radio"><label><input type="radio" name="lg-role" checked={(f.lgRole||"employee")==="employee"} onChange={()=>set("lgRole","employee")}/> Employee: their own timesheet only</label><label><input type="radio" name="lg-role" checked={f.lgRole==="staff"} onChange={()=>set("lgRole","staff")}/> Office staff: the whole dashboard, no wages</label></div></div>
-        <div className="rc-fa">{X}<button className="rc-ba" disabled={busy||!f.lgEmail||String(f.lgPass||"").length<8} onClick={()=>run(()=>createLogin({employeeId:e.id,email:f.lgEmail,password:f.lgPass,role:f.lgRole||"employee"}),r=>sf(pp=>({...pp,lgMsg:{title:"Login created",email:r.login.email,pw:pp.lgPass}})))}>{busy?"Creating…":"Create login"}</button></div>
+        <div className="rc-fa">{X}{canLink?<button className="rc-ba" disabled={busy} onClick={()=>run(()=>setLoginAccess(ex.id,f.lgRole||"employee",e.id),()=>sf(pp=>({...pp,lgMsg:{title:"Login linked",email:ex.email,pw:null}})))}>{busy?"Linking…":"Link this login"}</button>:<button className="rc-ba" disabled={busy||!f.lgEmail||!!ex||String(f.lgPass||"").length<8} onClick={()=>run(()=>createLogin({employeeId:e.id,email:f.lgEmail,password:f.lgPass,role:f.lgRole||"employee"}),r=>sf(pp=>({...pp,lgMsg:{title:"Login created",email:r.login.email,pw:pp.lgPass}})))}>{busy?"Creating…":"Create login"}</button>}</div>
       </>):(<>
         <div className="rc-ts-login"><div><span className="rc-fl">Email</span><b>{L.email}</b></div><div><span className="rc-fl">Access</span><b>{L.role==="employee"?"Employee: own timesheet only":"Office staff: the whole dashboard"}</b></div><div><span className="rc-fl">Last signed in</span><b>{L.lastSignIn?fmtWhen(L.lastSignIn):"Never"}</b></div></div>
         <div className="rc-fa" style={{justifyContent:"flex-start",flexWrap:"wrap"}}>
@@ -2760,6 +2765,7 @@ const CSS=`@import url('${FONTS}');
 .rc-ts-times .rc-fi{font-size:16px;}
 .rc-ts-live{min-height:22px;margin:-4px 0 12px;font-size:14px;}
 .rc-ts-chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px;}
+.rc-ts-loose{align-items:center;margin:-4px 0 12px;}
 .rc-ts-radio{display:grid;gap:8px;font-size:14px;color:var(--tx2);}
 .rc-ts-radio label{display:flex;gap:8px;align-items:center;cursor:pointer;}
 .rc-ts-okbox{border:1px solid var(--g);background:var(--gs);border-radius:10px;padding:12px 14px;margin:0 0 14px;}

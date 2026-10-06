@@ -60,7 +60,7 @@ create index if not exists timesheet_approvals_emp_idx on public.timesheet_appro
 alter table public.timesheet_approvals enable row level security;
 
 -- Is this employee's day inside an approved pay period? Security definer, so the
--- answer is the same whoever asks.
+-- answer is the same whoever asks. (0012 switches it to security invoker.)
 create or replace function public.ts_locked(emp bigint, d date) returns boolean
 language sql stable security definer set search_path = '' as
 $$ select exists (select 1 from public.timesheet_approvals a

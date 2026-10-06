@@ -7,7 +7,7 @@
 import { PGlite } from "@electric-sql/pglite";
 import { readFileSync } from "node:fs";
 
-const MIGRATIONS = ["0001_init.sql", "0002_auth.sql", "0003_inventory_table.sql", "0004_engine_photos_storage.sql", "0005_narrow_photo_listing.sql", "0010_ecm_files_bucket.sql", "0011_timesheets.sql"];
+const MIGRATIONS = ["0001_init.sql", "0002_auth.sql", "0003_inventory_table.sql", "0004_engine_photos_storage.sql", "0005_narrow_photo_listing.sql", "0010_ecm_files_bucket.sql", "0011_timesheets.sql", "0012_ts_locked_invoker.sql"];
 
 export async function freshDb() {
   const db = new PGlite();

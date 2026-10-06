@@ -322,12 +322,12 @@ await p.click('.rc-ts-seg button:has-text("Team")');
 // a login; Mike sees only his timesheet and never asks for other shop data; the database refuses tomorrow
 // and an approved day; a changed day keeps its old version; office staff see hours, not dollars.
 const SBP=54399,SB="http://127.0.0.1:"+SBP;
-const users=[{email:"owner@rollincoal.test",password:"pw-owner-1",app_metadata:{role:"owner"}},{email:"staff@rollincoal.test",password:"pw-staff-1"}];
+const users=[{email:"owner@rollincoal.test",password:"pw-owner-1",app_metadata:{role:"owner"}},{email:"staff@rollincoal.test",password:"pw-staff-1"},{email:"old@rollincoal.test",password:"pw-old-1"}];   // the last one: made in Supabase before, linked to nobody
 const fns={};
 const sb=await mockSupabase({users,functions:fns});
 globalThis.fetch=async(input,init)=>{const u=String(input instanceof Request?input.url:input);return u.startsWith(SB)?sb.handle(input instanceof Request?input:new Request(u,init)):new Response(JSON.stringify({error:"no network in the smoke run"}),{status:503});};
 fns["team-logins"]=await loadEdgeFunction("team-logins",{SUPABASE_URL:SB,SUPABASE_ANON_KEY:sb.anonKey,SUPABASE_SERVICE_ROLE_KEY:sb.serviceKey});
-await sb.sql("insert into app_state (key, value) values ('rc:employees', $1::jsonb), ('rc:jobs', $2::jsonb), ('rc:timeEntries', $3::jsonb)",[JSON.stringify([{id:101,name:"Mike Test",nick:"Mike",role:"Diesel Tech",rate:40,hrs:40,status:"active"}]),JSON.stringify([{id:301,kind:"service",vehicle:"Unit 412 · 2016 Kenworth T880",service:"Injector job",tech:"Mike",status:"in-progress",custId:0}]),JSON.stringify([{id:401,jobId:301,tech:"Mike",date:PD2,hours:6,rate:40}])]);
+await sb.sql("insert into app_state (key, value) values ('rc:employees', $1::jsonb), ('rc:jobs', $2::jsonb), ('rc:timeEntries', $3::jsonb)",[JSON.stringify([{id:101,name:"Mike Test",nick:"Mike",role:"Diesel Tech",rate:40,hrs:40,status:"active"},{id:102,name:"Bob Jones",nick:"Bob",role:"Apprentice",rate:25,hrs:40,status:"active"}]),JSON.stringify([{id:301,kind:"service",vehicle:"Unit 412 · 2016 Kenworth T880",service:"Injector job",tech:"Mike",status:"in-progress",custId:0}]),JSON.stringify([{id:401,jobId:301,tech:"Mike",date:PD2,hours:6,rate:40}])]);
 const mockSrv=createServer(async(req,res)=>{const chunks=[];for await(const c of req)chunks.push(c);const body=Buffer.concat(chunks);const rq=new Request(SB+req.url,{method:req.method,headers:Object.fromEntries(Object.entries(req.headers).filter(([k])=>k!=="host"&&k!=="connection"&&k!=="content-length")),body:["GET","HEAD"].includes(req.method)?undefined:body});
   const r=await sb.handle(rq);const h=Object.fromEntries(r.headers);h["access-control-allow-origin"]="*";res.writeHead(r.status,h);res.end(Buffer.from(await r.arrayBuffer()));}).listen(SBP,"127.0.0.1");
 execSync("npx vite build --outDir dist-smoke-cloud --emptyOutDir",{stdio:"ignore",env:{...process.env,VITE_SUPABASE_URL:SB,VITE_SUPABASE_ANON_KEY:sb.anonKey}});
@@ -344,7 +344,7 @@ const MIKE="mike@rollincoal.test";
 await q.goto("http://localhost:4174/");
 await signIn(users[0].email,users[0].password);
 await q.click('.rc-ni:has-text("Team")');
-await q.click('button:has-text("Give a login")');
+await q.click(".rc-main table.rc-tbl tbody tr:has-text('Mike Test') button:has-text('Give a login')");
 await q.fill("#lg-email",MIKE);
 await q.waitForFunction(()=>(document.querySelector("#lg-pass")||{}).value?.length>=8);   // the form fills in a temporary password one render after it opens
 let mikePw=await q.inputValue("#lg-pass");
@@ -353,6 +353,16 @@ await q.waitForSelector(".rc-ts-okbox");
 const cred=(await q.locator(".rc-ts-cred").innerText()).replace(/\s+/g," "),cardPw=(await q.locator(".rc-ts-cred div:has(span:text-is('Password')) b").innerText()).trim();
 const mikeU=sb.users.find(u=>u.email===MIKE)||{};
 console.log("owner gave Mike a login: "+JSON.stringify(mikeU.app_metadata)+" | card shows the password "+(cardPw===mikePw)+" ("+mikePw.replace(/\d/g,"#")+")"+" | Team shows "+JSON.stringify(await (async()=>{await q.click('.rc-mod button:has-text("Close")');return (await q.locator(".rc-main table.rc-tbl tbody tr:has-text('Mike Test')").innerText()).match(/Timesheet login|Give a login/)?.[0];})()));
+// A login that already exists links to a team member instead of being made twice; an owner login is left alone.
+await q.click(".rc-main table.rc-tbl tbody tr:has-text('Bob Jones') button:has-text('Give a login')");
+await q.fill("#lg-email",users[0].email);
+const ownerNote=await q.locator(".rc-mod .rc-ts-note:has-text('owner login')").count(),ownerCreateOff=await q.locator('.rc-mod button:has-text("Create login")').isDisabled();
+await q.click('.rc-mod .rc-ts-loose button:has-text("old@rollincoal.test")');
+await q.click('.rc-mod button:has-text("Link this login")');
+await q.waitForSelector('.rc-ts-okbox:has-text("Login linked")');
+const oldU=sb.users.find(u=>u.email==="old@rollincoal.test")||{};
+await q.click('.rc-mod button:has-text("Close")');
+console.log("existing login linked to Bob: "+JSON.stringify(oldU.app_metadata)+" | owner email noted "+(ownerNote>0)+", create off "+ownerCreateOff+" | Team shows "+JSON.stringify((await q.locator(".rc-main table.rc-tbl tbody tr:has-text('Bob Jones')").innerText()).match(/Timesheet login|Give a login/)?.[0]));
 await signOut();
 let mark=sb.log.length;
 await signIn(MIKE,mikePw,".rc-emp");

@@ -1,0 +1,14 @@
+-- ─────────────────────────────────────────────────────────────
+-- 0012: ts_locked runs as the caller.
+--
+-- 0011 made public.ts_locked() security definer. Supabase's security advisor
+-- flags that, because any signed-in login could call it through the API
+-- (/rest/v1/rpc/ts_locked) and ask about any employee's days. It doesn't need
+-- the extra rights: only the employee policies on timesheet_entries call it,
+-- always for the employee's own days, and an employee can already read their
+-- own approvals ("timesheet approvals: employee read"). As the caller, it now
+-- answers only what that login could read anyway.
+--
+-- Safe to run again.
+-- ─────────────────────────────────────────────────────────────
+alter function public.ts_locked(bigint, date) security invoker;
