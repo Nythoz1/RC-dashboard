@@ -475,6 +475,9 @@ export function applyImport(state, tab, { emp, now = new Date().toISOString(), w
 export const SHEETS_SCOPE = "https://www.googleapis.com/auth/spreadsheets.readonly";
 const SHEETS = "https://sheets.googleapis.com/v4/spreadsheets/";
 export const SKIP_TAB = /how to|instruction|read ?me|template/i;
+// Google adds rtpof=true to links of Office files (.xlsx) opened in Sheets; the
+// Sheets API can't read those until they're saved as Google Sheets.
+export const looksLikeExcelLink = (input) => /[?&#]rtpof=true\b/i.test(str(input));
 // A pasted link or a bare id → the spreadsheet id.
 export function extractSheetId(input) {
   const t = str(input);
@@ -518,6 +521,7 @@ export async function googleToken(sa, { fetch: f = globalThis.fetch, now = Date.
 export function sheetsError(d, status, saEmail) {
   const msg = (d && d.error && d.error.message) || "";
   if (/has not been used|is disabled|SERVICE_DISABLED|accessNotConfigured/i.test(msg + JSON.stringify((d && d.error && d.error.details) || ""))) return "The Google Sheets API is turned off for the Google Cloud project. Turn it on (SETUP.md step 2), wait a minute, then sync again.";
+  if (/not supported for this document/i.test(msg)) return "This link is an Excel file (.xlsx) stored in Google Drive, and the sync reads Google Sheets only. Open it, choose File, then Save as Google Sheets, and connect the new sheet's link instead.";
   if (status === 403) return "This sheet isn't shared with the service account. Open the sheet, click Share and add " + (saEmail || "the service account email") + " as a Viewer.";
   if (status === 404) return "Google can't find this sheet. Check the link in Timesheet settings.";
   if (status === 429) return "Google says too many requests. Wait a minute and sync again.";

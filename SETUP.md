@@ -98,6 +98,10 @@ Only an admin can set this (staff can't make themselves the owner). To take it a
 
 ### Step 9. Share each timesheet with the service account
 
+Each timesheet must be a real Google Sheet, not an Excel file stored in Drive. If the file name ends in `.xlsx`, or its link has `rtpof=true` in it, open it and choose **File → Save as Google Sheets**, then use the new sheet from here on. The employee fills in that Google Sheet, so nobody sends a file back at month end.
+
+Before anyone fills one in, check who can open it: **Share → General access** should say **Restricted**, not "Anyone with the link". The sheets hold hours and wages.
+
 For each employee's Google Sheet:
 
 1. Open the sheet and click **Share** (top right).
@@ -129,6 +133,8 @@ If a sheet can't be read, the reason shows in red at the top of the page and und
 | What you see | What to do |
 |---|---|
 | "This sheet isn't shared with the service account" | Step 9 for that sheet. |
+| "This link is an Excel file (.xlsx)" | Open it, choose **File → Save as Google Sheets**, and connect the new sheet's link instead (step 9). |
+| Every worked day is 30 minutes short | The older template's **Unpaid Break (min)** column is pre-filled with 30 for lunch, and a value there is taken off. If lunch is paid, set that column to 0 in the template. |
 | "The Google Sheets API is turned off" | Step 2, in the same Google Cloud project as the service account. Wait a minute and sync again. |
 | "Google access isn't set up yet: the GOOGLE_SA_JSON secret is missing" | Step 5. |
 | "Google turned the key down" | The key was deleted or pasted wrong. Do step 4 again and replace the secret in step 5. |

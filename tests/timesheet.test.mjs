@@ -4,7 +4,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import * as T from "../supabase/functions/_shared/timesheet.js";
 import { readCsv, readXlsx, tabFromFileName } from "../src/lib/sheetfile.js";
-import { OCT_DAYS, SEP_DAYS, buildTab, HOW_TO, csvOf, fakeGoogle, fakeServiceAccount, serial } from "./fixtures/timesheets.mjs";
+import { OCT_DAYS, SEP_DAYS, buildTab, buildRealTab, HOW_TO, csvOf, fakeGoogle, fakeServiceAccount, serial } from "./fixtures/timesheets.mjs";
 
 const H = (min) => +(min / 60).toFixed(2);
 const rowsFor = (days) => Object.entries(days).map(([date, x]) => ({ date, start: x[0], finish: x[1], unpaidBreakMin: x[2] || 0 }));
@@ -101,6 +101,19 @@ test("the How to fill in tab and a tab with no header give no rows", () => {
   const p = T.parseTab(HOW_TO, "How to fill in");
   assert.equal(p.rows.length, 0);
   assert.ok(T.SKIP_TAB.test("How to fill in"));
+});
+
+test("the shop's real October 2026 template: blank name box, no wage cells, 30-minute break pre-filled", () => {
+  const blank = T.parseTab(buildRealTab(), "Oct 2026");
+  assert.equal(blank.rows.length, 31); assert.equal(blank.month, "2026-10"); assert.equal(blank.oldTemplate, true);
+  assert.equal(blank.employee, ""); assert.equal(blank.wage, null); assert.equal(blank.otRate, 1.5);
+  assert.deepEqual(blank.rows.map((r) => r.unpaidBreakMin), new Array(31).fill(30));
+  // Filled in the way the template's own examples describe: 7.50 h and 10.00 h (8 + 2 OT).
+  const p = T.parseTab(buildRealTab({ employee: "Mike Test", days: { "2026-10-01": { start: "8:00 AM", finish: "4:00 PM" }, "2026-10-02": { start: "7:00 AM", finish: "5:30 PM" } } }), "Oct 2026");
+  const c = T.computeDays(p.rows);
+  assert.equal(p.employee, "Mike Test");
+  assert.equal(H(c.days["2026-10-01"].min), 7.5); assert.equal(H(c.days["2026-10-02"].regMin), 8); assert.equal(H(c.days["2026-10-02"].otMin), 2);
+  p.rows.forEach((r) => assert.deepEqual(T.dayFlags(r, c.days[r.date]), [], r.date));
 });
 
 // ── flags ──
@@ -228,6 +241,14 @@ test("sync: plain-language errors for a sheet that isn't shared, a turned-off AP
   assert.match(badKey.sources[0].lastError, /Google turned the key down/);
   const none = await T.runSync(state, { saJson: "", fetch: fakeGoogle({ sheets, shared: new Set(["S1"]) }) });
   assert.match(none.sources[0].lastError, /GOOGLE_SA_JSON secret is missing/);
+});
+test("sync: an Excel file in Drive gets a plain answer, and Settings can spot its link", async () => {
+  const sa = await fakeServiceAccount();
+  const sheets = { X1: { title: "Rollin_Coal_Timesheet_Oct_2026.xlsx", excel: true, tabs: [] } };
+  const out = await T.runSync({ sources: [{ id: 1, sheetId: "X1", employeeId: 7 }] }, { saJson: sa.json, fetch: fakeGoogle({ sheets, shared: new Set(["X1"]), publicKey: sa.publicKey }) });
+  assert.match(out.sources[0].lastError, /Excel file \(\.xlsx\).*Save as Google Sheets/);
+  assert.equal(T.looksLikeExcelLink("https://docs.google.com/spreadsheets/d/1DDUl5aGEmHmIs0twNkNLdihLDfBhalLy/edit?usp=sharing&ouid=1&rtpof=true&sd=true"), true);
+  assert.equal(T.looksLikeExcelLink("https://docs.google.com/spreadsheets/d/1AbC-dEf_GhIjKlMnOpQrStUvWxYz0123456789/edit#gid=0"), false);
 });
 test("sync falls back to the values as shown when the raw ones don't read", async () => {
   const sa = await fakeServiceAccount();

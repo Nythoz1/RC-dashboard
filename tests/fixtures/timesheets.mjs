@@ -122,6 +122,7 @@ export function fakeGoogle({ sheets, shared, publicKey, apiOff = false, calls = 
     const sh = id && sheets[id];
     if (!sh) return reply(404, { error: { code: 404, message: "Requested entity was not found.", status: "NOT_FOUND" } });
     if (!shared.has(id)) return reply(403, { error: { code: 403, message: "The caller does not have permission", status: "PERMISSION_DENIED" } });
+    if (sh.excel) return reply(400, { error: { code: 400, message: "This operation is not supported for this document", status: "FAILED_PRECONDITION" } });
     if (!m[2]) return reply(200, { properties: { title: sh.title }, sheets: sh.tabs.map((t, i) => ({ properties: { title: t.title, index: i } })) });
     const shown = u.searchParams.get("valueRenderOption") === "FORMATTED_VALUE";
     const ranges = u.searchParams.getAll("ranges").map((r) => r.replace(/^'(.*)'$/, "$1").replace(/''/g, "'"));
@@ -138,3 +139,37 @@ export async function fakeServiceAccount() {
   return { json, publicKey: pub };
 }
 export { serial };
+
+// The shop's real template as of October 2026 (Rollin_Coal_Timesheet_Oct_2026.xlsx),
+// cell for cell as an .xlsx reader returns it: the name box is B4:E4 (merged), the
+// Month cell H4 is the 1st of the month as a date, no wage or OT rate cells, Unpaid
+// Break pre-filled with 30 on every day, hour formulas that show "-" but hold 0, and a
+// weekly summary and signature lines under MONTH TOTAL.
+export function buildRealTab({ month = "2026-10", employee = "", days = {} } = {}) {
+  const [y, m] = month.split("-").map(Number);
+  const last = new Date(Date.UTC(y, m, 0)).getUTCDate();
+  const r2 = (n) => Math.round(n * 100) / 100;
+  const grid = [
+    ["ROLLIN COAL  —  EMPLOYEE TIMESHEET"],
+    ["Rollin-Coal Pro Diesel LTD  ·  2040 11th Ave NW, Medicine Hat, AB  ·  1-587-863-0505"],
+    [],
+    ["Employee:", employee, "", "", "", "", "Month:", month + "-01"],
+    ["Yellow cells = you fill in. Times like 8:00 AM / 4:30 PM. Unpaid break defaults to 30 min (lunch) — change if different. Paid 15-min breaks are NOT deducted."],
+    [],
+    ["Date", "Day", "Start", "Finish", "Unpaid Break (min)", "Total Hrs", "Regular Hrs", "Daily OT\n(over 8)", "Week of\n(Mon)", "Notes (job, stat, sick, vacation)"],
+  ];
+  let T = 0, R = 0, O = 0;
+  for (let d = 1; d <= last; d++) {
+    const iso = y + "-" + pad2(m) + "-" + pad2(d);
+    const x = days[iso] || {};
+    const brk = x.brk === undefined ? 30 : x.brk;
+    const tot = x.start && x.finish ? Math.max(0, r2((mins(x.finish) - mins(x.start)) / 60 - brk / 60)) : 0;
+    const reg = Math.min(tot, 8), ot = r2(Math.max(0, tot - 8));
+    T += tot; R += reg; O += ot;
+    const row = [iso, DOW[utc(iso).getUTCDay()], x.start || "", x.finish || "", brk, tot, reg, ot, monday(iso)];
+    if (x.notes) row.push(x.notes);
+    grid.push(row);
+  }
+  grid.push(["MONTH TOTAL", "", "", "", "", r2(T), r2(R), r2(O)], [], ["WEEKLY SUMMARY  —  Alberta OT: over 8 hrs/day or 44 hrs/week, whichever is greater"], ["Week of", "", "Total Hrs", "Daily OT", "Over 44", "OT Hrs", "Regular Hrs"], [], ["Employee signature:", "", "", "", "", "", "Date:"], ["Approved by:", "", "", "", "", "", "Date:"]);
+  return grid;
+}
