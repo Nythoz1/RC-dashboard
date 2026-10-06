@@ -11,7 +11,8 @@
 // Auth (any one): x-brief-secret header matching the Vault secret 'brief_secret'
 //   (read via the service-role-only RPC public.brief_secret()) or the optional
 //   BRIEF_SECRET env; Bearer <service role key>; or a Bearer user JWT (verified
-//   with auth.getUser). Deploy with --no-verify-jwt: this check is the real gate.
+//   with auth.getUser; employee logins, which only see their timesheet, are
+//   refused). Deploy with --no-verify-jwt: this check is the real gate.
 // Secrets: RESEND_API_KEY (optional — without it the brief is computed + stored
 //   but not emailed), MAIL_TO (default wayne@rollin-coal.ca), MAIL_FROM (default
 //   Resend sandbox sender), DASHBOARD_URL (optional link in the email).
@@ -187,7 +188,7 @@ Deno.serve(async (req) => {
   }
   if (!mode && token) {
     if (token === SB_SERVICE) mode = "service";
-    else if (SB_ANON) { try { const sb = createClient(SB_URL, SB_ANON, { auth: { persistSession: false } }); const { data, error } = await sb.auth.getUser(token); if (!error && data?.user) mode = "user"; } catch (_e) { /* fall through */ } }
+    else if (SB_ANON) { try { const sb = createClient(SB_URL, SB_ANON, { auth: { persistSession: false } }); const { data, error } = await sb.auth.getUser(token); if (!error && data?.user && data.user.app_metadata?.role !== "employee") mode = "user"; } catch (_e) { /* fall through */ } }
   }
   if (!mode) return json({ error: "Not authorized" }, 401);
 

@@ -3,16 +3,15 @@ import { db } from "./lib/storage";
 import { uploadPhoto, deletePhoto } from "./lib/photos";
 import { askClaude } from "./lib/ai";
 import { requestBriefNow } from "./lib/brief";
-import { usingCloud, getSession, signIn, signOut, onAuthChange } from "./lib/auth";
+import { usingCloud, getSession, signIn, signOut, onAuthChange, changePassword } from "./lib/auth";
 import { getPref, setPref } from "./lib/prefs";
 import { uploadEcmFile, openEcmFile, readEcmText, removeEcmFiles, ecmFileType, ecmIsText, ECM_ACCEPT, ECM_MAX_BYTES, ECM_FREE_BYTES } from "./lib/files";
 import { ISSUE_SEED } from "./issuesSeed";
 import { BOM_SEED, VENDOR_SEED } from "./bomSeed";
 import { SERVICE_SEED, SERVICE_CATS } from "./servicesSeed";
 import { AREA_BY_ID, PLACE_GROUPS, PLACE_ORDER, STORE_IDS, SLOT_CAP, shopLocs, areaTitle } from "./shop3d/areas";
-import * as Tsh from "../supabase/functions/_shared/timesheet.js";
-import { readSheetFile } from "./lib/sheetfile";
-import { syncTimesheets, timesheetInfo, canSyncTimesheets } from "./lib/timesheets";
+import * as Tsh from "./lib/timesheet";
+import { canManageLogins, listLogins, createLogin, setLoginPassword, setLoginAccess, removeLogin, makePassword } from "./lib/logins";
 const FONTS="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700;800&family=Public+Sans:wght@400;500;600;700&display=swap";
 
 // ═══════════════════════════════════════════════════════════════
@@ -22,17 +21,15 @@ const FONTS="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;
 // ═══════════════════════════════════════════════════════════════
 
 const EMPTY={
-  tab:"overview",modal:null,md:null,mstack:[],focus:null,tsFocus:null,
+  tab:"overview",modal:null,md:null,mstack:[],focus:null,
   boms:BOM_SEED,bomSheets:[],vendors:VENDOR_SEED,services:SERVICE_SEED,
   ecmJobs:[],      // ECM programming jobs — see ecmGuard and CLAUDE.md for the shape and the emissions rule
   ecmFiles:[],     // {id,jobId,path,name,size,type,at} — metadata only; the bytes live in the ecm-files bucket
   prospects:[],    // trucking fleets to cold-approach — seeded once from src/data/fleet-prospects.json (seedResearch)
   competitors:[],  // Alberta diesel / engine shops — seeded once from src/data/competitors.json
   compare:[],      // the Rollin Coal vs key competitors cheat sheet — seeded once from src/data/competitor-comparison.json
-  timesheets:[],       // synced timesheet days, one per employee + date (id "emp|2026-10-01"); see supabase/functions/_shared/timesheet.js
-  timesheetSources:[], // connected Google Sheets: {id, sheetUrl, sheetId, employeeId, title, lastSynced, lastError, tabs, days, warnings}
-  payPeriods:[],       // approved pay periods per employee: {id, emp, start, end, kind, approvedAt, approvedBy, hours, reg, ot}
-  tsPay:[],            // wages from the sheets, owner login only (stored as rc:owner:tsPay): {id:"emp|2026-10", emp, month, wage, otRate}
+  timesheets:[],       // each employee's days, typed in the app: {id:"<emp>|<date>", emp, date, start, finish, notes, createdAt, updatedAt, by, history}; see src/lib/timesheet.js
+  payPeriods:[],       // approved pay periods per employee: {id, emp, empName, start, end, kind, title, approvedAt, approvedBy, hours, reg, ot}
 
   wins:[],       // {id,ts,user,kind:"sale",name,sku,price,cost} — permanent wins feed
   activity:[],   // {id,ts,user,type,msg} — auto-captured shop log (capped)
@@ -149,11 +146,11 @@ const EMPTY={
   ],
 };
 
-const STORE_KEYS=["customers","jobs","timeEntries","quotes","inventory","invoices","schedule","employees","expenses","leads","social","campaigns","contentCalendar","cores","shipments","commsLog","purchaseOrders","warranties","parts","wins","activity","settings","diagnoses","issues","brief","boms","bomSheets","vendors","services","ecmJobs","ecmFiles","prospects","competitors","compare","timesheets","timesheetSources","payPeriods","tsPay"];
-// Owner-only lists live under "rc:owner:<key>"; migration 0011 lets only the owner login read or write those
-// keys, and loadAll / saveAll never touch them for a staff login.
-const OWNER_KEYS=["tsPay"];
-const keyOf=k=>OWNER_KEYS.includes(k)?"rc:owner:"+k:"rc:"+k;
+const STORE_KEYS=["customers","jobs","timeEntries","quotes","inventory","invoices","schedule","employees","expenses","leads","social","campaigns","contentCalendar","cores","shipments","commsLog","purchaseOrders","warranties","parts","wins","activity","settings","diagnoses","issues","brief","boms","bomSheets","vendors","services","ecmJobs","ecmFiles","prospects","competitors","compare","timesheets","payPeriods"];
+// An employee login loads and saves only these: its own days and approvals (the database shows it
+// nothing else, migration 0011). Everyone else works with every list.
+const EMP_KEYS=["timesheets","payPeriods"];
+const keysFor=role=>role==="employee"?EMP_KEYS:STORE_KEYS;
 
 // ── Shop activity log (who-did-what, auto-captured as a byproduct of work) ──
 let CURRENT_USER="shop";
@@ -209,13 +206,13 @@ const describeAdd=(list,d)=>{switch(list){
   case "diagnoses":return "🩺 Diagnosis logged: "+((d.symptoms||[]).join(", ")||"—")+(d.engineName?" — "+d.engineName:"");
   case "issues":return "📚 Common issue added: "+(d.title||"");
   case "payPeriods":return "✅ "+(d.title||"Timesheet approved");
-  case "timesheetSources":return "🔗 Timesheet connected"+(d.empName?": "+d.empName:"");
+  case "timesheets":return null;   // the day itself keeps who and when (history)
   default:return null;}};
 function reducer(s,a){switch(a.type){
   case "TAB":return{...s,tab:a.v,mstack:[],focus:a.focus||null};case "MODAL":{const st=s.mstack||[];if(s.modal===a.v)return{...s,md:a.d||null};const ix=st.findIndex(x=>x.modal===a.v);if(ix>=0)return{...s,modal:a.v,md:a.d||null,mstack:st.slice(0,ix)};if(!s.modal)return{...s,modal:a.v,md:a.d||null,mstack:[]};return{...s,modal:a.v,md:a.d||null,mstack:[...st,{modal:s.modal,md:s.md}].slice(-8)};}
   case "BACK":{const st=s.mstack||[];if(!st.length)return{...s,modal:null,md:null};const p=st[st.length-1];return{...s,modal:p.modal,md:p.md,mstack:st.slice(0,-1)};}
   case "CLOSE":return{...s,modal:null,md:null,mstack:[]};
-  case "LOAD":return{...s,...a.d};case "PUT":return{...s,...a.d,activity:a.act?pushAct(s,"update",a.act):s.activity,toast:a.label?{msg:a.label,long:!!a.long,t:Date.now()}:s.toast,...(a.close?{modal:null,md:null,mstack:[]}:{})};case "RESET":return{...EMPTY,tab:s.tab};
+  case "LOAD":return{...s,...a.d};case "RESET":return{...EMPTY,tab:s.tab};
   case "ADD":{let d0=a.d;
     if(a.list==="inventory"&&d0&&(d0.cat==="Complete Engine"||d0.cat==="Core")&&d0.status)d0={...d0,stageDate:nowIso(),stageLog:[{st:d0.status,ts:nowIso()}],...(d0.status==="sold"?{soldDate:isoToday()}:{})};
     if(a.list==="ecmJobs"&&d0)d0=ecmGuard(null,d0).j;
@@ -244,7 +241,7 @@ function reducer(s,a){switch(a.type){
     const act0=act?pushAct(s,"update",act):s.activity;const activity=autos.length?[...autos.map((m,k)=>({id:Date.now()+Math.random()+k,ts:nowIso(),user:"auto",type:"auto",msg:m})),...act0].slice(0,400):act0;
     const stU={...s,activity,wins,soldSplash:splash,toast,...extra,[a.list]:(s[a.list]||[]).map(x=>x.id===a.id?{...x,...d2}:x)};
     return LABOR_LISTS.includes(a.list)?syncLabor(stU):stU;}
-  case "DELETE":{const item=(s[a.list]||[]).find(x=>x.id===a.id);const stD={...s,[a.list]:(s[a.list]||[]).filter(x=>x.id!==a.id),lastDel:item?{list:a.list,item}:null,activity:item?pushAct(s,"delete","🗑 Deleted: "+((a.list==="ecmJobs"?"ECM job"+(item.unit?" · unit "+item.unit:""):"")||item.name||item.sku||item.invNum||item.service||item.title||item.engName||item.business||(item.symptoms&&item.symptoms.join(", "))||a.list)):s.activity,toast:{msg:"Deleted",undo:!!item,t:Date.now()}};
+  case "DELETE":{const item=(s[a.list]||[]).find(x=>x.id===a.id);const stD={...s,[a.list]:(s[a.list]||[]).filter(x=>x.id!==a.id),lastDel:item?{list:a.list,item}:null,activity:item&&a.list!=="timesheets"?pushAct(s,"delete","🗑 Deleted: "+((a.list==="ecmJobs"?"ECM job"+(item.unit?" · unit "+item.unit:""):"")||item.name||item.sku||item.invNum||item.service||item.title||item.engName||item.business||(item.symptoms&&item.symptoms.join(", "))||a.list)):s.activity,toast:{msg:"Deleted",undo:!!item,t:Date.now()}};
     return LABOR_LISTS.includes(a.list)?syncLabor(stD):stD;}
   case "UNDO":{if(!s.lastDel)return s;const stR={...s,[s.lastDel.list]:[...(s[s.lastDel.list]||[]),s.lastDel.item],lastDel:null,toast:{msg:"Restored",t:Date.now()}};
     return LABOR_LISTS.includes(s.lastDel.list)?syncLabor(stR):stR;}
@@ -589,7 +586,7 @@ const isoToday=()=>{const n=new Date();return new Date(n.getTime()-n.getTimezone
 // Shop settings live as a single row in the settings list
 const getSet=s=>((s.settings||[])[0])||{};
 // One-click JSON backup of every persisted list
-function exportBackup(s,owner){try{const data={exported:new Date().toISOString(),app:"rollin-coal-dashboard",lists:{}};STORE_KEYS.filter(k=>owner||!OWNER_KEYS.includes(k)).forEach(k=>{data.lists[k]=s[k]||[];});const b=new Blob([JSON.stringify(data,null,2)],{type:"application/json"});const u=URL.createObjectURL(b);const a=document.createElement("a");a.href=u;a.download="rollin-coal-backup-"+isoToday()+".json";document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(u),4000);}catch(e){console.error("backup failed:",e);}}
+function exportBackup(s){try{const data={exported:new Date().toISOString(),app:"rollin-coal-dashboard",lists:{}};STORE_KEYS.forEach(k=>{data.lists[k]=s[k]||[];});const b=new Blob([JSON.stringify(data,null,2)],{type:"application/json"});const u=URL.createObjectURL(b);const a=document.createElement("a");a.href=u;a.download="rollin-coal-backup-"+isoToday()+".json";document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(u),4000);}catch(e){console.error("backup failed:",e);}}
 // Website export: buyer-facing listing text/HTML for one engine — main
 // details, price, photo only. Never includes costs, parts log, or margins.
 function listingText(i){const L=[];L.push((i.name||"Engine").toUpperCase());const id=[];if(i.serial||i.esn)id.push("ESN "+(i.serial||i.esn));if(i.sku)id.push("SKU "+i.sku);if(id.length)L.push(id.join(" · "));const sp=[];if(i.year)sp.push("Year: "+i.year);if(i.ratedHp)sp.push("Rated HP: "+i.ratedHp);if(i.oilCap)sp.push("Oil capacity: "+i.oilCap);if(i.arrangement)sp.push("Arrangement: "+i.arrangement);if(sp.length)L.push(sp.join(" · "));if(i.condition)L.push("Condition: "+i.condition);if(i.notes)L.push("",i.notes);L.push("","Price: "+(+i.price>0?$$(+i.price)+" CAD":"Call for pricing"));L.push("","Rollin Coal — Canada's Diesel Engine Specialists","Medicine Hat, AB · 1-587-863-0505 · rollin-coal.ca");return L.join("\n");}
@@ -692,9 +689,9 @@ function horn(){try{const C=window.AudioContext||window.webkitAudioContext;if(!C
 // Storage
 // Save only the given (changed) lists, handing the adapter the previous
 // snapshot so table-backed lists can diff per-row instead of rewriting.
-async function saveAll(s,keys,prev,owner){const failed=[];for(const k of (keys||STORE_KEYS)){if(!owner&&OWNER_KEYS.includes(k))continue;try{await db.setItem(keyOf(k),JSON.stringify(s[k]||[]),prev&&prev[k]!=null?JSON.stringify(prev[k]||[]):undefined);}catch(e){failed.push(k);console.error("[rc save] "+k+" failed:",e&&e.message?e.message:e);}}return failed;}
-async function loadAll(owner){const d={};let m=null;const keys=STORE_KEYS.filter(k=>owner||!OWNER_KEYS.includes(k));try{m=await db.getAll(keys.map(keyOf));}catch(e){console.error("[rc load] batch failed:",e&&e.message?e.message:e);}if(!m){STORE_KEYS.forEach(k=>{d[k]=EMPTY[k]||[];});d.__loadError=true;return d;}let err=false;for(const k of STORE_KEYS){if(!keys.includes(k)){d[k]=[];continue;}const r=m[keyOf(k)];try{d[k]=(r!=null)?JSON.parse(r):(EMPTY[k]||[]);}catch(e){err=true;d[k]=EMPTY[k]||[];console.error("[rc load] "+k+" parse failed:",e&&e.message?e.message:e);}}if(err)d.__loadError=true;else await seedResearch(d);return d;}
-async function clearAll(owner){for(const k of STORE_KEYS){if(!owner&&OWNER_KEYS.includes(k))continue;try{await db.removeItem(keyOf(k));}catch(e){}}}
+async function saveAll(s,keys,prev,role){const failed=[];const ok=keysFor(role);for(const k of (keys||ok)){if(!ok.includes(k))continue;try{await db.setItem("rc:"+k,JSON.stringify(s[k]||[]),prev&&prev[k]!=null?JSON.stringify(prev[k]||[]):undefined);}catch(e){failed.push(k);console.error("[rc save] "+k+" failed:",e&&e.message?e.message:e);}}return failed;}
+async function loadAll(role){const d={};let m=null;const keys=keysFor(role);try{m=await db.getAll(keys.map(k=>"rc:"+k));}catch(e){console.error("[rc load] batch failed:",e&&e.message?e.message:e);}if(!m){STORE_KEYS.forEach(k=>{d[k]=EMPTY[k]||[];});d.__loadError=true;return d;}let err=false;for(const k of STORE_KEYS){if(!keys.includes(k)){d[k]=[];continue;}const r=m["rc:"+k];try{d[k]=(r!=null)?JSON.parse(r):(EMPTY[k]||[]);}catch(e){err=true;d[k]=EMPTY[k]||[];console.error("[rc load] "+k+" parse failed:",e&&e.message?e.message:e);}}if(err)d.__loadError=true;else if(role!=="employee")await seedResearch(d);return d;}
+async function clearAll(){for(const k of STORE_KEYS){try{await db.removeItem("rc:"+k);}catch(e){}}}
 
 // Claude AI
 
@@ -1380,57 +1377,71 @@ function Schedule({s,d}){
 // ═══════════════════════════════════════════════════════════════
 // EMPLOYEES (compact — includes expenses)
 // ═══════════════════════════════════════════════════════════════
-function Emps({s,d,owner=true,isOwner=true,preview=false,setPreview=()=>{},syncTs}){
+// Logins (owner, cloud): who on the team can sign in, from the team-logins Edge Function. Shared by the
+// Team table and the login modal; refreshLogins() reloads it after a change.
+let LOGINS={list:null,err:""};const LOGIN_SUBS=new Set();
+async function refreshLogins(){const r=await listLogins();LOGINS=r.error?{list:LOGINS.list,err:r.error}:{list:r.logins||[],err:""};LOGIN_SUBS.forEach(f=>f(LOGINS));return LOGINS;}
+function useLogins(on){const[st,setSt]=useState(LOGINS);useEffect(()=>{if(!on||!canManageLogins)return;LOGIN_SUBS.add(setSt);setSt(LOGINS);if(!LOGINS.list)refreshLogins();return()=>{LOGIN_SUBS.delete(setSt);};},[on]);return st;}
+const loginFor=(st,emp)=>((st&&st.list)||[]).find(l=>l.employeeId!=null&&String(l.employeeId)===String(emp.id))||null;
+// role: the login's role ("owner" / "staff"); owner: the owner, not previewing as staff.
+function Emps({s,d,role="owner",owner=true,preview=null,setPreview=()=>{}}){
   const[view,setView]=useState(()=>getPref("rc:teamView","team")==="timesheets"?"timesheets":"team");
   const pick=v=>{setView(v);setPref("rc:teamView",v);};
   const seg=(<div className="rc-seg two rc-ts-seg" role="group" aria-label="Team or timesheets">{[["team","Team"],["timesheets","Timesheets"]].map(([k,l])=>(<button key={k} className={view===k?"on":""} aria-pressed={view===k} onClick={()=>pick(k)}>{l}</button>))}</div>);
-  if(view==="timesheets")return(<div>{seg}<Timesheets s={s} d={d} owner={owner} isOwner={isOwner} preview={preview} setPreview={setPreview} syncTs={syncTs}/></div>);
-  const wk0=Tsh.weekStart(isoToday());const wkMin=(s.employees||[]).reduce((a,e)=>a+Object.values(Tsh.computeDays(tsRowsOf(s,e.id)).days).filter(x=>x.date>=wk0).reduce((b,x)=>b+x.min,0),0);
+  const logins=useLogins(owner);
+  if(view==="timesheets")return(<div>{seg}<Timesheets s={s} d={d} role={role} owner={owner} preview={preview} setPreview={setPreview}/></div>);
+  const today=Tsh.shopToday();const todayN=(s.employees||[]).filter(e=>e.status==="active"&&(s.timesheets||[]).some(t=>String(t.emp)===String(e.id)&&t.date===today&&Tsh.isFilled(t))).length;
+  const showLogin=owner&&canManageLogins;
+  const wk0=Tsh.weekStart(today);const wkMin=(s.employees||[]).reduce((a,e)=>a+Object.values(Tsh.computeDays(tsRowsOf(s,e.id)).days).filter(x=>x.date>=wk0).reduce((b,x)=>b+x.min,0),0);
   const payroll=(s.employees||[]).reduce((a,e)=>a+(e.rate||0)*(e.hrs||0),0);
   // Tech productivity
   const techJobs={};(s.jobs||[]).forEach(j=>{if(j.tech)techJobs[j.tech]=(techJobs[j.tech]||0)+1;});
   const techComplete={};(s.jobs||[]).filter(j=>j.status==="complete").forEach(j=>{if(j.tech)techComplete[j.tech]=(techComplete[j.tech]||0)+1;});
   return (<div>{seg}
-    <div className="rc-g4"><Stat label="Team" value={(s.employees||[]).length}/><Stat label="Active" value={(s.employees||[]).filter(e=>e.status==="active").length}/>{owner?<><Stat label="Weekly Payroll" value={$$(payroll)}/><Stat label="Monthly Est." value={$$(payroll*4.33)}/></>:<><Stat label="Timesheets" value={(s.timesheetSources||[]).length} sub="connected"/><Stat label="Paid hours this week" value={fH(wkMin)}/></>}</div>
+    <div className="rc-g4"><Stat label="Team" value={(s.employees||[]).length}/><Stat label="Active" value={(s.employees||[]).filter(e=>e.status==="active").length}/>{owner?<><Stat label="Weekly Payroll" value={$$(payroll)}/><Stat label="Monthly Est." value={$$(payroll*4.33)}/></>:<><Stat label="Filled in today" value={todayN} sub={"of "+(s.employees||[]).filter(e=>e.status==="active").length+" active"}/><Stat label="Paid hours this week" value={fH(wkMin)}/></>}</div>
     <SH title="Team"><button className="rc-ba" onClick={()=>d({type:"MODAL",v:"add-emp"})}>+ Employee</button></SH>
-    {(s.employees||[]).length===0?(<Empty icon="🧑‍🔧" title="No Employees" sub="Add team" action={()=>d({type:"MODAL",v:"add-emp"})} label="+ Add"/>):(<><Tbl headers={owner?["Name","Role","Rate","Hrs","Weekly","Jobs","Completed","Status",""]:["Name","Role","Hrs","Jobs","Completed","Status",""]}>{(s.employees||[]).map(e=>{const nick=e.nick||e.name;return (<tr key={e.id}><td className="rc-tn" style={{cursor:"pointer"}} onClick={()=>d({type:"MODAL",v:"emp-detail",d:e})}>{e.name}</td><td style={{fontSize:13,color:"var(--ac)"}}>{e.role}</td>{owner&&<td style={{fontSize:13}}>${e.rate||0}/hr</td>}<td style={{fontSize:13}}>{e.hrs||0}</td>{owner&&<td style={{fontWeight:600}}>{$$((e.rate||0)*(e.hrs||0))}</td>}<td style={{fontSize:13}}>{techJobs[nick]||0}</td><td style={{fontSize:13,color:"var(--g)"}}>{techComplete[nick]||0}</td><td><Badge s={e.status}/></td><td><BtnRow><button className="rc-bs" onClick={()=>d({type:"MODAL",v:"edit-emp",d:e})} style={{fontSize:14.5}}>✎</button><button className="rc-bs" onClick={()=>d({type:"UPDATE",list:"employees",id:e.id,d:{status:e.status==="active"?"on-leave":"active"}})} style={{fontSize:14.5}}>{e.status==="active"?"⏸":"▶"}</button></BtnRow></td></tr>);})}</Tbl>
+    {(s.employees||[]).length===0?(<Empty icon="🧑‍🔧" title="No Employees" sub="Add team" action={()=>d({type:"MODAL",v:"add-emp"})} label="+ Add"/>):(<><Tbl headers={owner?["Name","Role","Rate","Hrs","Weekly","Jobs","Completed",...(showLogin?["Login"]:[]),"Status",""]:["Name","Role","Hrs","Jobs","Completed","Status",""]}>{(s.employees||[]).map(e=>{const nick=e.nick||e.name;return (<tr key={e.id}><td className="rc-tn" style={{cursor:"pointer"}} onClick={()=>d({type:"MODAL",v:"emp-detail",d:e})}>{e.name}</td><td style={{fontSize:13,color:"var(--ac)"}}>{e.role}</td>{owner&&<td style={{fontSize:13}}>${e.rate||0}/hr</td>}<td style={{fontSize:13}}>{e.hrs||0}</td>{owner&&<td style={{fontWeight:600}}>{$$((e.rate||0)*(e.hrs||0))}</td>}<td style={{fontSize:13}}>{techJobs[nick]||0}</td><td style={{fontSize:13,color:"var(--g)"}}>{techComplete[nick]||0}</td>{showLogin&&<td>{(()=>{const L=loginFor(logins,e);return L?<button className="rc-lnk rc-ts-ln" onClick={()=>d({type:"MODAL",v:"emp-login",d:{emp:e}})}>{L.role==="employee"?"Timesheet login":"Office login"}</button>:<button className="rc-bs" style={{fontSize:13}} onClick={()=>d({type:"MODAL",v:"emp-login",d:{emp:e}})}>Give a login</button>;})()}</td>}<td><Badge s={e.status}/></td><td><BtnRow><button className="rc-bs" onClick={()=>d({type:"MODAL",v:"edit-emp",d:e})} style={{fontSize:14.5}}>✎</button><button className="rc-bs" onClick={()=>d({type:"UPDATE",list:"employees",id:e.id,d:{status:e.status==="active"?"on-leave":"active"}})} style={{fontSize:14.5}}>{e.status==="active"?"⏸":"▶"}</button></BtnRow></td></tr>);})}</Tbl>
+    {showLogin&&logins.err&&<div className="rc-ts-errl">Couldn't load the logins: {logins.err}</div>}
     <SH title="Expenses"><button className="rc-ba" onClick={()=>d({type:"MODAL",v:"add-expense"})}>+ Expense</button></SH>
     <Tbl headers={["Category","Amount","Freq","Notes",""]}>{(s.expenses||[]).map(e=>(<tr key={e.id}><td className="rc-tn">{e.cat}</td><td style={{fontWeight:600}}>{$$(e.amount)}</td><td style={{fontSize:13,color:"var(--tx2)"}}>{e.freq}</td><td style={{fontSize:13,color:"var(--mt)"}}>{e.notes}</td><td><BtnRow><button className="rc-bs" onClick={()=>d({type:"MODAL",v:"edit-expense",d:e})} style={{fontSize:14.5}}>✎</button><button className="rc-bs rc-bsr" onClick={()=>d({type:"DELETE",list:"expenses",id:e.id})} style={{fontSize:14.5}}>×</button></BtnRow></td></tr>))}</Tbl></>)}
   </div>);
 }
 
 // ═══════════════════════════════════════════════════════════════
-// TIMESHEETS — hours from each employee's Google Sheets timesheet (Team → Timesheets)
+// TIMESHEETS — hours typed in the app (each employee's own screen; Team → Timesheets)
 // ═══════════════════════════════════════════════════════════════
-// Parsing, Alberta overtime, the day flags and the merge rules are shared with the
-// timesheet-sync Edge Function: supabase/functions/_shared/timesheet.js (Tsh).
-// Wages and pay (tsPay, gross pay) only show when `owner` is true.
+// The hours, overtime and pay-period math is src/lib/timesheet.js (Tsh), and so are
+// the rules on who may change which day (dayAccess). The database enforces the same
+// rules for real (migration 0011). Wages and pay only show when `owner` is true.
 const fH=m=>Tsh.fmtH(m);
 const fmtWhen=iso=>{const t=new Date(iso);if(!iso||isNaN(t))return "";const same=t.toDateString()===new Date().toDateString();return (same?"today":t.toLocaleDateString("en-US",{month:"short",day:"numeric"}))+", "+t.toLocaleTimeString("en-US",{hour:"numeric",minute:"2-digit"});};
+const firstName=n=>String(n||"").trim().split(/\s+/)[0]||"";
 const tsRowsOf=(s,emp)=>(s.timesheets||[]).filter(r=>String(r.emp)===String(emp));
 const tsTech=(e,t)=>{const k=String(t||"").trim().toLowerCase();return !!k&&[e.nick,e.name].filter(Boolean).some(n=>String(n).trim().toLowerCase()===k);};
 // Hours on jobs by date for one person: work-order time, diagnoses and ECM jobs, by the date logged.
 function tsJobHours(s,e){const m={};const add=(dt,h)=>{if(dt&&+h>0)m[dt]=(m[dt]||0)+(+h);};(s.timeEntries||[]).forEach(t=>{if(tsTech(e,t.tech))add(t.date,t.hours);});(s.diagnoses||[]).forEach(x=>{if(tsTech(e,x.tech))add(x.date,x.hours);});(s.ecmJobs||[]).forEach(j=>{if(tsTech(e,j.tech))add(j.date,j.hours);});return m;}
 const tsJobIn=(jh,a,b)=>Object.keys(jh).reduce((t,k)=>k>=a&&k<=b?t+jh[k]:t,0);
-// Pay for a date: the sheet's wage for that month, else the Team pay rate.
-const tsPayFor=(s,e)=>date=>Tsh.payFor(s.tsPay,e.id,date)||(+e.rate>0?{wage:+e.rate,otRate:1.5,team:true}:null);
+// Pay: the person's Rate on the Team tab; overtime at the shop's OT rate (1.5× unless changed in Timesheet settings).
+const tsOtRate=s=>+getSet(s).otRate||1.5;
+const tsPayFor=(s,e)=>{const ot=tsOtRate(s);return()=>(+e.rate>0?{wage:+e.rate,otRate:ot}:null);};
 const tsSet=s=>{const st=getSet(s);return{kind:st.payPeriod||"monthly",anchor:st.payAnchor||""};};
 const tsRule=w=>w.rule==="weekly"?"44-hour weekly rule":w.rule==="daily"?"daily rule (over 8 h a day)":"no overtime";
-const tsSrcName=(s,x)=>{const em=(s.employees||[]).find(e=>String(e.id)===String(x.employeeId));return x.title||(em?em.name+"'s timesheet":"Sheet "+String(x.sheetId||"").slice(0,10)+"…");};
-// One person's pay period: the days in it (overtime split over whole Monday weeks, even
-// when a week crosses into another period), the weeks it touches, totals, flags, pay.
-// Unallocated = paid hours not on any job, worked out day by day.
+// One person's pay period: every day in it (blank ones too, for attendance), overtime split over
+// whole Monday weeks (a week can reach into the next period), totals, flags and pay.
+// Unallocated = paid hours not on any job, day by day.
 function tsPeriod(s,e,P){
-  const rows=tsRowsOf(s,e.id),calc=Tsh.computeDays(rows),jh=tsJobHours(s,e);
-  const inP=rows.filter(r=>r.date>=P.start&&r.date<=P.end).sort((a,b)=>a.date<b.date?-1:1);
+  const rows=tsRowsOf(s,e.id),calc=Tsh.computeDays(rows),jh=tsJobHours(s,e),by=new Map(rows.map(r=>[r.date,r]));
+  const dates=Tsh.rangeDays(P.start,P.end);
   const un=dt=>Math.max(0,((calc.days[dt]||{}).min||0)/60-(jh[dt]||0));
-  const wk=[...new Set(inP.map(r=>Tsh.weekStart(r.date)))].sort().map(w=>{const W=calc.weeks[w];return{...W,rows:inP.filter(r=>Tsh.weekStart(r.date)===w),outside:W.dates.filter(x=>x<P.start||x>P.end),job:tsJobIn(jh,W.start,W.end),unalloc:W.dates.reduce((a,x)=>a+un(x),0)};});
-  const ds=inP.map(r=>calc.days[r.date]);
+  const weeks=[...new Set(dates.map(Tsh.weekStart))].map(w=>{const W=calc.weeks[w]||{start:w,end:Tsh.addDaysISO(w,6),dates:[],min:0,regMin:0,otMin:0,dailyMin:0,weeklyMin:0,rule:"none"};return{...W,days:dates.filter(x=>Tsh.weekStart(x)===w),outside:W.dates.filter(x=>x<P.start||x>P.end),job:tsJobIn(jh,W.start,W.end),unalloc:W.dates.reduce((a,x)=>a+un(x),0)};});
+  const ds=dates.map(x=>calc.days[x]).filter(Boolean);
   const tot={min:ds.reduce((a,x)=>a+x.min,0),reg:ds.reduce((a,x)=>a+x.regMin,0),ot:ds.reduce((a,x)=>a+x.otMin,0)};
-  const flags={};inP.forEach(r=>{flags[r.date]=Tsh.dayFlags(r,calc.days[r.date]);});
-  const over=Object.keys(jh).filter(k=>k>=P.start&&k<=P.end&&jh[k]-((calc.days[k]||{}).min||0)/60>0.01).sort();
-  return{rows:inP,calc,jh,wk,tot,job:tsJobIn(jh,P.start,P.end),unalloc:inP.reduce((a,r)=>a+un(r.date),0),over,flags,pay:Tsh.payTotals(ds,tsPayFor(s,e)),
-    appr:(s.payPeriods||[]).find(p=>String(p.emp)===String(e.id)&&p.start===P.start&&p.end===P.end)||null,pending:inP.filter(r=>r.pending)};}
+  const flags={};dates.forEach(x=>{const r=by.get(x);if(r){const f=Tsh.dayFlags(r,calc.days[x]);if(f.length)flags[x]=f;}});
+  const today=Tsh.shopToday();
+  return{by,calc,jh,dates,weeks,ds,tot,job:tsJobIn(jh,P.start,P.end),unalloc:dates.reduce((a,x)=>a+un(x),0),flags,pay:Tsh.payTotals(ds,tsPayFor(s,e)),
+    worked:ds.filter(x=>x.min>0).length,missing:dates.filter(x=>x<today&&Tsh.isWeekday(x)&&!Tsh.isFilled(by.get(x))),edited:dates.filter(x=>Tsh.wasEdited(by.get(x))),
+    over:Object.keys(jh).filter(k=>k>=P.start&&k<=P.end&&jh[k]-((calc.days[k]||{}).min||0)/60>0.01).sort(),
+    appr:(s.payPeriods||[]).find(p=>String(p.emp)===String(e.id)&&p.start===P.start&&p.end===P.end)||null};}
 // Notes → links to what we have: an engine's stock #, a unit # on a work order or ECM job,
 // a WO # on a teardown worksheet. Returns [] when nothing matches.
 const reEsc=t=>String(t).replace(/[.*+?^${}()|[\]\\]/g,"\\$&");
@@ -1442,128 +1453,168 @@ function tsLinks(s,txt){const t=String(txt||"");if(!t)return [];const hits=[];
   hits.sort((a,b)=>a.at-b.at);const out=[];let p=0;hits.forEach(h=>{if(h.at<p)return;if(h.at>p)out.push(t.slice(p,h.at));out.push({text:t.slice(h.at,h.at+h.len),to:h.to,tip:h.tip});p=h.at+h.len;});if(p<t.length)out.push(t.slice(p));
   return out.some(x=>typeof x!=="string")?out:[];}
 function TsNote({s,d,txt}){const parts=tsLinks(s,txt);if(!parts.length)return <>{txt||""}</>;return <>{parts.map((p,k)=>typeof p==="string"?<span key={k}>{p}</span>:<button key={k} className="rc-lnk rc-ts-ln" title={p.tip} onClick={()=>d({type:"MODAL",v:p.to.v,d:p.to.d})}>{p.text}</button>)}</>;}
-const TS_FIELDS={start:"Start",finish:"Finish",unpaidBreakMin:"Unpaid break",notes:"Notes",sTotal:"Sheet total",sReg:"Sheet regular",sOT:"Sheet OT"};
-// What changed on a day flagged after approval: "Finish: 4:30 PM → 6:30 PM".
-const tsDiff=r=>{const p=r.pending||{};if(p.removed)return ["The day was removed from the sheet"];const v=p.vals||{};return Object.keys(TS_FIELDS).filter(k=>String(r[k]??"")!==String(v[k]??"")).map(k=>TS_FIELDS[k]+": "+((r[k]??"")===""?"blank":r[k])+" → "+((v[k]??"")===""?"blank":v[k]));};
+// Save a day, from the day editor or the Full day button. The database stamps who and
+// when, and keeps the old version; the local mode keeps it here (nextEntry).
+function tsSave(s,d,{emp,date,vals,label}){
+  const prev=(s.timesheets||[]).find(r=>r.id===Tsh.entryId(emp,date));
+  const rec=Tsh.nextEntry(prev,vals,{emp,date,by:CURRENT_USER,now:nowIso(),keepHistory:!usingCloud});
+  if(prev){d({type:"UPDATE",list:"timesheets",id:prev.id,d:rec});d({type:"TOAST",d:{msg:label,t:Date.now()}});}
+  else d({type:"ADD",list:"timesheets",d:rec,keep:true,label});
+}
+// A day filled in late or changed afterwards: every version, oldest first, for the owner.
+function TsHistory({r}){if(!r||!Tsh.wasEdited(r))return null;const vs=[...(r.history||[]),{at:r.updatedAt,by:r.by,start:r.start,finish:r.finish,notes:r.notes,now:true}];
+  return(<div className="rc-ts-hist"><div className="rc-fl">{Tsh.enteredLate(r)&&!(r.history||[]).length?"Filled in after the day":"Changed after it was filled in"}</div>{vs.map((x,k)=>(<div key={k} className={x.now?"now":""}><span>{fmtWhen(x.at)}{x.by?" · "+x.by:""}</span><b>{[x.start?x.start+" to "+x.finish:"",x.notes].filter(Boolean).join(" · ")||"cleared"}{x.now?" (now)":""}</b></div>))}</div>);}
 
 // The pay-period summary for printing: black and white, one Letter page for a month.
-const TS_PRINT='@page{size:letter portrait;margin:10mm 11mm;}body{padding:0;font-size:11px;line-height:1.35;}.head{border-bottom-color:#000;padding-bottom:5px;margin-bottom:7px;}.logo{background:#000;width:34px;height:34px;font-size:16px;}h1{font-size:20px;}.meta{font-size:10px;line-height:1.45;}.sub{color:#000;}h2{border-left-color:#000;font-size:12.5px;margin:7px 0 2px;}.en{font-size:20px;}.esn{font-size:10.5px;margin-top:1px;}.st{margin-top:4px;font-size:9.5px;padding:1px 8px;}.tt{align-items:flex-end;margin-bottom:5px;}table.pay td{padding:1.5px 6px;font-size:11px;line-height:1.3;}.sm{display:grid;grid-template-columns:repeat(4,auto);gap:4px 16px;text-align:right;}.sm div{font-family:"Barlow Condensed",sans-serif;font-weight:800;font-size:17px;}.sm span{display:block;font-family:"IBM Plex Mono",monospace;font-weight:400;font-size:9.5px;letter-spacing:1px;text-transform:uppercase;color:#555;}'+
+const TS_PRINT='@page{size:letter portrait;margin:10mm 11mm;}body{padding:0;font-size:11px;line-height:1.35;}.head{border-bottom-color:#000;padding-bottom:5px;margin-bottom:7px;}.logo{background:#000;width:34px;height:34px;font-size:16px;}h1{font-size:20px;}.meta{font-size:10px;line-height:1.45;}.sub{color:#000;}h2{border-left-color:#000;font-size:12.5px;margin:7px 0 2px;}.en{font-size:20px;}.esn{font-size:10.5px;margin-top:1px;}.st{margin-top:4px;font-size:9.5px;padding:1px 8px;border-color:#000;}.tt{align-items:flex-end;margin-bottom:5px;}table.pay td{padding:1.5px 6px;font-size:11px;line-height:1.3;}.sm{display:grid;grid-template-columns:repeat(4,auto);gap:4px 16px;text-align:right;}.sm div{font-family:"Barlow Condensed",sans-serif;font-weight:800;font-size:17px;}.sm span{display:block;font-family:"IBM Plex Mono",monospace;font-weight:400;font-size:9.5px;letter-spacing:1px;text-transform:uppercase;color:#555;}'+
   'table.ts th{text-align:left;font-size:9.5px;letter-spacing:1px;text-transform:uppercase;border-bottom:1.5px solid #000;padding:3px 5px;}table.ts th.num{text-align:right;}table.ts td{padding:1px 5px;font-size:10.5px;line-height:1.25;border-bottom:1px solid #ddd;}td.nt{font-size:9.5px;color:#333;}tr.off td{color:#888;}tr.wk td{background:none;border-top:1px solid #000;border-bottom:1px solid #000;font-size:10px;font-weight:600;white-space:nowrap;}tr.wk td.num{font-size:11px;}tr.tot td{background:none!important;border-top:2px solid #000;font-weight:800;font-size:12px;}.dim{color:#555;font-style:italic;font-size:11px;}'+
-  '.sig{display:grid;grid-template-columns:2fr 1fr 2fr 1fr;gap:18px;margin-top:18px;}.sig div{border-top:1px solid #000;padding-top:2px;font-size:9.5px;color:#333;}.foot{margin-top:10px;padding-top:5px;font-size:9.5px;}.st{border-color:#000;}';
+  '.sig{display:grid;grid-template-columns:2fr 1fr 2fr 1fr;gap:18px;margin-top:18px;}.sig div{border-top:1px solid #000;padding-top:2px;font-size:9.5px;color:#333;}.foot{margin-top:10px;padding-top:5px;font-size:9.5px;}';
 function printTimesheet(s,e,P,owner){
   const esc=t=>String(t==null?"":t).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
   const T=tsPeriod(s,e,P),lab=Tsh.periodLabel(P);let rows="";
-  T.wk.forEach(w=>{
-    w.rows.forEach(r=>{const c=T.calc.days[r.date];const fl=(T.flags[r.date]||[]).filter(f=>f.lv!=="info");
-      rows+='<tr'+(c.min?'':' class="off"')+'><td>'+esc(Tsh.shortDate(r.date))+'</td><td>'+esc(r.day)+'</td><td>'+esc(r.start)+'</td><td>'+esc(r.finish)+'</td><td class="num">'+(c.min?fH(c.min):"")+'</td><td class="num">'+(c.min?fH(c.regMin):"")+'</td><td class="num">'+(c.otMin?fH(c.otMin):"")+'</td><td class="nt">'+esc(r.notes)+(fl.length?' <b>&#9873; '+esc(fl.map(f=>f.short||f.msg).join("; "))+'</b>':'')+(r.pending?' <b>[changed after approval]</b>':'')+'</td></tr>';});
+  T.weeks.forEach(w=>{
+    w.days.forEach(x=>{const r=T.by.get(x),c=T.calc.days[x],fl=T.flags[x]||[];
+      rows+='<tr'+(c&&c.min?'':' class="off"')+'><td>'+esc(Tsh.shortDate(x))+'</td><td>'+esc(Tsh.dow(x))+'</td><td>'+esc(r?r.start:"")+'</td><td>'+esc(r?r.finish:"")+'</td><td class="num">'+(c&&c.min?fH(c.min):"")+'</td><td class="num">'+(c&&c.min?fH(c.regMin):"")+'</td><td class="num">'+(c&&c.otMin?fH(c.otMin):"")+'</td><td class="nt">'+esc(r?r.notes:"")+(fl.length?' <b>&#9873; '+esc(fl.map(f=>f.msg).join(" "))+'</b>':'')+(r&&Tsh.wasEdited(r)?' <b>[changed after the day]</b>':'')+'</td></tr>';});
     rows+='<tr class="wk"><td colspan="4">Week of '+esc(Tsh.shortDate(w.start))+' &middot; '+(w.rule==="weekly"?"44-hour rule":w.rule==="daily"?"daily rule":"no OT")+'</td><td class="num">'+fH(w.min)+'</td><td class="num">'+fH(w.regMin)+'</td><td class="num">'+fH(w.otMin)+'</td><td class="nt">over 8 a day '+fH(w.dailyMin)+' &middot; over 44 a week '+fH(w.weeklyMin)+(w.outside.length?' &middot; counts '+w.outside.length+' day'+(w.outside.length===1?'':'s')+' outside this period':'')+'</td></tr>';});
   rows+='<tr class="tot"><td colspan="4">Total &middot; '+esc(lab)+'</td><td class="num">'+fH(T.tot.min)+'</td><td class="num">'+fH(T.tot.reg)+'</td><td class="num">'+fH(T.tot.ot)+'</td><td></td></tr>';
-  const pf=tsPayFor(s,e);const ws=[...new Set(T.rows.map(r=>{const p=pf(r.date);return p?p.wage+"|"+p.otRate:"";}).filter(Boolean))];const one=ws.length===1?ws[0].split("|").map(Number):null;
-  const pay=owner?'<h2>Gross pay</h2><table class="pay"><tr><td>Regular '+fH(T.pay.regMin)+' h'+(one?' &times; '+$$(one[0]):'')+'</td><td class="num">'+$$(T.pay.regPay)+'</td></tr><tr><td>Overtime '+fH(T.pay.otMin)+' h'+(one?' &times; '+$$(one[0]*one[1])+' ('+one[1]+'&times;)':'')+'</td><td class="num">'+$$(T.pay.otPay)+'</td></tr><tr class="tot"><td>Gross pay, before deductions (CPP, EI, tax)</td><td class="num">'+$$(T.pay.gross)+'</td></tr></table>'+(T.pay.missing.length?'<p class="dim">No wage on file for '+esc(T.pay.missing.map(Tsh.monthLabel).join(", "))+', so those hours are not in the total.</p>':''):'';
+  const ot=tsOtRate(s),rate=+e.rate||0;
+  const pay=owner?'<h2>Gross pay</h2><table class="pay"><tr><td>Regular '+fH(T.pay.regMin)+' h &times; '+$$(rate)+'</td><td class="num">'+$$(T.pay.regPay)+'</td></tr><tr><td>Overtime '+fH(T.pay.otMin)+' h &times; '+$$(rate*ot)+' ('+ot+'&times;)</td><td class="num">'+$$(T.pay.otPay)+'</td></tr><tr class="tot"><td>Gross pay, before deductions (CPP, EI, tax)</td><td class="num">'+$$(T.pay.gross)+'</td></tr></table>'+(rate>0?'':'<p class="dim">No pay rate on the Team tab, so gross pay is not worked out.</p>'):'';
   const st=T.appr?'Approved '+esc(new Date(T.appr.approvedAt).toLocaleDateString("en-US",{year:"numeric",month:"short",day:"numeric"}))+(T.appr.approvedBy?' by '+esc(T.appr.approvedBy):''):'Not approved yet';
   const html='<!doctype html><html><head><meta charset="utf-8"><title>Timesheet · '+esc(e.name)+' · '+esc(lab)+'</title>'+SHEET_STYLE+'<style>'+TS_PRINT+'</style></head><body>'+
     '<div class="head"><div class="brand"><div class="logo">RC</div><div><h1>Rollin Coal</h1><div class="sub">Pay period summary</div></div></div><div class="meta"><strong>Timesheet</strong><br>Printed '+new Date().toLocaleDateString("en-US",{year:"numeric",month:"long",day:"numeric"})+'<br>2040 11th Ave NW, Medicine Hat, AB</div></div>'+
     '<div class="tt"><div><div class="en">'+esc(e.name)+'</div><div class="esn">'+(e.role?esc(e.role)+' &middot; ':'')+esc(lab)+' ('+esc(Tsh.shortDate(P.start))+' to '+esc(Tsh.shortDate(P.end))+')</div><span class="st">'+st+'</span></div><div class="sm"><div><span>Hours</span>'+fH(T.tot.min)+'</div><div><span>Regular</span>'+fH(T.tot.reg)+'</div><div><span>Overtime</span>'+fH(T.tot.ot)+'</div><div><span>Unallocated</span>'+T.unalloc.toFixed(2)+'</div></div></div>'+
     '<table class="ts"><thead><tr><th>Date</th><th>Day</th><th>Start</th><th>Finish</th><th class="num">Hours</th><th class="num">Regular</th><th class="num">OT</th><th>Notes</th></tr></thead><tbody>'+rows+'</tbody></table>'+pay+
     '<div class="sig"><div>Employee signature</div><div>Date</div><div>Approved by</div><div>Date</div></div>'+
-    '<div class="foot"><span>Hours worked out from Start and Finish'+(T.rows.some(r=>+r.unpaidBreakMin>0)?' less unpaid breaks':'')+'. Overtime by Alberta&#39;s rule: over 8 h a day or 44 h a week, whichever is more.</span><span>Rollin Coal &middot; confidential</span></div>'+
+    '<div class="foot"><span>Hours from Start and Finish; lunch is paid. Overtime by Alberta&#39;s rule: over 8 h a day or 44 h a week, whichever is more.</span><span>Rollin Coal &middot; confidential</span></div>'+
     '<scr'+'ipt>window.onload=function(){setTimeout(function(){window.print();},300);};</scr'+'ipt></body></html>';
   const w=window.open("","_blank","width=920,height=1080");if(!w)return;
   w.document.open();w.document.write(html);w.document.close();
 }
 
-function Timesheets({s,d,owner,isOwner,preview,setPreview,syncTs}){
+// Team → Timesheets: the owner's and office staff's view of everyone's hours.
+// role: the login's role ("owner" / "staff"); owner: the owner, not previewing as staff.
+function Timesheets({s,d,role,owner,preview,setPreview}){
   const emps=[...(s.employees||[])].sort((a,b)=>(a.status==="active"?0:1)-(b.status==="active"?0:1)||String(a.name||"").localeCompare(String(b.name||"")));
   const has=new Set((s.timesheets||[]).map(r=>String(r.emp)));
-  const[emp,setEmp]=useState(()=>{const e0=emps.find(x=>has.has(String(x.id)))||emps[0];return e0?String(e0.id):"";});
-  const[per,setPer]=useState("");const[busy,setBusy]=useState(false);const[open,setOpen]=useState(null);
-  // An upload lands on the person and period it brought in; after a sync, show someone who has days.
-  useEffect(()=>{if(s.tsFocus){setEmp(String(s.tsFocus.emp));setPer(s.tsFocus.start||"");setOpen(null);}},[s.tsFocus]);
-  useEffect(()=>{if(has.size&&!has.has(emp)){const e0=emps.find(x=>has.has(String(x.id)));if(e0){setEmp(String(e0.id));setPer("");}}},[s.timesheets]);
+  const[emp,setEmp]=useState(()=>{const e0=emps.find(x=>has.has(String(x.id)))||emps.find(x=>x.status==="active")||emps[0];return e0?String(e0.id):"";});
+  const[per,setPer]=useState("");const[open,setOpen]=useState(null);
+  const today=Tsh.shopToday();const canEdit=role==="owner"&&owner;
   const e=emps.find(x=>String(x.id)===emp)||null;
   const{kind,anchor}=tsSet(s);
-  const dates=e?tsRowsOf(s,e.id).map(r=>r.date):[];
-  const periods=Tsh.periodList(dates,kind,anchor,isoToday());
-  const latest=dates.length?Tsh.periodOf(dates.reduce((a,b)=>a>b?a:b),kind,anchor).start:"";
-  const P=periods.find(p=>p.start===per)||periods.find(p=>p.start===latest)||periods[0];
+  const periods=Tsh.periodList(e?tsRowsOf(s,e.id).map(r=>r.date):[],kind,anchor,today);
+  const P=periods.find(p=>p.start===per)||periods.find(p=>p.start<=today&&p.end>=today)||periods[0];
   const T=e&&P?tsPeriod(s,e,P):null;
-  const srcs=s.timesheetSources||[];
-  const last=srcs.map(x=>x.lastSynced).filter(Boolean).sort().pop();
-  const errs=srcs.filter(x=>x.lastError);
-  const sync=async()=>{if(busy||!syncTs)return;setBusy(true);let r=null;try{r=await syncTs();}finally{setBusy(false);}
-    const R=(r&&r.results)||[];
-    if(r&&r.error&&!R.length){d({type:"TOAST",d:{msg:"⚠ "+r.error,long:true,t:Date.now()}});return;}
-    const ok=R.filter(x=>x.ok),bad=R.length-ok.length,n=k=>ok.reduce((a,x)=>a+(x[k]||0),0);
-    d({type:"TOAST",d:{msg:!R.length?((r&&r.note)||"Nothing to sync yet. Connect a sheet in Settings."):(ok.length?"✓ Synced "+ok.length+" sheet"+(ok.length===1?"":"s")+": "+n("added")+" new, "+n("updated")+" changed"+(n("flagged")?", "+n("flagged")+" changed after approval":""):"")+(bad?(ok.length?" · ":"⚠ ")+bad+" sheet"+(bad===1?"":"s")+" failed, see above":""),long:true,t:Date.now()}});};
-  const flagN=T?T.rows.filter(r=>(T.flags[r.date]||[]).some(f=>f.lv!=="info")).length:0;
-  const approve=()=>{if(!T)return;d({type:"ADD",list:"payPeriods",d:{emp:e.id,empName:e.name,start:P.start,end:P.end,kind:P.kind,title:"Timesheet approval · "+e.name+" · "+Tsh.periodLabel(P),approvedAt:nowIso(),approvedBy:CURRENT_USER,hours:+fH(T.tot.min),reg:+fH(T.tot.reg),ot:+fH(T.tot.ot)},label:"✓ Approved: "+e.name+", "+Tsh.periodLabel(P)+". These days are locked now."});};
-  const putRows=(fn,act,label)=>d({type:"PUT",d:{timesheets:(s.timesheets||[]).map(fn).filter(Boolean)},act,label});
-  const putPay=(fn,act,label)=>d({type:"PUT",d:{tsPay:(s.tsPay||[]).map(fn)},act,label});
-  const wagePend=owner&&e&&P?(s.tsPay||[]).filter(p=>String(p.emp)===String(e.id)&&p.pending&&p.month+"-01"<=P.end&&Tsh.monthEnd(p.month)>=P.start):[];
-  const pf=e?tsPayFor(s,e):null;
-  const ws=T&&pf?[...new Set(T.rows.map(r=>{const p=pf(r.date);return p?p.wage+"|"+p.otRate+"|"+(p.team?1:0):"";}).filter(Boolean))]:[];
-  const one=ws.length===1?ws[0].split("|").map(Number):null;
-  const crew=P?emps.filter(x=>has.has(String(x.id))).map(x=>({x,t:tsPeriod(s,x,P)})).filter(o=>o.t.rows.length):[];
+  const approve=()=>{if(!T)return;d({type:"ADD",list:"payPeriods",d:{emp:e.id,empName:e.name,start:P.start,end:P.end,kind:P.kind,title:"Timesheet approved · "+e.name+" · "+Tsh.periodLabel(P),approvedAt:nowIso(),approvedBy:CURRENT_USER,hours:+fH(T.tot.min),reg:+fH(T.tot.reg),ot:+fH(T.tot.ot)},label:"✓ Approved "+Tsh.periodLabel(P)+". "+firstName(e.name)+" can't change those days now."});};
+  const flagN=T?Object.keys(T.flags).length:0;
+  const crew=P?emps.filter(x=>x.status==="active"||has.has(String(x.id))).map(x=>({x,t:tsPeriod(s,x,P)})).filter(o=>o.t.ds.length||o.x.status==="active"):[];
+  const todayList=emps.filter(x=>x.status==="active").map(x=>({x,r:(s.timesheets||[]).find(t=>String(t.emp)===String(x.id)&&t.date===today)}));
+  const openDay=x=>d({type:"MODAL",v:"ts-day",d:{emp:e.id,name:e.name,date:x}});
+  const ot=tsOtRate(s);
   return(<div>
     <div className="rc-ts-bar">
-      <select className="rc-fi rc-ts-sel" aria-label="Employee" value={emp} onChange={ev=>{setEmp(ev.target.value);setPer("");setOpen(null);}}>{emps.length===0&&<option value="">No team members yet</option>}{emps.map(x=>(<option key={x.id} value={String(x.id)}>{x.name}{has.has(String(x.id))?"":" · no timesheet yet"}</option>))}</select>
+      <select className="rc-fi rc-ts-sel" aria-label="Employee" value={emp} onChange={ev=>{setEmp(ev.target.value);setPer("");setOpen(null);}}>{emps.length===0&&<option value="">No team members yet</option>}{emps.map(x=>(<option key={x.id} value={String(x.id)}>{x.name}</option>))}</select>
       <select className="rc-fi rc-ts-sel" aria-label="Pay period" value={P?P.start:""} onChange={ev=>{setPer(ev.target.value);setOpen(null);}}>{periods.map(p=>(<option key={p.start} value={p.start}>{Tsh.periodLabel(p)}{e&&(s.payPeriods||[]).some(a=>String(a.emp)===String(e.id)&&a.start===p.start&&a.end===p.end)?" · approved":""}</option>))}</select>
-      <button className="rc-ba" onClick={sync} disabled={busy||!canSyncTimesheets} title={canSyncTimesheets?"Pull every connected sheet from Google now":"Needs the cloud setup (SETUP.md)"}>{busy?"Syncing…":"⟳ Sync now"}</button>
-      <button className="rc-bs" onClick={()=>d({type:"MODAL",v:"ts-import",d:{emp}})}>⬆ Upload CSV / Excel</button>
-      <button className="rc-bs" disabled={!T||!T.rows.length} onClick={()=>printTimesheet(s,e,P,owner)}>🖨 Print</button>
-      <button className="rc-bs" onClick={()=>d({type:"MODAL",v:"ts-settings"})}>⚙ Settings</button>
-      {isOwner&&<button className={"rc-fb"+(preview?" on":"")} aria-pressed={preview} onClick={()=>setPreview(!preview)} title="See what a staff login sees: hours, no dollar amounts">{preview?"Back to owner view":"Preview as staff"}</button>}
+      <button className="rc-bs" disabled={!T||!T.ds.length} onClick={()=>printTimesheet(s,e,P,owner)}>🖨 Print</button>
+      {canEdit&&<button className="rc-bs" onClick={()=>d({type:"MODAL",v:"ts-settings"})}>⚙ Settings</button>}
+      {canEdit&&e&&<button className="rc-bs" onClick={()=>setPreview({emp:e.id,name:e.name})} title="See exactly what this employee sees when they sign in">👁 See {firstName(e.name)}'s screen</button>}
+      {role==="owner"&&<button className={"rc-fb"+(preview==="staff"?" on":"")} aria-pressed={preview==="staff"} onClick={()=>setPreview(preview==="staff"?null:"staff")} title="See what an office staff login sees: hours, no dollar amounts">{preview==="staff"?"Back to owner view":"Preview as staff"}</button>}
     </div>
-    <div className="rc-ts-status">{canSyncTimesheets?(last?"Last synced: "+fmtWhen(last):"Not synced yet")+" · "+srcs.length+" sheet"+(srcs.length===1?"":"s")+" connected · syncs by itself every day at about 6 AM":"Google sync needs the cloud setup (SETUP.md). Meanwhile, upload a CSV or Excel export."}</div>
-    {errs.length>0&&<div className="rc-ts-err" role="alert">{errs.map(x=>(<div key={x.id}><b>{tsSrcName(s,x)}:</b> {x.lastError}</div>))}</div>}
-    {!owner&&<div className="rc-ts-note">{preview?"Previewing as staff: ":""}Hours only. Wages and pay show on the owner's login.</div>}
-    {!e?<Empty icon="🕒" title="No team members yet" sub="Add your team, then connect their timesheets" action={()=>d({type:"MODAL",v:"add-emp"})} label="+ Employee"/>:
-    !T||!T.rows.length?<Empty icon="🕒" title={"No timesheet for "+e.name+" in "+Tsh.periodLabel(P)} sub={srcs.some(x=>String(x.employeeId)===emp)?"Sync to pull it in from Google Sheets, or upload an export.":"Connect their Google Sheet in Settings, or upload an export."} action={()=>d(srcs.some(x=>String(x.employeeId)===emp)?{type:"MODAL",v:"ts-import",d:{emp}}:{type:"MODAL",v:"ts-settings"})} label={srcs.some(x=>String(x.employeeId)===emp)?"Upload an export":"Connect a sheet"}/>:
+    {!owner&&<div className="rc-ts-note">{preview==="staff"?"Previewing as staff: ":""}Hours only. Wages and pay show on the owner's login.</div>}
+    {todayList.length>0&&<div className="rc-card rc-ts-today"><div className="rc-ts-ph">Today · {Tsh.longDate(today)}</div><div className="rc-ts-tl">{todayList.map(({x,r})=>(<button key={x.id} className={"rc-ts-tc"+(Tsh.isFilled(r)?"":" none")} onClick={()=>{setEmp(String(x.id));setPer("");setOpen(null);}}><b>{x.name}</b><span>{r&&r.start?r.start+" to "+r.finish:r&&r.notes?r.notes:"Not filled in yet"}</span></button>))}</div></div>}
+    {!e?<Empty icon="🕒" title="No team members yet" sub="Add your team, then give each one a login" action={()=>d({type:"MODAL",v:"add-emp"})} label="+ Employee"/>:
     (<>
       <div className="rc-g4">
-        <Stat label="Hours" value={fH(T.tot.min)} sub={T.rows.filter(r=>T.calc.days[r.date].min>0).length+" days worked"}/>
+        <Stat label="Hours" value={fH(T.tot.min)} sub={T.worked+" day"+(T.worked===1?"":"s")+" worked"}/>
         <Stat label="Regular" value={fH(T.tot.reg)}/>
-        <Stat label="Overtime" value={fH(T.tot.ot)} sub={T.wk.some(w=>w.rule==="weekly")?"incl. the 44-hour weekly rule":"over 8 h a day"}/>
+        <Stat label="Overtime" value={fH(T.tot.ot)} sub={T.weeks.some(w=>w.rule==="weekly")?"incl. the 44-hour weekly rule":"over 8 h a day"}/>
         {owner?<Stat label="Gross pay" value={$$(T.pay.gross)} sub="before deductions"/>:<Stat label="Unallocated" value={T.unalloc.toFixed(2)} sub="paid, not on a job"/>}
       </div>
       <div className="rc-ts-appr">
-        {T.appr?(<><span className="rc-ts-ok">✓ Approved {fmtWhen(T.appr.approvedAt)}{T.appr.approvedBy?" by "+T.appr.approvedBy:""}. These days are locked.</span>{owner&&<button className="rc-bs" onClick={()=>d({type:"DELETE",list:"payPeriods",id:T.appr.id})}>Reopen</button>}</>)
-        :(<>{flagN>0&&<span className="rc-ts-cnt">⚠ {flagN} day{flagN===1?"":"s"} to check</span>}{owner?<button className="rc-ba" onClick={approve}>✓ Approve {Tsh.periodLabel(P)}</button>:<span className="rc-ts-note" style={{margin:0}}>Not approved yet. The owner approves pay periods.</span>}</>)}
+        {T.appr?(<><span className="rc-ts-ok">✓ Approved {fmtWhen(T.appr.approvedAt)}{T.appr.approvedBy?" by "+T.appr.approvedBy:""}. {firstName(e.name)} can't change these days now.</span>{canEdit&&<button className="rc-bs" onClick={()=>d({type:"DELETE",list:"payPeriods",id:T.appr.id})}>Reopen</button>}</>)
+        :(<>{T.missing.length>0&&<span className="rc-ts-cnt">{T.missing.length} weekday{T.missing.length===1?"":"s"} not filled in</span>}{flagN>0&&<span className="rc-ts-cnt">⚠ {flagN} to check</span>}{T.edited.length>0&&<span className="rc-ts-cnt info">{T.edited.length} filled in or changed after the day</span>}
+          {canEdit?(P.end<=today?<button className="rc-ba" onClick={approve}>✓ Approve {Tsh.periodLabel(P)}</button>:<span className="rc-ts-note" style={{margin:0}}>You can approve {Tsh.periodLabel(P)} once it ends on {Tsh.shortDate(P.end)}.</span>):<span className="rc-ts-note" style={{margin:0}}>Not approved yet. The owner approves pay periods.</span>}</>)}
       </div>
-      {T.pending.length>0&&<div className="rc-card rc-ts-pend">
-        <div className="rc-ts-ph">Changed after approval · {T.pending.length}</div>
-        <div className="rc-ts-note">The sheet changed after this period was approved. Nothing was overwritten: the approved numbers stay until {owner?"you choose":"the owner chooses"}.</div>
-        {T.pending.map(r=>(<div key={r.id} className="rc-ts-pr"><div><b>{Tsh.shortDate(r.date)} ({r.day})</b> <span>{tsDiff(r).join(" · ")}</span></div>{owner&&<BtnRow><button className="rc-bs" onClick={()=>putRows(x=>x.id===r.id?Tsh.keepApproved(x):x,"🔒 Kept the approved hours · "+e.name+" · "+Tsh.shortDate(r.date),"Kept the approved numbers")}>Keep approved</button><button className="rc-ba" onClick={()=>putRows(x=>x.id===r.id?Tsh.acceptPending(x,nowIso()):x,"✏ Timesheet change taken after approval · "+e.name+" · "+Tsh.shortDate(r.date),r.pending.removed?"Day removed":"Updated to the sheet's numbers")}>{r.pending.removed?"Remove the day":"Use the new numbers"}</button></BtnRow>}</div>))}
-      </div>}
-      {wagePend.length>0&&<div className="rc-card rc-ts-pend">
-        <div className="rc-ts-ph">Wage changed after approval</div>
-        {wagePend.map(p=>(<div key={p.id} className="rc-ts-pr"><div><b>{Tsh.monthLabel(p.month)}</b> <span>Wage {$$(p.wage)} → {$$(p.pending.wage)}{(+p.otRate||1.5)!==(+p.pending.otRate||1.5)?" · OT rate "+(p.otRate||1.5)+"× → "+p.pending.otRate+"×":""}</span></div><BtnRow><button className="rc-bs" onClick={()=>putPay(x=>x.id===p.id?(({pending,...rest})=>({...rest,keep:pending.sig}))(x):x,"🔒 Kept the approved wage · "+e.name+" · "+Tsh.monthLabel(p.month),"Kept the approved wage")}>Keep approved</button><button className="rc-ba" onClick={()=>putPay(x=>x.id===p.id?(({pending,keep,...rest})=>({...rest,wage:pending.wage,otRate:pending.otRate,at:nowIso()}))(x):x,"✏ New wage taken · "+e.name+" · "+Tsh.monthLabel(p.month),"Wage updated")}>Use the new wage</button></BtnRow></div>))}
-      </div>}
       <div className="rc-card"><table className="rc-tbl rc-ts-tbl"><thead><tr><th>Date</th><th>Day</th><th>Start</th><th>Finish</th><th className="n">Hours</th><th className="n">Regular</th><th className="n">OT</th><th className="n">On jobs</th><th>Notes</th><th></th></tr></thead><tbody>
-        {T.wk.map(w=>(<React.Fragment key={w.start}>
-          {w.rows.map(r=>{const c=T.calc.days[r.date],fl=T.flags[r.date]||[],lv=fl.some(f=>f.lv==="bad")?"bad":fl.some(f=>f.lv==="warn")?"warn":fl.length?"info":"",jh=T.jh[r.date]||0,lk=Tsh.lockedBy(s.payPeriods,e.id,r.date);
-            return(<React.Fragment key={r.date}><tr className={(c.min?"":"off")+(r.pending?" pend":"")}>
-              <td className="rc-tn">{Tsh.shortDate(r.date)}</td><td>{r.day}</td><td>{r.start}</td><td>{r.finish}</td>
-              <td className="n">{c.min?fH(c.min):"—"}</td><td className="n">{c.min?fH(c.regMin):""}</td><td className="n">{c.otMin?fH(c.otMin):""}</td><td className="n">{jh?jh.toFixed(2):""}</td>
-              <td className="nt"><TsNote s={s} d={d} txt={r.notes}/></td>
-              <td style={{whiteSpace:"nowrap"}}>{lv&&<button className={"rc-ts-flag "+lv} aria-expanded={open===r.date} title={fl.map(f=>f.msg).join(" ")} onClick={()=>setOpen(open===r.date?null:r.date)}>{lv==="info"?"ⓘ":"⚠"} {fl.length}</button>}{r.pending&&<span className="rc-ts-flag warn" title="Changed after approval">changed</span>}{lk&&!r.pending&&<span className="rc-ts-lock" title="In an approved pay period">🔒</span>}</td>
-            </tr>{open===r.date&&<tr className="why"><td colSpan={10}>{fl.map((f,k)=>(<div key={k} className={"rc-ts-whyl "+f.lv}>{f.msg}</div>))}</td></tr>}</React.Fragment>);})}
+        {T.weeks.map(w=>(<React.Fragment key={w.start}>
+          {w.days.map(x=>{const r=T.by.get(x),c=T.calc.days[x],fl=T.flags[x]||[],lv=fl.some(f=>f.lv==="bad")?"bad":fl.length?"warn":"",jh=T.jh[x]||0,lk=Tsh.lockedBy(s.payPeriods,e.id,x),acc=Tsh.dayAccess({date:x,today,locked:!!lk,role:canEdit?"owner":"staff"}),miss=!Tsh.isFilled(r)&&x<today&&Tsh.isWeekday(x),ed=Tsh.wasEdited(r);
+            return(<React.Fragment key={x}><tr className={(x>today?"fut":c&&c.min?"":"off")+(x===today?" today":"")} data-date={x}>
+              <td className="rc-tn">{Tsh.shortDate(x)}</td><td>{Tsh.dow(x)}</td><td>{r?r.start:""}</td><td>{r?r.finish:""}</td>
+              <td className="n">{c&&c.min?fH(c.min):x>today?"":miss?<span className="rc-ts-miss">not filled in</span>:"—"}</td><td className="n">{c&&c.min?fH(c.regMin):""}</td><td className="n">{c&&c.otMin?fH(c.otMin):""}</td><td className="n">{jh?jh.toFixed(2):""}</td>
+              <td className="nt">{r?<TsNote s={s} d={d} txt={r.notes}/>:null}</td>
+              <td style={{whiteSpace:"nowrap"}}>{lv&&<button className={"rc-ts-flag "+lv} aria-expanded={open===x} title={fl.map(f=>f.msg).join(" ")} onClick={()=>setOpen(open===x?null:x)}>⚠ {fl.length}</button>}{ed&&<button className="rc-ts-flag info" aria-expanded={open===x} title="Filled in or changed after the day" onClick={()=>setOpen(open===x?null:x)}>edited</button>}{lk&&<span className="rc-ts-lock" title="In an approved pay period">🔒</span>}{acc.can&&<button className="rc-bs rc-ts-ed" aria-label={"Edit "+Tsh.shortDate(x)} onClick={()=>openDay(x)}>✎</button>}</td>
+            </tr>{open===x&&<tr className="why"><td colSpan={10}>{fl.map((f,k)=>(<div key={k} className={"rc-ts-whyl "+f.lv}>{f.msg}</div>))}<TsHistory r={r}/></td></tr>}</React.Fragment>);})}
           <tr className="wk"><td colSpan={4}>Week of {Tsh.shortDate(w.start)} · {tsRule(w)}{w.outside.length?" · counts "+w.outside.length+" day"+(w.outside.length===1?"":"s")+" outside this period":""}<div className="rc-ts-dim">Over 8 a day: {fH(w.dailyMin)} · over 44 a week: {fH(w.weeklyMin)}</div></td><td className="n">{fH(w.min)}</td><td className="n">{fH(w.regMin)}</td><td className="n">{fH(w.otMin)}</td><td className="n">{w.job.toFixed(2)}</td><td colSpan={2}>Unallocated {w.unalloc.toFixed(2)} h</td></tr>
         </React.Fragment>))}
         <tr className="tot"><td colSpan={4}>Total · {Tsh.periodLabel(P)}</td><td className="n">{fH(T.tot.min)}</td><td className="n">{fH(T.tot.reg)}</td><td className="n">{fH(T.tot.ot)}</td><td className="n">{T.job.toFixed(2)}</td><td colSpan={2}>Unallocated {T.unalloc.toFixed(2)} h</td></tr>
       </tbody></table></div>
       {owner&&<div className="rc-ts-pay">
         <div><span className="rc-ml">Gross pay</span><b>{$$(T.pay.gross)}</b><span className="rc-ts-dim">before deductions (CPP, EI, tax)</span></div>
-        <div className="rc-ts-dim">Regular {fH(T.pay.regMin)} h{one?" × "+$$(one[0]):""} = {$$(T.pay.regPay)} · Overtime {fH(T.pay.otMin)} h{one?" × "+$$(one[0]*one[1])+" ("+one[1]+"×)":""} = {$$(T.pay.otPay)}{!one&&ws.length>1?" · each month at its own wage":""}</div>
-        {one&&one[2]===1&&<div className="rc-ts-dim">Wage from the Team pay rate (${e.rate}/hr) because the sheet's wage hasn't come in yet.</div>}
-        {T.pay.missing.length>0&&<div className="rc-ts-errl">No wage for {T.pay.missing.map(Tsh.monthLabel).join(", ")}, so those hours aren't in the total.</div>}
+        <div className="rc-ts-dim">Regular {fH(T.pay.regMin)} h × {$$(+e.rate||0)} = {$$(T.pay.regPay)} · Overtime {fH(T.pay.otMin)} h × {$$((+e.rate||0)*ot)} ({ot}×) = {$$(T.pay.otPay)}</div>
+        {!(+e.rate>0)&&<div className="rc-ts-errl">No pay rate for {e.name}. Add it on the Team tab.</div>}
       </div>}
       <div className="rc-ts-util">Paid {fH(T.tot.min)} h · on jobs {T.job.toFixed(2)} h · <b>unallocated {T.unalloc.toFixed(2)} h</b>{T.tot.min>0?" ("+Math.round(T.unalloc/(T.tot.min/60)*100)+"%)":""}. On jobs counts work-order time, diagnoses and ECM jobs logged under {e.nick||e.name}.{T.over.length>0&&<> More time on jobs than on the timesheet on {T.over.map(Tsh.shortDate).join(", ")}.</>}</div>
     </>)}
-    {crew.length>1&&<><SH title={"Everyone · "+Tsh.periodLabel(P)}/><Tbl headers={["Employee","Hours","Regular","OT",...(owner?["Gross pay"]:[]),"Unallocated","To check","Status"]}>{crew.map(({x,t})=>{const n=t.rows.filter(r=>(t.flags[r.date]||[]).some(f=>f.lv!=="info")).length;return(<tr key={x.id}><td className="rc-tn"><button className="rc-lnk" onClick={()=>{setEmp(String(x.id));setOpen(null);}}>{x.name}</button></td><td>{fH(t.tot.min)}</td><td>{fH(t.tot.reg)}</td><td>{fH(t.tot.ot)}</td>{owner&&<td>{$$(t.pay.gross)}</td>}<td>{t.unalloc.toFixed(2)}</td><td style={{color:n?"var(--w)":"var(--ft)"}}>{n||"—"}</td><td>{t.pending.length?<span style={{color:"var(--w)",fontWeight:600}}>Changed after approval</span>:t.appr?<span style={{color:"var(--g)",fontWeight:600}}>Approved</span>:<span style={{color:"var(--mt)"}}>Open</span>}</td></tr>);})}</Tbl></>}
+    {crew.length>1&&<><SH title={"Everyone · "+Tsh.periodLabel(P)}/><Tbl headers={["Employee","Hours","Regular","OT",...(owner?["Gross pay"]:[]),"Unallocated","Not filled in","Status"]}>{crew.map(({x,t})=>(<tr key={x.id}><td className="rc-tn"><button className="rc-lnk" onClick={()=>{setEmp(String(x.id));setOpen(null);}}>{x.name}</button></td><td>{fH(t.tot.min)}</td><td>{fH(t.tot.reg)}</td><td>{fH(t.tot.ot)}</td>{owner&&<td>{$$(t.pay.gross)}</td>}<td>{t.unalloc.toFixed(2)}</td><td style={{color:t.missing.length?"var(--w)":"var(--ft)"}}>{t.missing.length||"—"}</td><td>{t.appr?<span style={{color:"var(--g)",fontWeight:600}}>Approved</span>:<span style={{color:"var(--mt)"}}>Open</span>}</td></tr>))}</Tbl></>}
   </div>);
 }
 
+// The employee's own screen: this month, today first. Fill in today or fix an earlier day;
+// days that haven't happened yet stay closed; an approved pay period locks its days.
+function MyTimesheet({s,d,me,role="employee"}){
+  const today=Tsh.shopToday(),cur=today.slice(0,7);
+  const[ym,setYm]=useState(cur);
+  const rows=tsRowsOf(s,me.id),by=new Map(rows.map(r=>[r.date,r])),calc=Tsh.computeDays(rows);
+  const dates=Tsh.monthDays(ym),ds=dates.map(x=>calc.days[x]).filter(Boolean);
+  const tot={min:ds.reduce((a,x)=>a+x.min,0),reg:ds.reduce((a,x)=>a+x.regMin,0),ot:ds.reduce((a,x)=>a+x.otMin,0)};
+  const lockOf=x=>Tsh.lockedBy(s.payPeriods,me.id,x);
+  const acc=x=>Tsh.dayAccess({date:x,today,locked:!!lockOf(x),role});
+  const full=x=>{const r=by.get(x);tsSave(s,d,{emp:me.id,date:x,vals:{...Tsh.FULL_DAY,notes:r?r.notes||"":""},label:"Saved "+Tsh.shortDate(x)+": full day, 8.00 h"});};
+  const edit=x=>d({type:"MODAL",v:"ts-day",d:{emp:me.id,date:x}});
+  const tr=by.get(today),tc=calc.days[today],ta=acc(today),isFull=tr&&tr.start===Tsh.FULL_DAY.start&&tr.finish===Tsh.FULL_DAY.finish;
+  const weeks=[...new Set(dates.map(Tsh.weekStart))];
+  return(<div className="rc-my">
+    {ym===cur&&<div className="rc-card rc-my-today">
+      <div className="rc-my-th">Today</div><div className="rc-my-td">{Tsh.longDate(today)}</div>
+      <div className="rc-my-tv">{tr&&tr.start?<><b>{tr.start} to {tr.finish}</b> · {fH(tc.min)} h{tc.otMin?" · "+fH(tc.otMin)+" overtime":""}</>:tr&&tr.notes?<b>{tr.notes}</b>:<span>Not filled in yet</span>}</div>
+      {ta.can?<div className="rc-my-acts">{Tsh.isWeekday(today)&&!isFull&&<button className="rc-ba rc-my-full" onClick={()=>full(today)}>✓ Full day · 8:00 AM to 4:00 PM</button>}<button className="rc-bs" onClick={()=>edit(today)}>{Tsh.isFilled(tr)?"Change today":"Other times"}</button></div>:ta.why==="locked"?<div className="rc-ts-note">This pay period is approved, so today is locked.</div>:null}
+      {!Tsh.isWeekday(today)&&!Tsh.isFilled(tr)&&ta.can&&<div className="rc-ts-dim">It's the weekend. If you worked today, tap Other times.</div>}
+    </div>}
+    <div className="rc-my-month">
+      <button className="rc-bs" aria-label="Previous month" onClick={()=>setYm(Tsh.addMonths(ym,-1))}>‹</button>
+      <div><b>{Tsh.monthLabel(ym)}</b><span>{fH(tot.min)} h · {fH(tot.reg)} regular · {fH(tot.ot)} overtime</span></div>
+      <button className="rc-bs" aria-label="Next month" disabled={ym>=cur} onClick={()=>setYm(Tsh.addMonths(ym,1))}>›</button>
+    </div>
+    <div className="rc-card"><table className="rc-tbl rc-my-tbl"><thead><tr><th>Day</th><th>Times</th><th className="n">Hours</th><th></th></tr></thead><tbody>
+      {weeks.map(w=>{const W=calc.weeks[w];return(<React.Fragment key={w}>
+        {dates.filter(x=>Tsh.weekStart(x)===w).map(x=>{const r=by.get(x),c=calc.days[x],a=acc(x),lk=lockOf(x);return(<tr key={x} className={(x>today?"fut":"")+(x===today?" today":"")} data-date={x}>
+          <td className="d"><b>{Tsh.dow(x)}</b> {Tsh.shortDate(x)}</td>
+          <td>{r&&r.start?r.start+" to "+r.finish:x>today?"":<span className="rc-ts-dim">—</span>}{r&&r.notes?<div className="rc-my-note">{r.notes}</div>:null}</td>
+          <td className="n">{c&&c.min?fH(c.min):""}{c&&c.otMin?<div className="rc-my-ot">{fH(c.otMin)} OT</div>:null}</td>
+          <td className="act">{a.can?(<>{!Tsh.isFilled(r)&&Tsh.isWeekday(x)&&<button className="rc-bs rc-my-fd" onClick={()=>full(x)}>Full day</button>}<button className="rc-bs" onClick={()=>edit(x)}>{Tsh.isFilled(r)?"Edit":"Times"}</button></>):lk?<span className="rc-ts-lock" title="Approved: locked">🔒</span>:null}</td>
+        </tr>);})}
+        {W&&W.min>0&&<tr className="wk"><td colSpan={2}>Week of {Tsh.shortDate(w)}{W.rule==="weekly"?" · over 44 h":""}</td><td className="n">{fH(W.min)}{W.otMin?<div className="rc-my-ot">{fH(W.otMin)} OT</div>:null}</td><td/></tr>}
+      </React.Fragment>);})}
+    </tbody></table></div>
+    <div className="rc-ts-dim rc-my-foot">Fill in today, or fix an earlier day if something's wrong. Days that haven't happened yet stay closed, and once a pay period is approved its days are locked. Lunch is paid, so a full day is 8:00 AM to 4:00 PM. Overtime is time over 8 hours in a day or 44 in a week.</div>
+  </div>);
+}
+
+// What an employee login sees: their timesheet and nothing else. The owner gets the same
+// screen through "See …'s screen", with a way back.
+function EmployeeShell({s,d,me,email,preview,onExit,onSignOut,themePref,chooseTheme}){
+  return(<div className="rc-emp">
+    <header className="rc-emp-top">
+      <div className="rc-logo"><div className="rc-hi">RC</div><div><div className="rc-hn">Rollin Coal</div><div className="rc-hs">My timesheet</div></div></div>
+      <div className="rc-emp-who"><b>{me.name||email||""}</b>
+        <div className="rc-links">{preview?<button className="rc-fb on" onClick={onExit}>👁 {firstName(me.name)}'s screen · back to the dashboard</button>:<><button className="rc-link" onClick={()=>d({type:"MODAL",v:"my-password"})}>Password</button><button className="rc-link" onClick={onSignOut}>Sign out</button></>}</div>
+      </div>
+    </header>
+    <main className="rc-emp-main">
+      <MyTimesheet s={s} d={d} me={me}/>
+      <div className="rc-seg rc-emp-theme" role="group" aria-label="Colour theme">{THEMES.map(([k,ic,l])=>(<button key={k} className={themePref===k?"on":""} aria-pressed={themePref===k} onClick={()=>chooseTheme(k)}><span aria-hidden="true">{ic}</span>{l}</button>))}</div>
+    </main>
+  </div>);
+}
 
 // ═══════════════════════════════════════════════════════════════
 // REPORTS (enhanced with all new data)
@@ -1697,15 +1748,16 @@ function Reports({s,owner=true}){
 // ═══════════════════════════════════════════════════════════════
 // MODAL SYSTEM (all modals — add/edit/detail)
 // ═══════════════════════════════════════════════════════════════
-function Modals({s,d,owner=true,isOwner=owner,syncTs}){
+// who.role: "owner", "staff" or "employee" (an employee login, or the owner previewing one).
+function Modals({s,d,owner=true,who={role:"owner"}}){
   const sRef2=useRef(s);sRef2.current=s;
-  const[f,sf]=useState({});const[lines,setLines]=useState([{d:"",q:1,r:0}]);const[ptab,setPtab]=useState("overview");const lastEng=useRef(null);const[etab,setEtab]=useState("intake");const lastEcm=useRef(null);const[uploading,setUploading]=useState(false);const[tsInfo,setTsInfo]=useState(null);const[tsBusy,setTsBusy]=useState(false);
+  const logins=useLogins(owner);
+  const[f,sf]=useState({});const[lines,setLines]=useState([{d:"",q:1,r:0}]);const[ptab,setPtab]=useState("overview");const lastEng=useRef(null);const[etab,setEtab]=useState("intake");const lastEcm=useRef(null);const[uploading,setUploading]=useState(false);
   const set=(k,v)=>sf(p=>({...p,[k]:v}));
   useEffect(()=>{if(!s.modal){lastEng.current=null;lastEcm.current=null;}
     // Reset the form for the modal first; the per-modal prefills below merge on top of it.
     if(s.modal&&s.modal.startsWith("edit-")&&s.md){const item={...s.md};if(Array.isArray(item.vehicles))item.vehicles=item.vehicles.join(", ");if(Array.isArray(item.tags))item.tags=item.tags.join(", ");if(Array.isArray(item.specialties))item.specialties=item.specialties.join(", ");if(Array.isArray(item.certs))item.certs=item.certs.join(", ");if(Array.isArray(item.models))item.models=item.models.join(", ");Object.keys(item).forEach(k=>{if(k!=="id"&&typeof item[k]==="number")item[k]=String(item[k]);});sf(item);}else{const m=s.md||{};sf({...(m.cat?{cat:m.cat}:{}),...(m.status?{status:m.status}:{}),...(m.custId?{custId:String(m.custId)}:{}),...(m.engineId?{engineId:m.engineId,engineName:m.engineName}:{}),...(m.prefill||{})});}
-    if(s.modal==="ts-import"&&s.md&&s.md.emp)sf(pp=>({...pp,tsEmp:String(s.md.emp)}));
-    if(s.modal==="ts-settings"){if(canSyncTimesheets)timesheetInfo().then(r=>setTsInfo(r));const used=new Set((sRef2.current.timesheetSources||[]).map(x=>String(x.employeeId)));const fe=(sRef2.current.employees||[]).find(e=>e.status!=="on-leave"&&!used.has(String(e.id)));if(fe)sf(pp=>({...pp,tsEmp:String(fe.id)}));}
+    if(s.modal==="emp-login")sf(pp=>({...pp,lgPass:makePassword(),lgRole:"employee"}));
     if(s.modal==="bom-note"&&s.md){const e0=(sRef2.current.inventory||[]).find(x=>x.id===+s.md.engineId);const sh0=(sRef2.current.bomSheets||[]).find(x=>+x.engineId===+((e0&&e0.id)||0));const r0=((sh0&&sh0.rows)||{})[s.md.lineId]||{};sf(pp=>({...pp,bnMeas:r0.meas||"",bnPn:r0.pn||"",bnUrl:r0.url||""}));}if(s.modal==="edit-bom"&&s.md){const b0=s.md;sf(pp=>({...pp,bmLabel:b0.label||"",bmFamily:b0.family||"",bmModel:b0.model||"",bmMatch:(b0.match||[]).join(", "),bmRev:b0.rev||"",bmNote:b0.note||"",bmWatch:b0.watch||"",bmRule:b0.rule||""}));}if(s.modal==="add-bom"&&s.md&&s.md.cloneOf){const b1=(sRef2.current.boms||[]).find(x=>x.id===+s.md.cloneOf);if(b1)sf(pp=>({...pp,bmLabel:"",bmFamily:"",bmModel:"",bmMatch:"",bmRev:b1.rev||"1.0",bmNote:b1.note||""}));}if(s.modal==="add-bomline"&&s.md){const k0=s.md.kind||"decide";sf(pp=>({...pp,blSec:s.md.sec||"",blQty:k0==="order"?"1":"",blPart:"",blNote:"",blKind:k0,blMach:false}));}if(s.modal==="edit-bomline"&&s.md){const l0=s.md;sf(pp=>({...pp,blSec:l0.sec||"",blQty:l0.qty||"1",blPart:l0.part||"",blNote:l0.note||"",blKind:lineKind(l0),blMach:!!l0.mach}));}if(s.modal==="bom-sheet"&&s.md){const sh1=(sRef2.current.bomSheets||[]).find(x=>+x.engineId===+s.md.engineId);if(sh1)sf(pp=>({...pp,bsWo:sh1.wo||"",bsTech:sh1.tech||"",bsDate:sh1.date||"",bsDone:sh1.dateDone||"",bsCore:sh1.coreSource||"",bsNotes:sh1.notes||""}));}if(s.modal==="part-detail"){const eid=s.md&&s.md.id;if(s.md&&s.md.ptab)setPtab(s.md.ptab);else if(eid!==lastEng.current)setPtab("overview");lastEng.current=eid;}if(s.modal==="ecm-job"){const eid=s.md&&s.md.id;if(s.md&&s.md.etab)setEtab(s.md.etab);else if(eid!==lastEcm.current)setEtab("intake");lastEcm.current=eid;}setLines(s.md&&Array.isArray(s.md.prefillItems)&&s.md.prefillItems.length?s.md.prefillItems:[{d:"",q:1,r:0}]);},[s.modal]);
   if(!s.modal)return null;
   const W=(ch,cls)=>(<div className={"rc-ov"+(cls?" "+cls:"")} onClick={()=>d({type:"CLOSE"})}><div className="rc-mod" onClick={e=>e.stopPropagation()}>{(s.mstack||[]).length>0&&<button className="rc-fb" onClick={()=>d({type:"BACK"})} style={{marginBottom:10}}>← Back</button>}{ch}</div></div>);
@@ -2445,64 +2497,72 @@ function Modals({s,d,owner=true,isOwner=owner,syncTs}){
       <div className="rc-fa">{C}<button className="rc-bs" onClick={()=>copy(listingHtml(i),"HTML")}>Copy as HTML</button><button className="rc-ba" onClick={()=>copy(txt,"Listing")}>📋 Copy text</button></div></div>);}
   if(s.modal==="shop-log"){const acts=s.activity||[];const groups=[];let cur=null;acts.forEach(x=>{const day=(x.ts||"").slice(0,10);if(!cur||cur.day!==day){cur={day,items:[]};groups.push(cur);}cur.items.push(x);});return W(<div><div className="rc-mt">Shop Log</div><p style={{fontSize:12,color:"var(--mt)",marginBottom:12}}>Recorded automatically as the crew works — status moves, time logged, photos, invoices, adds and deletes, with who did it. Keeps the last 400 events.</p>{acts.length===0?(<div style={{fontSize:14,color:"var(--mt)",padding:"10px 0"}}>Nothing recorded yet. Move a card on the Reman Board or log time on a job and it'll show up here.</div>):groups.map(g=>(<div key={g.day} style={{marginBottom:12}}><div className="rc-fl" style={{marginBottom:4,color:"var(--ac)"}}>{g.day===isoToday()?"Today · "+g.day:g.day}</div>{g.items.map(x=>(<div key={x.id} className="rc-act"><span className="rc-act-t">{(x.ts||"").slice(11,16)}</span><span className="rc-act-u">{x.user}</span><span style={{flex:1,minWidth:0}}>{x.msg}</span></div>))}</div>))}<div className="rc-fa">{C}</div></div>);}
   if(s.modal==="set-goal"){const cur=(s.settings||[])[0];return W(<div><div className="rc-mt">Monthly Goal</div><div className="rc-fg"><label className="rc-fl">Revenue target ($ / month)</label><input className="rc-fi" type="number" placeholder={String((cur&&cur.monthlyGoal)||50000)} value={f.monthlyGoal||""} onChange={e=>set("monthlyGoal",e.target.value)}/></div><p style={{fontSize:12,color:"var(--mt)",marginBottom:10}}>Drives the goal bar on Overview. Beating a previous month's total triggers the Best Month banner.</p><div className="rc-fa">{X}<button className="rc-ba" onClick={()=>{const v=+f.monthlyGoal||0;if(!v)return;if(cur)d({type:"UPDATE",list:"settings",id:cur.id,d:{monthlyGoal:v}});else d({type:"ADD",list:"settings",d:{monthlyGoal:v},label:"Goal saved"});d({type:"CLOSE"});}}>Save</button></div></div>);}
-  // ── Timesheets: connected sheets, the service account to share with, the pay period ──
-  if(s.modal==="ts-settings"){const srcs=s.timesheetSources||[];const emps=s.employees||[];const st=tsSet(s);const sid=Tsh.extractSheetId(f.tsUrl||"");const dup=!!sid&&srcs.some(x=>x.sheetId===sid);const sa=(tsInfo&&tsInfo.saEmail)||"";
-    const saveSet=patch=>{const cur=(s.settings||[])[0];if(cur)d({type:"UPDATE",list:"settings",id:cur.id,d:patch});else d({type:"ADD",list:"settings",d:patch,keep:true,label:"Saved"});};
-    const syncOne=async x=>{if(tsBusy||!syncTs)return;setTsBusy(true);let r=null;try{r=await syncTs(x.id);}finally{setTsBusy(false);}const R=((r&&r.results)||[]).find(y=>String(y.id)===String(x.id));d({type:"TOAST",d:{msg:R?(R.ok?"✓ "+tsSrcName(s,x)+": "+(R.added||0)+" new, "+(R.updated||0)+" changed"+(R.flagged?", "+R.flagged+" changed after approval":""):"⚠ "+R.error):"⚠ "+((r&&r.error)||"Sync failed"),long:true,t:Date.now()}});};
+  // ── Timesheets: one day (the employee's own, or the owner fixing anyone's) ──
+  if(s.modal==="ts-day"&&s.md){const{emp,date,name}=s.md;const today=Tsh.shopToday();const prev=(s.timesheets||[]).find(r=>r.id===Tsh.entryId(emp,date));const lk=Tsh.lockedBy(s.payPeriods,emp,date);const role=(who&&who.role)||"staff";const acc=Tsh.dayAccess({date,today,locked:!!lk,role});
+    const val=(k,p)=>f[k]!==undefined?f[k]:p;
+    const st=val("tsS",prev?Tsh.toTimeInput(prev.start):""),fi=val("tsF",prev?Tsh.toTimeInput(prev.finish):""),no=val("tsN",prev?prev.notes||"":"");
+    const chk=Tsh.checkTimes(Tsh.fromTimeInput(st),Tsh.fromTimeInput(fi));const empty=!st&&!fi&&!String(no).trim();
+    // Clearing today's own entry just removes it (undo from the toast); clearing an earlier day saves it empty, so the owner still sees what it said.
+    const clear=()=>{if(!acc.can||!prev)return;if(date===today&&!Tsh.wasEdited(prev))d({type:"DELETE",list:"timesheets",id:prev.id});else tsSave(s,d,{emp,date,vals:{start:"",finish:"",notes:""},label:"Cleared "+Tsh.shortDate(date)+". The old times stay in the day's history."});d({type:"CLOSE"});};
+    const save=()=>{if(!acc.can||!chk.ok||empty)return;tsSave(s,d,{emp,date,vals:{start:Tsh.fromTimeInput(st),finish:Tsh.fromTimeInput(fi),notes:String(no).trim()},label:"Saved "+Tsh.shortDate(date)+(chk.min?": "+fH(chk.min)+" h":"")});d({type:"CLOSE"});};
     return W(<div>
-      <div className="rc-mt">Timesheet settings</div>
-      <div className="rc-fl">Share each timesheet with this address</div>
-      {canSyncTimesheets?(sa?<div className="rc-ts-sa"><code>{sa}</code><button className="rc-bs" onClick={()=>{try{navigator.clipboard.writeText(sa);d({type:"TOAST",d:{msg:"Copied",t:Date.now()}});}catch(e){}}}>Copy</button></div>:<div className="rc-ts-note">{tsInfo&&tsInfo.error?tsInfo.error:tsInfo&&tsInfo.configured===false?"Google access isn't set up yet: add the GOOGLE_SA_JSON secret (SETUP.md, step 5).":"Looking up the service account…"}</div>)
-        :<div className="rc-ts-note">Google sync needs the cloud setup (SETUP.md). Until then, upload CSV or Excel exports from Team → Timesheets.</div>}
-      <div className="rc-ts-note">In the Google Sheet: Share → paste the address → Viewer → untick "Notify people" → Share. Never use "Publish to the web"; the sheets hold wages.</div>
-      <div className="rc-fl" style={{marginTop:14}}>Connected timesheets · {srcs.length}</div>
-      {srcs.length===0?<div className="rc-ts-note">None yet. Add one below.</div>:srcs.map(x=>{const em=emps.find(y=>String(y.id)===String(x.employeeId));const off=x.sheetName&&em&&![em.name,em.nick].filter(Boolean).some(n=>String(n).trim().toLowerCase()===String(x.sheetName).trim().toLowerCase());return(<div key={x.id} className="rc-ts-src">
-        <div className="rc-ts-srch"><a className="rc-lnk" href={x.sheetUrl||"https://docs.google.com/spreadsheets/d/"+x.sheetId} target="_blank" rel="noreferrer">{tsSrcName(s,x)}</a>
-          <select className="rc-fi" aria-label="Whose timesheet" value={String(x.employeeId||"")} onChange={ev=>{const m=emps.find(y=>String(y.id)===ev.target.value);d({type:"UPDATE",list:"timesheetSources",id:x.id,d:{employeeId:m?m.id:null,empName:m?m.name:""}});}}><option value="">Pick a team member…</option>{emps.map(y=>(<option key={y.id} value={String(y.id)}>{y.name}</option>))}</select></div>
-        <div className="rc-ts-dim">{x.lastSynced?"Synced "+fmtWhen(x.lastSynced)+(x.days?" · "+x.days+" days":"")+((x.tabs||[]).length?" · "+x.tabs.join(", "):""):"Not synced yet"}{off?" · the sheet's Employee cell says "+x.sheetName:""}</div>
-        {x.lastError&&<div className="rc-ts-errl">{x.lastError}</div>}
-        {(x.warnings||[]).length>0&&<details className="rc-ts-wd"><summary>{x.warnings.length} note{x.warnings.length===1?"":"s"} from the last sync</summary>{x.warnings.map((w,k)=>(<div key={k}>{w}</div>))}</details>}
-        <BtnRow><button className="rc-bs" disabled={!canSyncTimesheets||tsBusy} onClick={()=>syncOne(x)}>{tsBusy?"Syncing…":"⟳ Sync this one"}</button><button className="rc-bs rc-bsr" onClick={()=>d({type:"DELETE",list:"timesheetSources",id:x.id})}>Remove</button></BtnRow>
-      </div>);})}
-      {srcs.length>0&&<div className="rc-ts-dim">Removing a sheet keeps the days already pulled in.</div>}
-      <div className="rc-fl" style={{marginTop:16}}>Add a timesheet</div>
-      <div className="rc-fg"><input className="rc-fi" aria-label="Google Sheets link" value={f.tsUrl||""} onChange={ev=>set("tsUrl",ev.target.value)} placeholder="Paste the Google Sheets link"/></div>
-      {f.tsUrl&&<div className={sid&&!dup?"rc-ts-dim":"rc-ts-errl"} style={{marginTop:-6,marginBottom:8}}>{sid?(dup?"That sheet is already connected.":"Sheet ID: "+sid):"That doesn't look like a Google Sheets link."}</div>}
-      {f.tsUrl&&sid&&Tsh.looksLikeExcelLink(f.tsUrl)&&<div className="rc-ts-errl" style={{marginTop:-4,marginBottom:8}}>This link is an Excel file (.xlsx). The sync reads Google Sheets only: open it, choose File, then Save as Google Sheets, and paste the new sheet's link here.</div>}
-      <div className="rc-fg"><label className="rc-fl">Whose timesheet</label><select className="rc-fi" value={f.tsEmp||""} onChange={ev=>set("tsEmp",ev.target.value)} style={{appearance:"none"}}><option value="">Pick a team member…</option>{emps.map(y=>(<option key={y.id} value={String(y.id)}>{y.name}</option>))}</select></div>
-      <div className="rc-fa" style={{justifyContent:"flex-start"}}><button className="rc-ba" disabled={!sid||dup||!f.tsEmp} onClick={()=>{const m=emps.find(y=>String(y.id)===f.tsEmp);if(!sid||dup||!m)return;d({type:"ADD",list:"timesheetSources",d:{sheetUrl:f.tsUrl.trim(),sheetId:sid,employeeId:m.id,empName:m.name,addedAt:nowIso()},keep:true,label:"Timesheet connected. Sync now to pull it in."});sf(pp=>({...pp,tsUrl:"",tsEmp:""}));}}>+ Connect</button></div>
-      <div className="rc-fl" style={{marginTop:16}}>Pay period</div>
-      <div className="rc-fg"><select className="rc-fi" aria-label="Pay period" value={st.kind} onChange={ev=>saveSet({payPeriod:ev.target.value})} style={{appearance:"none"}}><option value="monthly">Monthly (matches the month tabs)</option><option value="semimonthly">Twice a month (1st to 15th, 16th to month end)</option><option value="biweekly">Every two weeks</option></select></div>
-      {st.kind==="biweekly"&&<div className="rc-fg"><label className="rc-fl">First day of any pay period</label><input className="rc-fi" type="date" value={st.anchor||""} onChange={ev=>saveSet({payAnchor:ev.target.value})}/></div>}
-      <div className="rc-fa">{C}</div>
+      <div className="rc-mt">{Tsh.longDate(date)}</div>
+      {name&&role!=="employee"&&<div className="rc-ts-dim" style={{marginTop:-8,marginBottom:12}}>{name}</div>}
+      {!acc.can?<div className="rc-ts-note">{acc.why==="future"?"This day hasn't happened yet, so it can't be filled in.":acc.why==="locked"?"This pay period is approved, so the day is locked. Ask the owner if something's wrong.":"Only the owner and the employee can change hours."}</div>:(<>
+        {acc.why==="locked"&&<div className="rc-ts-lockwarn">This day is in an approved pay period. Your change is kept in the day's history.</div>}
+        {Tsh.isWeekday(date)&&<button className="rc-bs rc-ts-fullbtn" onClick={()=>sf(pp=>({...pp,tsS:"08:00",tsF:"16:00"}))}>Full day · 8:00 AM to 4:00 PM</button>}
+        <div className="rc-ts-times"><div className="rc-fg"><label className="rc-fl" htmlFor="ts-start">Start</label><input id="ts-start" className="rc-fi" type="time" step="300" value={st} onChange={ev=>set("tsS",ev.target.value)}/></div><div className="rc-fg"><label className="rc-fl" htmlFor="ts-finish">Finish</label><input id="ts-finish" className="rc-fi" type="time" step="300" value={fi} onChange={ev=>set("tsF",ev.target.value)}/></div></div>
+        <div className="rc-ts-live" aria-live="polite">{!chk.ok?<span className="rc-ts-errl">{chk.msg}</span>:chk.min?<b>{fH(chk.min)} h{chk.min>Tsh.DAY_MIN?" · "+fH(chk.min-Tsh.DAY_MIN)+" over 8":""}</b>:null}{chk.warn&&<div className="rc-ts-warnl">{chk.warn}</div>}</div>
+        <div className="rc-fg"><label className="rc-fl" htmlFor="ts-notes">Notes</label><input id="ts-notes" className="rc-fi" value={no} onChange={ev=>set("tsN",ev.target.value)} placeholder="Job or unit worked on, or sick / stat / vacation"/><div className="rc-ts-chips">{["Sick","Vacation","Stat holiday","Day off"].map(c=>(<button key={c} type="button" className="rc-fb" onClick={()=>set("tsN",c)}>{c}</button>))}</div></div>
+        <div className="rc-fa">{Tsh.isFilled(prev)&&<button className="rc-bs rc-bsr" onClick={clear}>Clear day</button>}{X}<button className="rc-ba" disabled={!chk.ok||empty} onClick={save}>Save</button></div>
+      </>)}
+      {role!=="employee"&&<TsHistory r={prev}/>}
+      {!acc.can&&<div className="rc-fa">{C}</div>}
     </div>);}
-  // ── Timesheets: a CSV / .xlsx export through the same reader as the Google sync ──
-  if(s.modal==="ts-import"){const emps=s.employees||[];const parsed=f.tsParsed||null;const chosen=parsed?(f.tsTab&&f.tsTab!=="all"?parsed.filter(x=>x.name===f.tsTab):parsed):[];
-    const pick=async ev=>{const file=ev.target.files&&ev.target.files[0];ev.target.value="";if(!file)return;sf(pp=>({...pp,tsErr:"",tsReading:true,tsParsed:null}));
-      try{const tabs=await readSheetFile(file);const yr=new Date().getFullYear();const res=tabs.filter(t=>!Tsh.SKIP_TAB.test(t.name)).map(t=>({name:t.name,p:Tsh.parseTab(t.grid,t.name,{year:yr})})).filter(x=>x.p.header&&x.p.rows.length);
-        if(!res.length)throw new Error("No timesheet in that file: there's no header row with a \"Date\" cell and days under it.");
-        const nm=(res.find(x=>x.p.employee)||{p:{}}).p.employee||"";const g=nm?emps.find(y=>[y.name,y.nick].filter(Boolean).some(n=>String(n).trim().toLowerCase()===nm.trim().toLowerCase())):null;
-        sf(pp=>({...pp,tsParsed:res,tsFile:file.name,tsTab:"all",tsEmp:g?String(g.id):pp.tsEmp||"",tsReading:false}));}
-      catch(err){sf(pp=>({...pp,tsErr:(err&&err.message)||String(err),tsReading:false}));}};
-    const go=()=>{const m=emps.find(y=>String(y.id)===f.tsEmp);if(!m||!chosen.length)return;let st={timesheets:s.timesheets||[],tsPay:s.tsPay||[],payPeriods:s.payPeriods||[]};const tot={added:0,updated:0,same:0,flagged:0};const at=nowIso();
-      chosen.forEach(x=>{const r=Tsh.applyImport(st,x.p,{emp:m.id,now:at,withPay:isOwner});st={...st,timesheets:r.timesheets,tsPay:r.tsPay};Object.keys(tot).forEach(k=>{tot[k]+=r.stats[k]||0;});});
-      const p0=Tsh.periodOf(chosen.map(x=>x.p.rows[0].date).sort().pop(),tsSet(s).kind,tsSet(s).anchor);const foc={tsFocus:{emp:m.id,start:p0.start,t:Date.now()}};
-      d({type:"PUT",d:isOwner?{timesheets:st.timesheets,tsPay:st.tsPay,...foc}:{timesheets:st.timesheets,...foc},act:"⬆ Timesheet uploaded · "+m.name+" · "+chosen.map(x=>x.name).join(", "),label:"Imported "+chosen.map(x=>x.name).join(", ")+": "+tot.added+" new, "+tot.updated+" changed"+(tot.flagged?", "+tot.flagged+" changed after approval (flagged, not overwritten)":"")+(tot.same?", "+tot.same+" unchanged":""),long:true,close:true});};
+  // ── Team: a login for a team member (owner, cloud) ──
+  if(s.modal==="emp-login"&&s.md){const e=s.md.emp;const L=loginFor(logins,e);const busy=!!f.lgBusy;
+    const run=async(fn,after)=>{if(busy)return;sf(pp=>({...pp,lgBusy:true,lgErr:"",lgMsg:null}));let r=null;try{r=await fn();}finally{sf(pp=>({...pp,lgBusy:false}));}if(!r||r.error){sf(pp=>({...pp,lgErr:(r&&r.error)||"Something went wrong."}));return;}await refreshLogins();if(after)after(r);};
+    const copy=t=>{try{navigator.clipboard.writeText(t);d({type:"TOAST",d:{msg:"Copied",t:Date.now()}});}catch(err){}};
+    const site=typeof window!=="undefined"?window.location.origin:"";
+    const card=(email,pw)=>(<div className="rc-ts-cred"><div><span>Website</span><b>{site}</b></div><div><span>Email</span><b>{email}</b></div><div><span>Password</span><b>{pw}</b></div><button className="rc-bs" onClick={()=>copy("Rollin Coal timesheet\n"+site+"\nEmail: "+email+"\nPassword: "+pw)}>Copy</button></div>);
+    if(!canManageLogins)return W(<div><div className="rc-mt">Login for {e.name}</div><p className="rc-ts-note">Logins need the cloud setup (SETUP.md). In this copy, use “See {firstName(e.name)}'s screen” under Team, Timesheets to try what an employee sees.</p><div className="rc-fa">{C}</div></div>);
     return W(<div>
-      <div className="rc-mt">Upload a timesheet export</div>
-      <p className="rc-ts-note">For a sheet that isn't shared with the service account yet. In Google Sheets use File → Download → Microsoft Excel (.xlsx) for every month at once, or Comma-separated values (.csv) for the tab you're on. It goes through the same reader as the Google sync.</p>
-      <div className="rc-fg"><label className="rc-fl" htmlFor="ts-file">File</label><input id="ts-file" className="rc-fi" type="file" accept=".csv,.xlsx,.xlsm,.tsv,.txt" onChange={pick}/></div>
-      {f.tsReading&&<div className="rc-ts-note">Reading…</div>}
-      {f.tsErr&&<div className="rc-ts-errl" role="alert">{f.tsErr}</div>}
-      {parsed&&<>
-        {parsed.length>1&&<div className="rc-fg"><label className="rc-fl">Tabs</label><select className="rc-fi" value={f.tsTab||"all"} onChange={ev=>set("tsTab",ev.target.value)} style={{appearance:"none"}}><option value="all">All {parsed.length} month tabs</option>{parsed.map(x=>(<option key={x.name} value={x.name}>{x.name}</option>))}</select></div>}
-        <div className="rc-fg"><label className="rc-fl">Whose timesheet</label><select className="rc-fi" value={f.tsEmp||""} onChange={ev=>set("tsEmp",ev.target.value)} style={{appearance:"none"}}><option value="">Pick a team member…</option>{emps.map(y=>(<option key={y.id} value={String(y.id)}>{y.name}</option>))}</select></div>
-        {chosen.map(x=>(<div key={x.name} className="rc-ts-prev"><b>{x.name}</b> · {x.p.rows.length} days · {x.p.rows.filter(r=>r.start||r.finish).length} with times{x.p.employee?" · the sheet says "+x.p.employee:""}{owner&&x.p.wage?" · wage "+$$(x.p.wage)+", OT "+x.p.otRate+"×":""}{x.p.oldTemplate?" · older template (unpaid break column)":""}{x.p.warnings.length>0&&<div className="rc-ts-dim">{x.p.warnings.join(" ")}</div>}</div>))}
-        {!isOwner&&<div className="rc-ts-note">Wages aren't saved from a staff login. The owner's sync or upload adds them.</div>}
-      </>}
-      <div className="rc-fa">{X}<button className="rc-ba" disabled={!parsed||!f.tsEmp||!chosen.length} onClick={go}>Import</button></div>
+      <div className="rc-mt">Login for {e.name}</div>
+      {f.lgMsg&&<div className="rc-ts-okbox"><b>{f.lgMsg.title}</b><p>Give these to {firstName(e.name)}. They can change the password after signing in.</p>{card(f.lgMsg.email,f.lgMsg.pw)}</div>}
+      {f.lgErr&&<div className="rc-ts-errl" role="alert">{f.lgErr}</div>}
+      {!L?(f.lgMsg?<div className="rc-fa">{C}</div>:<>
+        <p className="rc-ts-note">With a login, {firstName(e.name)} signs in on a phone or computer and fills in their own hours. They won't see anything else in the dashboard.</p>
+        <div className="rc-fg"><label className="rc-fl" htmlFor="lg-email">Email</label><input id="lg-email" className="rc-fi" type="email" autoComplete="off" value={f.lgEmail||""} onChange={ev=>set("lgEmail",ev.target.value)} placeholder="name@example.com"/></div>
+        <div className="rc-fg"><label className="rc-fl" htmlFor="lg-pass">Temporary password</label><div style={{display:"flex",gap:8}}><input id="lg-pass" className="rc-fi" autoComplete="off" value={f.lgPass||""} onChange={ev=>set("lgPass",ev.target.value)}/><button className="rc-bs" onClick={()=>set("lgPass",makePassword())}>New</button></div></div>
+        <div className="rc-fg"><span className="rc-fl">Access</span><div className="rc-ts-radio"><label><input type="radio" name="lg-role" checked={(f.lgRole||"employee")==="employee"} onChange={()=>set("lgRole","employee")}/> Employee: their own timesheet only</label><label><input type="radio" name="lg-role" checked={f.lgRole==="staff"} onChange={()=>set("lgRole","staff")}/> Office staff: the whole dashboard, no wages</label></div></div>
+        <div className="rc-fa">{X}<button className="rc-ba" disabled={busy||!f.lgEmail||String(f.lgPass||"").length<8} onClick={()=>run(()=>createLogin({employeeId:e.id,email:f.lgEmail,password:f.lgPass,role:f.lgRole||"employee"}),r=>sf(pp=>({...pp,lgMsg:{title:"Login created",email:r.login.email,pw:pp.lgPass}})))}>{busy?"Creating…":"Create login"}</button></div>
+      </>):(<>
+        <div className="rc-ts-login"><div><span className="rc-fl">Email</span><b>{L.email}</b></div><div><span className="rc-fl">Access</span><b>{L.role==="employee"?"Employee: own timesheet only":"Office staff: the whole dashboard"}</b></div><div><span className="rc-fl">Last signed in</span><b>{L.lastSignIn?fmtWhen(L.lastSignIn):"Never"}</b></div></div>
+        <div className="rc-fa" style={{justifyContent:"flex-start",flexWrap:"wrap"}}>
+          <button className="rc-bs" disabled={busy} onClick={()=>{const pw=makePassword();run(()=>setLoginPassword(L.id,pw),()=>sf(pp=>({...pp,lgMsg:{title:"New password set",email:L.email,pw}})));}}>New password</button>
+          <button className="rc-bs" disabled={busy} onClick={()=>run(()=>setLoginAccess(L.id,L.role==="employee"?"staff":"employee",e.id))}>{L.role==="employee"?"Make it office staff":"Make it timesheet only"}</button>
+          <button className="rc-bs rc-bsr" disabled={busy} onClick={()=>{if(!f.lgSure){set("lgSure",true);return;}run(()=>removeLogin(L.id),()=>sf(pp=>({...pp,lgSure:false})));}}>{f.lgSure?"Tap again to remove":"Remove login"}</button>
+        </div>
+        <div className="rc-fa">{C}</div>
+      </>)}
     </div>);}
-  if(s.modal==="confirm-reset")return W(<div><div className="rc-mt">Reset All Data?</div><p style={{fontSize:14,color:"var(--tx2)",marginBottom:10,lineHeight:1.6}}>This permanently deletes <strong>everything</strong> — engines, customers, invoices, wins, the lot. Download a backup first.</p><button className="rc-bs" style={{marginBottom:12}} onClick={()=>exportBackup(s,isOwner)}>⬇ Download backup (JSON)</button><div className="rc-fg"><label className="rc-fl">Type RESET to confirm</label><input className="rc-fi" value={f.resetConfirm||""} onChange={e=>set("resetConfirm",e.target.value)} placeholder="RESET"/></div><div className="rc-fa">{C}<button className="rc-ba" disabled={(f.resetConfirm||"")!=="RESET"} style={{background:(f.resetConfirm||"")==="RESET"?"var(--r)":"var(--rs)",borderColor:"var(--r)",opacity:(f.resetConfirm||"")==="RESET"?1:.5,cursor:(f.resetConfirm||"")==="RESET"?"pointer":"not-allowed"}} onClick={async()=>{if((f.resetConfirm||"")!=="RESET")return;await clearAll(isOwner);d({type:"RESET"});d({type:"CLOSE"});}}>Reset</button></div></div>);
+  // ── Timesheets: pay period and overtime rate (owner) ──
+  if(s.modal==="ts-settings"){const st=tsSet(s);const ot=tsOtRate(s);const saveSet=patch=>{const cur=(s.settings||[])[0];if(cur)d({type:"UPDATE",list:"settings",id:cur.id,d:patch});else d({type:"ADD",list:"settings",d:patch,keep:true,label:"Saved"});};
+    return W(<div><div className="rc-mt">Timesheet settings</div>
+      <div className="rc-fg"><label className="rc-fl" htmlFor="ts-kind">Pay period</label><select id="ts-kind" className="rc-fi" value={st.kind} onChange={ev=>saveSet({payPeriod:ev.target.value})} style={{appearance:"none"}}><option value="monthly">Monthly</option><option value="semimonthly">Twice a month (1st to 15th, 16th to month end)</option><option value="biweekly">Every two weeks</option></select></div>
+      {st.kind==="biweekly"&&<div className="rc-fg"><label className="rc-fl" htmlFor="ts-anchor">First day of any pay period</label><input id="ts-anchor" className="rc-fi" type="date" value={st.anchor||""} onChange={ev=>saveSet({payAnchor:ev.target.value})}/></div>}
+      <div className="rc-fg"><label className="rc-fl" htmlFor="ts-ot">Overtime pay</label><select id="ts-ot" className="rc-fi" value={String(ot)} onChange={ev=>saveSet({otRate:+ev.target.value})} style={{appearance:"none"}}><option value="1.5">1.5 × the pay rate (Alberta's minimum)</option><option value="2">2 × the pay rate</option></select></div>
+      <p className="rc-ts-note">A full day is 8:00 AM to 4:00 PM, Monday to Friday, with lunch paid. Pay rates are each person's Rate on the Team tab.</p>
+      <div className="rc-fa">{C}</div></div>);}
+  // ── Any signed-in login: a new password ──
+  if(s.modal==="my-password"){const ok=String(f.pw1||"").length>=8&&f.pw1===f.pw2;
+    return W(<div><div className="rc-mt">Change your password</div>
+      <div className="rc-fg"><label className="rc-fl" htmlFor="pw1">New password</label><input id="pw1" className="rc-fi" type="password" autoComplete="new-password" value={f.pw1||""} onChange={ev=>set("pw1",ev.target.value)}/></div>
+      <div className="rc-fg"><label className="rc-fl" htmlFor="pw2">Type it again</label><input id="pw2" className="rc-fi" type="password" autoComplete="new-password" value={f.pw2||""} onChange={ev=>set("pw2",ev.target.value)}/></div>
+      <div className="rc-ts-dim">At least 8 characters.{f.pw2&&f.pw1!==f.pw2?" The two don't match yet.":""}</div>
+      {f.pwErr&&<div className="rc-ts-errl" role="alert">{f.pwErr}</div>}
+      <div className="rc-fa">{X}<button className="rc-ba" disabled={!ok||f.pwBusy} onClick={async()=>{set("pwBusy",true);const err=await changePassword(f.pw1);set("pwBusy",false);if(err){set("pwErr",err);return;}d({type:"CLOSE"});d({type:"TOAST",d:{msg:"Password changed",t:Date.now()}});}}>Save</button></div></div>);}
+  if(s.modal==="confirm-reset")return W(<div><div className="rc-mt">Reset All Data?</div><p style={{fontSize:14,color:"var(--tx2)",marginBottom:10,lineHeight:1.6}}>This permanently deletes <strong>everything</strong> — engines, customers, invoices, wins, the lot. Download a backup first.</p><button className="rc-bs" style={{marginBottom:12}} onClick={()=>exportBackup(s)}>⬇ Download backup (JSON)</button><div className="rc-fg"><label className="rc-fl">Type RESET to confirm</label><input className="rc-fi" value={f.resetConfirm||""} onChange={e=>set("resetConfirm",e.target.value)} placeholder="RESET"/></div><div className="rc-fa">{C}<button className="rc-ba" disabled={(f.resetConfirm||"")!=="RESET"} style={{background:(f.resetConfirm||"")==="RESET"?"var(--r)":"var(--rs)",borderColor:"var(--r)",opacity:(f.resetConfirm||"")==="RESET"?1:.5,cursor:(f.resetConfirm||"")==="RESET"?"pointer":"not-allowed"}} onClick={async()=>{if((f.resetConfirm||"")!=="RESET")return;await clearAll();d({type:"RESET"});d({type:"CLOSE"});}}>Reset</button></div></div>);
   return null;
 }
 
@@ -2644,55 +2704,111 @@ const CSS=`@import url('${FONTS}');
 .rc-s3-pass{display:block;font-size:13px;font-weight:500;color:var(--act);margin:0 0 8px;}
 .rc-ts-seg{max-width:300px;margin:0 0 16px;}
 .rc-ts-seg button{padding:8px 0;font-size:13.5px;}
-.rc-ts-bar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:0 0 8px;}
+.rc-ts-bar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:0 0 12px;}
 .rc-ts-sel{width:auto;min-width:170px;flex:0 1 240px;appearance:none;}
-.rc-ts-status{font-size:13px;color:var(--mt);margin:0 0 12px;line-height:1.5;}
-.rc-ts-err{font-size:13.5px;color:var(--r);background:var(--rs);border-radius:10px;padding:10px 12px;margin:0 0 14px;line-height:1.5;display:grid;gap:4px;}
 .rc-ts-errl{font-size:13px;color:var(--r);margin:4px 0;line-height:1.45;}
+.rc-ts-warnl{font-size:13px;color:var(--w);margin-top:4px;line-height:1.45;}
 .rc-ts-note{font-size:13px;color:var(--mt);line-height:1.5;margin:4px 0 10px;}
 .rc-ts-dim{font-size:12.5px;color:var(--mt);line-height:1.5;}
+.rc-ts-ph{font:700 15px/1.2 var(--fd);letter-spacing:.06em;text-transform:uppercase;color:var(--tx2);margin-bottom:8px;}
+.rc-ts-today{padding:12px 14px;}
+.rc-ts-tl{display:flex;flex-wrap:wrap;gap:8px;}
+.rc-ts-tc{display:grid;gap:2px;text-align:left;border:1px solid var(--ln);background:var(--sf);border-radius:10px;padding:8px 11px;cursor:pointer;font-family:var(--fb);color:var(--tx);min-width:150px;}
+.rc-ts-tc b{font-size:13.5px;}
+.rc-ts-tc span{font-size:12.5px;color:var(--g);}
+.rc-ts-tc.none span{color:var(--w);}
+.rc-ts-tc:hover{border-color:var(--ac);}
 .rc-ts-appr{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:0 0 14px;}
 .rc-ts-ok{font-size:14px;font-weight:600;color:var(--g);}
 .rc-ts-cnt{font-size:13.5px;font-weight:600;color:var(--w);}
+.rc-ts-cnt.info{color:var(--b);}
 .rc-ts-tbl th,.rc-ts-tbl td{padding:8px 10px;white-space:nowrap;}
 .rc-ts-tbl td.nt,.rc-ts-tbl tr.wk td,.rc-ts-tbl tr.why td,.rc-ts-tbl tr.tot td{white-space:normal;}
-.rc-ts-tbl th.n,.rc-ts-tbl td.n{text-align:right;white-space:nowrap;}
+.rc-ts-tbl th.n,.rc-ts-tbl td.n{text-align:right;}
 .rc-ts-tbl td.nt{max-width:260px;color:var(--tx2);font-size:13px;}
 .rc-ts-tbl tr.off td{color:var(--mt);}
-.rc-ts-tbl tr.pend td{background:var(--ws);}
+.rc-ts-tbl tr.fut td{color:var(--ft);}
+.rc-ts-tbl tr.today td{background:var(--acs);}
 .rc-ts-tbl tr.wk td{background:var(--sf2);font-size:12.5px;color:var(--tx2);border-bottom:1px solid var(--ln);}
 .rc-ts-tbl tr.wk td.n{font-weight:700;color:var(--tx);font-size:13.5px;}
 .rc-ts-tbl tr.tot td{font-weight:800;border-top:2px solid var(--ln);font-size:14px;}
 .rc-ts-tbl tr.why td{background:var(--sf2);padding:6px 12px 10px;}
+.rc-ts-miss{font-size:12px;font-weight:600;color:var(--w);}
 .rc-ts-flag{display:inline-flex;align-items:center;gap:4px;border-radius:999px;padding:2px 8px;margin-right:4px;font:700 12px/1.5 var(--fb);border:0;white-space:nowrap;cursor:pointer;}
 .rc-ts-flag.bad{color:var(--r);background:var(--rs);}
 .rc-ts-flag.warn{color:var(--w);background:var(--ws);}
 .rc-ts-flag.info{color:var(--b);background:var(--bs);}
-.rc-ts-lock{font-size:13px;opacity:.75;}
+.rc-ts-lock{font-size:13px;opacity:.75;margin-right:4px;}
+.rc-ts-ed{padding:3px 9px;font-size:14px;}
 .rc-ts-whyl{font-size:13px;line-height:1.5;padding:2px 0 2px 10px;border-left:3px solid var(--ln);margin:3px 0;color:var(--tx2);}
-.rc-ts-whyl.bad{border-color:var(--r);}.rc-ts-whyl.warn{border-color:var(--w);}.rc-ts-whyl.info{border-color:var(--b);}
+.rc-ts-whyl.bad{border-color:var(--r);}.rc-ts-whyl.warn{border-color:var(--w);}
+.rc-ts-hist{display:grid;gap:4px;margin:8px 0 2px;font-size:13px;}
+.rc-ts-hist>div:not(.rc-fl){display:flex;flex-wrap:wrap;gap:4px 10px;color:var(--tx2);}
+.rc-ts-hist span{color:var(--mt);min-width:150px;}
+.rc-ts-hist .now b{color:var(--tx);}
 .rc-ts-ln{font-size:13px;font-weight:600;color:var(--act);}
 .rc-ts-pay{border:1px solid var(--ln);border-radius:12px;background:var(--sf);box-shadow:var(--sh1);padding:14px 16px;margin:0 0 14px;display:grid;gap:6px;}
 .rc-ts-pay>div:first-child{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;}
 .rc-ts-pay b{font:800 26px/1 var(--fd);letter-spacing:.02em;color:var(--tx);}
 .rc-ts-util{font-size:13.5px;color:var(--tx2);margin:0 0 20px;line-height:1.55;}
-.rc-ts-pend{padding:14px 16px;border-color:var(--w);}
-.rc-ts-ph{font:700 15px/1.2 var(--fd);letter-spacing:.06em;text-transform:uppercase;color:var(--w);margin-bottom:4px;}
-.rc-ts-pr{display:flex;flex-wrap:wrap;justify-content:space-between;gap:8px;align-items:center;border-top:1px solid var(--ln2);padding:9px 0;}
-.rc-ts-pr span{font-size:13px;color:var(--tx2);}
-.rc-ts-sa{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:4px 0;}
-.rc-ts-sa code{font-size:13px;background:var(--sf2);border:1px solid var(--ln);border-radius:8px;padding:6px 9px;word-break:break-all;color:var(--tx);}
-.rc-ts-src{border-top:1px solid var(--ln2);padding:10px 0;display:grid;gap:6px;}
-.rc-ts-srch{display:flex;gap:8px;align-items:center;flex-wrap:wrap;justify-content:space-between;}
-.rc-ts-srch select{width:auto;min-width:170px;appearance:none;}
-.rc-ts-wd{font-size:12.5px;color:var(--w);}
-.rc-ts-wd summary{cursor:pointer;}
-.rc-ts-wd div{color:var(--tx2);padding:2px 0 2px 12px;}
-.rc-ts-prev{font-size:13.5px;line-height:1.5;border:1px solid var(--ln);border-radius:10px;padding:9px 11px;margin:0 0 8px;}
-.rc-ts-prevbar{margin-left:auto;white-space:nowrap;}
 .rc-ts-meter{height:8px;border-radius:9px;background:var(--sf2);overflow:hidden;}
 .rc-ts-meter span{display:block;height:100%;background:var(--w);border-radius:9px;}
-@media(max-width:700px){.rc-ts-sel{flex:1 1 100%;}.rc-ts-tbl td.nt{max-width:none;}.rc-ts-prevbar{margin-left:0;}}
+.rc-ts-prevbar{margin-left:auto;white-space:nowrap;}
+.rc-ts-lockwarn{font-size:13px;color:var(--w);background:var(--ws);border-radius:9px;padding:8px 10px;margin:0 0 12px;line-height:1.45;}
+.rc-ts-fullbtn{width:100%;padding:11px;font-size:14.5px;font-weight:600;margin:0 0 12px;}
+.rc-ts-times{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
+.rc-ts-times .rc-fi{font-size:16px;}
+.rc-ts-live{min-height:22px;margin:-4px 0 12px;font-size:14px;}
+.rc-ts-chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px;}
+.rc-ts-radio{display:grid;gap:8px;font-size:14px;color:var(--tx2);}
+.rc-ts-radio label{display:flex;gap:8px;align-items:center;cursor:pointer;}
+.rc-ts-okbox{border:1px solid var(--g);background:var(--gs);border-radius:10px;padding:12px 14px;margin:0 0 14px;}
+.rc-ts-okbox b{color:var(--g);font-size:14.5px;}
+.rc-ts-okbox p{font-size:13.5px;color:var(--tx2);margin:4px 0 10px;}
+.rc-ts-cred{display:grid;gap:6px;background:var(--sf);border:1px solid var(--ln);border-radius:9px;padding:10px 12px;}
+.rc-ts-cred div{display:flex;gap:10px;font-size:14px;flex-wrap:wrap;}
+.rc-ts-cred span{color:var(--mt);min-width:72px;}
+.rc-ts-cred b{font-family:ui-monospace,Menlo,Consolas,monospace;word-break:break-all;}
+.rc-ts-cred .rc-bs{justify-self:start;margin-top:4px;}
+.rc-ts-login{display:grid;gap:10px;margin:0 0 14px;}
+.rc-ts-login div{display:grid;gap:2px;}
+.rc-ts-login b{font-size:14.5px;word-break:break-all;}
+.rc-emp{min-height:100vh;background:var(--bg);color:var(--tx);font-family:var(--fb);}
+.rc-emp-top{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;padding:14px 20px;background:var(--sf);border-bottom:1px solid var(--ln);}
+.rc-emp-top .rc-logo{padding:0;border:0;margin:0;}
+.rc-emp-who{display:grid;justify-items:end;gap:4px;font-size:14px;}
+.rc-emp-who .rc-links{display:flex;gap:12px;align-items:center;}
+.rc-emp-main{max-width:760px;margin:0 auto;padding:18px 16px 40px;}
+.rc-emp-theme{max-width:300px;margin:22px auto 0;}
+.rc-my-today{padding:16px 18px;margin-bottom:16px;}
+.rc-my-th{font:700 13px/1 var(--fd);letter-spacing:.14em;text-transform:uppercase;color:var(--act);}
+.rc-my-td{font:800 26px/1.15 var(--fd);color:var(--tx);margin:4px 0 6px;}
+.rc-my-tv{font-size:15px;color:var(--tx2);margin-bottom:12px;}
+.rc-my-tv span{color:var(--w);font-weight:600;}
+.rc-my-acts{display:flex;flex-wrap:wrap;gap:8px;}
+.rc-my-full{padding:12px 16px;font-size:15px;}
+.rc-my-month{display:flex;align-items:center;gap:10px;margin:0 0 10px;}
+.rc-my-month>div{flex:1;display:grid;text-align:center;}
+.rc-my-month b{font:700 19px/1.2 var(--fd);letter-spacing:.04em;text-transform:uppercase;}
+.rc-my-month span{font-size:13px;color:var(--mt);}
+.rc-my-month .rc-bs{font-size:18px;padding:6px 14px;}
+.rc-tbl.rc-my-tbl{min-width:0;}
+.rc-my-tbl td,.rc-my-tbl th{padding:9px 10px;}
+.rc-my-tbl td.d{white-space:nowrap;}
+.rc-my-tbl td.d b{display:inline-block;width:34px;}
+.rc-my-tbl th.n,.rc-my-tbl td.n{text-align:right;white-space:nowrap;}
+.rc-my-tbl td.act{text-align:right;white-space:nowrap;}
+.rc-my-tbl td.act .rc-bs{padding:5px 10px;font-size:13px;margin-left:4px;}
+.rc-my-tbl tr.fut td{color:var(--ft);}
+.rc-my-tbl tr.today td{background:var(--acs);}
+.rc-my-tbl tr.wk td{background:var(--sf2);font-size:12.5px;color:var(--tx2);}
+.rc-my-tbl tr.wk td.n{font-weight:700;color:var(--tx);}
+.rc-my-note{font-size:12.5px;color:var(--mt);white-space:normal;}
+.rc-my-ot{font-size:12px;font-weight:600;color:var(--w);}
+.rc-my-fd{border-color:var(--ac);color:var(--act);}
+.rc-my-foot{margin-top:12px;}
+@media(max-width:700px){.rc-ts-sel{flex:1 1 100%;}.rc-ts-tbl td.nt{max-width:none;}.rc-ts-prevbar{margin-left:0;}.rc-emp-top{padding:12px 16px;}.rc-emp-who{justify-items:start;}}
+@media(max-width:600px){.rc-my-tbl td,.rc-my-tbl th{padding:8px 6px;}.rc-my-tbl td.d b{display:block;width:auto;}.rc-my-tbl td.act .rc-bs{display:block;width:100%;margin:0 0 4px;padding:6px 10px;}.rc-my-tbl td.act .rc-bs:last-child{margin-bottom:0;}}
 @media print{.rc-ts-bar,.rc-ts-seg,.rc-ts-prevbar{display:none!important;}}
 @media(max-width:1100px){.rc-s3-wrap{grid-template-columns:minmax(0,1fr);}.rc-s3-side{max-height:none;}}
 @media(max-width:700px){.rc-s3-stage{height:68vh;height:68dvh;min-height:400px;}.rc-seg.rc-s3-seg{min-width:0;flex:1 1 100%;}.rc-s3-hint{white-space:normal;text-align:center;width:calc(100% - 24px);}}
@@ -2910,10 +3026,14 @@ export default function App(){
   const chooseTheme=k=>{setThemePref(k);setPref("rc:theme",k);};
   const[session,setSession]=useState(null);const[authReady,setAuthReady]=useState(!usingCloud);
   const authed=!usingCloud||!!session;
-  // The owner login (app_metadata.role "owner", set by an admin: SETUP.md) is the only one that loads and shows wages
-  // (rc:owner:* keys, migration 0011). Local mode has no logins, so it's the owner. "Preview as staff" shows the owner what staff see.
-  const isOwner=!usingCloud||!!(session&&session.user&&session.user.app_metadata&&session.user.app_metadata.role==="owner");
-  const[preview,setPreview]=useState(false);const ownerView=isOwner&&!preview;
+  // Who's signed in: the owner (everything), an employee (their own timesheet only; migration 0011 holds the
+  // rule) or office staff (any other login: the whole dashboard, no wages). Local mode has no logins: the owner.
+  const meta=(session&&session.user&&session.user.app_metadata)||{};
+  const role=!usingCloud?"owner":meta.role==="owner"?"owner":meta.role==="employee"?"employee":"staff";
+  const isOwner=role==="owner",isEmployee=role==="employee";const empId=isEmployee&&meta.employeeId!=null&&meta.employeeId!==""?meta.employeeId:null;
+  // The owner can look through other eyes: "staff" (Preview as staff) or {emp, name} (See …'s screen).
+  const[preview,setPreview]=useState(null);const ownerView=isOwner&&!preview;
+  useEffect(()=>{setPreview(null);},[role]);
   // Auth bootstrap (cloud only): read any existing session, then subscribe to login/logout.
   useEffect(()=>{if(!usingCloud)return;let sub;(async()=>{try{setSession(await getSession());}catch(e){}setAuthReady(true);sub=onAuthChange(ns=>setSession(ns));})();return()=>{try{if(sub)sub.unsubscribe();}catch(e){}};},[]);
   // Attribute activity-log entries to the signed-in user
@@ -2921,26 +3041,32 @@ export default function App(){
   // SOLD splash: air horn (unless muted) + auto-dismiss
   useEffect(()=>{if(!s.soldSplash)return;if(getSet(s).soundOn!==false)horn();const t=setTimeout(()=>d({type:"SPLASH",d:null}),6500);return()=>clearTimeout(t);},[s.soldSplash]);
   // Load data once authenticated (immediately in localStorage mode). Never loads/saves while logged out.
-  useEffect(()=>{if(!authed){setLoading(false);return;}let off=false;setLoading(true);setLoadErr(false);(async()=>{try{const data=await loadAll(isOwner);if(off)return;if(data.__loadError){setLoadErr(true);setLoading(false);return;}lastSaved.current=data;d({type:"LOAD",d:data});}catch(e){if(!off)setLoadErr(true);}if(!off)setLoading(false);})();return()=>{off=true;};},[authed,isOwner]);
-  useEffect(()=>{if(loading||!authed||loadErr||!lastSaved.current)return;const t=setTimeout(()=>{const prev=lastSaved.current;const dirty=prev?STORE_KEYS.filter(k=>s[k]!==prev[k]):STORE_KEYS.slice();if(!dirty.length)return;saveAll(s,dirty,prev||{},isOwner).then(failed=>{const snap={...(lastSaved.current||{})};dirty.forEach(k=>{if(!(failed||[]).includes(k))snap[k]=s[k];});lastSaved.current=snap;if(failed&&failed.length)d({type:"TOAST",d:{msg:"⚠ Couldn't save changes — check your connection",t:Date.now()}});});},500);return()=>clearTimeout(t);},[s.customers,s.jobs,s.quotes,s.inventory,s.invoices,s.schedule,s.employees,s.expenses,s.leads,s.social,s.campaigns,s.contentCalendar,s.cores,s.shipments,s.commsLog,s.purchaseOrders,s.warranties,s.parts,s.timeEntries,s.wins,s.activity,s.settings,s.diagnoses,s.issues,s.brief,s.boms,s.bomSheets,s.vendors,s.services,s.ecmJobs,s.ecmFiles,s.prospects,s.competitors,s.compare,s.timesheets,s.timesheetSources,s.payPeriods,s.tsPay,loading,authed,loadErr]);
+  useEffect(()=>{if(!authed){setLoading(false);return;}let off=false;setLoading(true);setLoadErr(false);(async()=>{try{const data=await loadAll(role);if(off)return;if(data.__loadError){setLoadErr(true);setLoading(false);return;}lastSaved.current=data;d({type:"LOAD",d:data});}catch(e){if(!off)setLoadErr(true);}if(!off)setLoading(false);})();return()=>{off=true;};},[authed,role]);
+  useEffect(()=>{if(loading||!authed||loadErr||!lastSaved.current)return;const t=setTimeout(()=>{const prev=lastSaved.current;const ks=keysFor(role);const dirty=prev?ks.filter(k=>s[k]!==prev[k]):ks.slice();if(!dirty.length)return;saveAll(s,dirty,prev||{},role).then(failed=>{const snap={...(lastSaved.current||{})};dirty.forEach(k=>{if(!(failed||[]).includes(k))snap[k]=s[k];});lastSaved.current=snap;if(failed&&failed.length)d({type:"TOAST",d:{msg:"⚠ Couldn't save changes — check your connection",t:Date.now()}});});},500);return()=>clearTimeout(t);},[s.customers,s.jobs,s.quotes,s.inventory,s.invoices,s.schedule,s.employees,s.expenses,s.leads,s.social,s.campaigns,s.contentCalendar,s.cores,s.shipments,s.commsLog,s.purchaseOrders,s.warranties,s.parts,s.timeEntries,s.wins,s.activity,s.settings,s.diagnoses,s.issues,s.brief,s.boms,s.bomSheets,s.vendors,s.services,s.ecmJobs,s.ecmFiles,s.prospects,s.competitors,s.compare,s.timesheets,s.payPeriods,loading,authed,loadErr,role]);
   // Live sync: quietly re-pull the shop's data on window focus and every 60s
   // (cloud only, never while a modal is open or local changes are unsaved),
   // so a tab left open overnight can't overwrite the crew's newer work.
-  useEffect(()=>{if(!usingCloud||!authed||loading)return;let busy=false;const refresh=async()=>{const before=sRef.current;const prev=lastSaved.current;if(busy||document.hidden||!prev||before.modal)return;if(STORE_KEYS.some(k=>before[k]!==prev[k]))return;busy=true;try{const data=await loadAll(isOwner);const cur=sRef.current;if(!data.__loadError&&!cur.modal&&!STORE_KEYS.some(k=>cur[k]!==before[k])){lastSaved.current=data;d({type:"LOAD",d:data});}}catch(e){}finally{busy=false;}};const iv=setInterval(refresh,60000);window.addEventListener("focus",refresh);return()=>{clearInterval(iv);window.removeEventListener("focus",refresh);};},[authed,loading,isOwner]);
-  // Timesheet sync: save anything pending first (an approval, a new sheet), let the Edge Function read Google and
-  // write the results, then reload just the timesheet lists.
-  const flush=async()=>{const cur=sRef.current,prev=lastSaved.current;if(!prev)return [];const dirty=STORE_KEYS.filter(k=>cur[k]!==prev[k]);if(!dirty.length)return [];const failed=await saveAll(cur,dirty,prev,isOwner);const snap={...(lastSaved.current||{})};dirty.forEach(k=>{if(!failed.includes(k))snap[k]=cur[k];});lastSaved.current=snap;return failed;};
-  const reloadKeys=async ks=>{const use=ks.filter(k=>isOwner||!OWNER_KEYS.includes(k));try{const m=await db.getAll(use.map(keyOf));const part={};use.forEach(k=>{const v=m[keyOf(k)];try{part[k]=v!=null?JSON.parse(v):[];}catch(e){}});lastSaved.current={...(lastSaved.current||{}),...part};d({type:"LOAD",d:part});}catch(e){console.error("[rc] timesheet reload failed:",e&&e.message?e.message:e);}};
-  const syncTs=async sourceId=>{const failed=await flush();if(failed.length)return{error:"Couldn't save your changes first, so the sync didn't run. Check your connection."};const r=await syncTimesheets(sourceId);if(r&&(r.ok||(r.results||[]).length))await reloadKeys(["timesheets","timesheetSources","payPeriods","tsPay"]);return r;};
+  useEffect(()=>{if(!usingCloud||!authed||loading)return;let busy=false;const refresh=async()=>{const before=sRef.current;const prev=lastSaved.current;if(busy||document.hidden||!prev||before.modal)return;if(keysFor(role).some(k=>before[k]!==prev[k]))return;busy=true;try{const data=await loadAll(role);const cur=sRef.current;if(!data.__loadError&&!cur.modal&&!keysFor(role).some(k=>cur[k]!==before[k])){lastSaved.current=data;d({type:"LOAD",d:data});}}catch(e){}finally{busy=false;}};const iv=setInterval(refresh,60000);window.addEventListener("focus",refresh);return()=>{clearInterval(iv);window.removeEventListener("focus",refresh);};},[authed,loading,role]);
   useEffect(()=>{const t=setInterval(()=>setTime(new Date()),60000);return()=>clearInterval(t);},[]);
   useEffect(()=>{if(s.toast){const t=setTimeout(()=>d({type:"TOAST",d:null}),s.toast.undo?5000:s.toast.long?6500:2200);return()=>clearTimeout(t);}},[s.toast]);
   const TABL={overview:"Overview",inventory:"Engines",shop3d:"Shop 3D",parts:"Parts",boms:"BOM",social:"Marketing",services:"Services",prospects:"Prospects",competitors:"Competitors",issues:"Issues",ecm:"ECM",customers:"Customers & Jobs",operations:"Operations",schedule:"Schedule",quotes:"Quotes",invoices:"Invoicing",employees:"Team",reports:"Reports"};
   const NAV=[{t:"overview",i:"home"},{h:"Shop"},{t:"inventory",i:"eng"},{t:"shop3d",i:"shop"},{t:"boms",i:"clip"},{t:"parts",i:"box"},{t:"issues",i:"wrench"},{t:"ecm",i:"chip"},{h:"Sales"},{t:"social",i:"mega"},{t:"prospects",i:"target"},{t:"competitors",i:"flag"},{t:"services",i:"tag"},{t:"quotes",i:"doc"},{t:"invoices",i:"cash"},{h:"Operations"},{t:"customers",i:"users"},{t:"operations",i:"truck"},{t:"schedule",i:"cal"},{h:"Business"},{t:"employees",i:"team"},{t:"reports",i:"chart"}];
   const splash=(<div className="rc-root" data-theme={theme} style={{display:"flex",alignItems:"center",justifyContent:"center",minHeight:"100vh"}}><style>{CSS}</style><div style={{textAlign:"center"}}><div className="rc-hi" style={{width:50,height:50,fontSize:24,margin:"0 auto 12px"}}>RC</div><div style={{fontFamily:"var(--fd)",fontSize:17.5,letterSpacing:2,textTransform:"uppercase",color:"var(--tx2)"}}>Loading...</div></div></div>);
+  const toastEl=s.toast&&(<div role="status" className="rc-toast" style={{position:"fixed",bottom:20,left:"50%",transform:"translateX(-50%)",background:"var(--tx)",border:"none",borderLeft:"3px solid var(--ac)",borderRadius:10,padding:"11px 16px",display:"flex",alignItems:"center",gap:14,zIndex:9999,boxShadow:"var(--sh2)",fontFamily:"var(--fb)",fontSize:14,color:"var(--bg)",maxWidth:"calc(100vw - 32px)"}}><span>{s.toast.msg}</span>{s.toast.undo&&<button className="rc-bs" onClick={()=>d({type:"UNDO"})} style={{fontSize:13,color:"var(--ac)",borderColor:"var(--ac)",background:"transparent"}}>↩ Undo</button>}</div>);
   if(usingCloud&&!authReady)return splash;
   if(usingCloud&&!session)return <Login onAuthed={setSession} theme={theme}/>;
   if(usingCloud&&loadErr)return (<div className="rc-root" data-theme={theme} style={{display:"flex",alignItems:"center",justifyContent:"center",minHeight:"100vh",padding:20}}><style>{CSS}</style><div style={{textAlign:"center",maxWidth:360}}><div className="rc-hi" style={{width:50,height:50,fontSize:24,margin:"0 auto 12px"}}>RC</div><div style={{fontFamily:"var(--fd)",fontSize:19,letterSpacing:1,textTransform:"uppercase",color:"var(--r)",marginBottom:8}}>Couldn't reach the server</div><div style={{fontSize:14,color:"var(--tx2)",marginBottom:16,lineHeight:1.6}}>Your shop data didn't load, so editing is paused to protect it — nothing will be saved over your cloud data until a clean load succeeds. Check your connection and retry.</div><button className="rc-ba" onClick={()=>window.location.reload()}>↻ Retry</button></div></div>);
   if(loading)return splash;
+  // An employee login, or the owner looking at an employee's screen: their timesheet and nothing else.
+  if(isEmployee||(preview&&preview.emp)){
+    if(isEmployee&&!empId)return (<div className="rc-root" data-theme={theme} style={{display:"flex",alignItems:"center",justifyContent:"center",minHeight:"100vh",padding:20}}><style>{CSS}</style><div style={{textAlign:"center",maxWidth:360}}><div className="rc-hi" style={{width:50,height:50,fontSize:24,margin:"0 auto 12px"}}>RC</div><div style={{fontSize:14.5,color:"var(--tx2)",marginBottom:16,lineHeight:1.6}}>This login isn't linked to a team member yet. Ask the owner to set it up from the Team tab.</div><button className="rc-bs" onClick={async()=>{await signOut();setSession(null);}}>Sign out</button></div></div>);
+    const me=isEmployee?{id:empId,name:meta.name||""}:{id:preview.emp,name:preview.name};
+    return (<div className="rc-root" data-theme={theme}><style>{CSS}</style>
+      <EmployeeShell s={s} d={d} me={me} email={session&&session.user&&session.user.email} preview={!isEmployee} onExit={()=>setPreview(null)} onSignOut={async()=>{await signOut();setSession(null);}} themePref={themePref} chooseTheme={chooseTheme}/>
+      <Modals s={s} d={d} owner={false} who={{role:"employee"}}/>
+      {toastEl}
+    </div>);
+  }
   return (<div className="rc-root" data-theme={theme}><style>{CSS}</style>
     <div className={"rc-shell"+(navOpen?" nav-open":"")}>
       <aside className="rc-side" aria-label="Main navigation">
@@ -2949,14 +3075,14 @@ export default function App(){
         <div className="rc-sfoot">
           <div className="rc-seg" role="group" aria-label="Colour theme">{THEMES.map(([k,ic,l])=>(<button key={k} className={themePref===k?"on":""} aria-pressed={themePref===k} title={k==="auto"?"Follow this device's light/dark setting":l+" theme"} onClick={()=>chooseTheme(k)}><span aria-hidden="true">{ic}</span>{l}</button>))}</div>
           {usingCloud&&session&&<div className="rc-user"><span className="rc-dot"/><span>{session.user&&session.user.email}</span></div>}
-          <div className="rc-links"><button className="rc-link" onClick={()=>exportBackup(s,isOwner)} title="Download a JSON backup of all shop data">Backup</button><button className="rc-link" onClick={()=>d({type:"MODAL",v:"confirm-reset"})}>Reset</button>{usingCloud&&session&&<button className="rc-link" onClick={async()=>{await signOut();setSession(null);}}>Sign out</button>}</div>
+          <div className="rc-links"><button className="rc-link" onClick={()=>exportBackup(s)} title="Download a JSON backup of all shop data">Backup</button><button className="rc-link" onClick={()=>d({type:"MODAL",v:"confirm-reset"})}>Reset</button>{usingCloud&&session&&<button className="rc-link" onClick={()=>d({type:"MODAL",v:"my-password"})}>Password</button>}{usingCloud&&session&&<button className="rc-link" onClick={async()=>{await signOut();setSession(null);}}>Sign out</button>}</div>
         </div>
       </aside>
       <div className="rc-scrim" onClick={()=>setNavOpen(false)}/>
       <main className="rc-main">
         <div className="rc-top">
           <button className="rc-menu" aria-label="Open the menu" onClick={()=>setNavOpen(true)}><Ico n="menu"/></button>
-          <div style={{minWidth:0}}><h1 className="rc-pt">{TABL[s.tab]||"Overview"}</h1><div className="rc-psub">{time.toLocaleDateString("en-US",{weekday:"long",month:"long",day:"numeric"})} · Medicine Hat, AB</div></div>{preview&&<button className="rc-fb on rc-ts-prevbar" onClick={()=>setPreview(false)}>👁 Previewing as staff · back to owner view</button>}
+          <div style={{minWidth:0}}><h1 className="rc-pt">{TABL[s.tab]||"Overview"}</h1><div className="rc-psub">{time.toLocaleDateString("en-US",{weekday:"long",month:"long",day:"numeric"})} · Medicine Hat, AB</div></div>{preview==="staff"&&<button className="rc-fb on rc-ts-prevbar" onClick={()=>setPreview(null)}>👁 Previewing as staff · back to owner view</button>}
         </div>
         <div className="rc-body">
       {s.tab==="overview"&&<Overview s={s} d={d}/>}
@@ -2975,12 +3101,12 @@ export default function App(){
 {s.tab==="prospects"&&<Prospects s={s} d={d}/>}
 {s.tab==="competitors"&&<Competitors s={s} d={d}/>}
       {s.tab==="schedule"&&<Schedule s={s} d={d}/>}
-      {s.tab==="employees"&&<Emps s={s} d={d} owner={ownerView} isOwner={isOwner} preview={preview} setPreview={setPreview} syncTs={syncTs}/>}
+      {s.tab==="employees"&&<Emps s={s} d={d} role={role} owner={ownerView} preview={preview} setPreview={setPreview}/>}
       {s.tab==="reports"&&<Reports s={s} owner={ownerView}/>}
         </div>
       </main>
     </div>
-    <Modals s={s} d={d} owner={ownerView} isOwner={isOwner} syncTs={syncTs}/>
+    <Modals s={s} d={d} owner={ownerView} who={{role:ownerView?"owner":"staff"}}/>
     {s.soldSplash&&(()=>{const w=s.soldSplash;const m=(+w.price||0)-(+w.cost||0);const soundOn=getSet(s).soundOn!==false;return(<div className="rc-splash" onClick={()=>d({type:"SPLASH",d:null})}>
       <button className="rc-bs rc-splash-mute" onClick={e=>{e.stopPropagation();const cur=(s.settings||[])[0];if(cur)d({type:"UPDATE",list:"settings",id:cur.id,d:{soundOn:!soundOn}});else d({type:"ADD",list:"settings",d:{soundOn:!soundOn},label:soundOn?"Horn muted":"Horn on"});}}>{soundOn?"🔊":"🔇"}</button>
       <div className="rc-splash-in">
@@ -2991,6 +3117,6 @@ export default function App(){
         <div style={{marginTop:16}} onClick={e=>e.stopPropagation()}><div style={{fontSize:11,color:"var(--tx2)",letterSpacing:1,textTransform:"uppercase",marginBottom:6}}>Buyer came from</div><div style={{display:"flex",gap:6,justifyContent:"center",flexWrap:"wrap"}}>{SALE_SRC.map(([k,l])=>(<button key={k} className="rc-bs" style={w.src===k?{borderColor:"var(--g)",color:"var(--g)",background:"var(--gs)"}:{}} onClick={()=>{d({type:"UPDATE",list:"wins",id:w.id,d:{src:k}});d({type:"SPLASH",d:{...w,src:k}});}}>{l}</button>))}</div></div>
         <div className="rc-spl-note">Logged to Wins · tap anywhere to dismiss</div>
       </div></div>);})()}
-    {s.toast&&(<div role="status" className="rc-toast" style={{position:"fixed",bottom:20,left:"50%",transform:"translateX(-50%)",background:"var(--tx)",border:"none",borderLeft:"3px solid var(--ac)",borderRadius:10,padding:"11px 16px",display:"flex",alignItems:"center",gap:14,zIndex:9999,boxShadow:"var(--sh2)",fontFamily:"var(--fb)",fontSize:14,color:"var(--bg)",maxWidth:"calc(100vw - 32px)"}}><span>{s.toast.msg}</span>{s.toast.undo&&<button className="rc-bs" onClick={()=>d({type:"UNDO"})} style={{fontSize:13,color:"var(--ac)",borderColor:"var(--ac)",background:"transparent"}}>↩ Undo</button>}</div>)}
+    {toastEl}
   </div>);
 }

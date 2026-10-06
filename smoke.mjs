@@ -1,15 +1,13 @@
 // Smoke test: localStorage mode, walks the diagnosis + issues features, an engine sale with a swap,
 // an ECM job from intake to invoice (including the emissions block), the sales research
-// (prospect seeds, a logged visit with a follow-up, convert to customer, route sheet), and the
+// (prospect seeds, a logged visit with a follow-up, convert to customer, route sheet), the
 // 3D shop (engines placed by status, give one a spot, reload, the Engines list shows it), and
-// timesheets: a CSV upload in localStorage mode, then the cloud build against a mock Supabase where
-// "Sync now" runs the real timesheet-sync Edge Function with Google faked (no network), approval
-// locks, and a staff login that never sees or even asks for wages.
+// timesheets: an employee's screen and the owner's approval in localStorage mode, then the cloud
+// build against a mock Supabase (a real Postgres with the repo's migrations) where the owner gives
+// an employee a login and the database rules are checked through the app and straight at the API.
 import { chromium } from "playwright";
 import { spawn, execSync } from "child_process";
 import { createServer } from "http";
-import { mkdirSync, writeFileSync } from "fs";
-import { buildTab, OCT_DAYS, SEP_DAYS, HOW_TO, csvOf, fakeGoogle, fakeServiceAccount } from "./tests/fixtures/timesheets.mjs";
 import { mockSupabase } from "./tests/fixtures/mock-supabase.mjs";
 import { loadEdgeFunction } from "./tests/fixtures/edge.mjs";
 const srv=spawn("npx",["vite","preview","--port","4173","--strictPort"],{stdio:"ignore"});
@@ -19,7 +17,9 @@ const errs=[];
 const b=await chromium.launch({executablePath:"/opt/pw-browsers/chromium",args:["--use-angle=swiftshader","--enable-unsafe-swiftshader","--ignore-gpu-blocklist"]}).catch(()=>chromium.launch());
 const p=await b.newPage({viewport:{width:1280,height:900}});
 p.on("pageerror",e=>errs.push("pageerror: "+e.message));
-p.on("console",m=>{if(m.type()==="error")errs.push("console: "+m.text());});
+// A failed load names its URL, so the expected ones (favicon, Google Fonts behind the proxy) are easy to tell apart.
+const errOf=m=>m.text()+(/Failed to load resource/.test(m.text())&&m.location().url?" ("+m.location().url+")":"");
+p.on("console",m=>{if(m.type()==="error")errs.push("console: "+errOf(m));});
 await p.goto("http://localhost:4173/");
 await p.waitForSelector(".rc-side");
 // Issues tab
@@ -240,13 +240,18 @@ await p.click('.rc-ni:has-text("Engines")');
 await p.fill(".rc-main input.rc-si",s3Sku);
 const s3Loc=(await p.locator(".rc-main table.rc-tbl tbody tr").first().locator(".rc-s3-loc").innerText()).trim();
 console.log("shop 3D: place labels",s3Tags,"| take-out West",s3West,"| "+s3Sku+" given a spot:",s3Eng.loc,"| Engines list says",s3Loc);
-// Timesheets, localStorage mode: a CSV export goes through the same reader as the Google sync. Totals
-// match the hand-worked numbers, a second upload adds nothing, an approved month flags a change instead
-// of taking it, staff preview hides every dollar, and the pay-period sheet prints on one page.
-mkdirSync("node_modules/.cache/smoke",{recursive:true});
-const CSV1="node_modules/.cache/smoke/Mike Test - Timesheet 2026 - Oct 2026.csv",CSV2="node_modules/.cache/smoke/Mike Test - Timesheet 2026 - Oct 2026 (edited).csv";
-writeFileSync(CSV1,csvOf(buildTab({month:"2026-10",days:OCT_DAYS,style:"shown"})));
-writeFileSync(CSV2,csvOf(buildTab({month:"2026-10",days:OCT_DAYS,style:"shown",edit:{"2026-10-06":{finish:"6:30 PM"}}})));
+// Timesheets, localStorage mode. The owner adds Mike and opens his screen, which is exactly what his
+// login shows: the whole month, nothing to fill in on days that haven't happened, Full day fills today
+// in one tap, an earlier day takes overtime by hand. Approving last month locks it for Mike, the owner
+// sees the pay, staff preview hides every dollar, and the pay-period sheet prints on one page.
+const shopDay=n=>{const t=new Intl.DateTimeFormat("en-CA",{timeZone:"America/Edmonton",year:"numeric",month:"2-digit",day:"2-digit"}).format(new Date());const x=new Date(t+"T12:00:00Z");x.setUTCDate(x.getUTCDate()+n);return x.toISOString().slice(0,10);};
+const TODAY=shopDay(0),TOMORROW=shopDay(1);
+const PREV=(()=>{const[y,m]=TODAY.split("-").map(Number);return new Date(Date.UTC(y,m-2,1)).toISOString().slice(0,7);})();
+const PREV_LABEL=new Date(PREV+"-15T12:00:00Z").toLocaleDateString("en-US",{month:"long",year:"numeric",timeZone:"UTC"});
+const weekdays=ym=>{const[y,m]=ym.split("-").map(Number),out=[];for(let k=1;k<=31;k++){const x=new Date(Date.UTC(y,m-1,k));if(x.getUTCMonth()!==m-1)break;if(x.getUTCDay()%6)out.push(x.toISOString().slice(0,10));}return out;};
+const[PD1,PD2]=weekdays(PREV).slice(1,3);
+// Today's day: Full day on a weekday; at the weekend there's no Full day button, so the same times by hand.
+const fillToday=async pg=>{if(await pg.locator(".rc-my-today .rc-my-full").count())await pg.click(".rc-my-today .rc-my-full");else{await pg.click('.rc-my-today button:has-text("Other times")');await pg.fill("#ts-start","08:00");await pg.fill("#ts-finish","16:00");await pg.click('.rc-mod .rc-ba:has-text("Save")');}await pg.waitForTimeout(300);};
 await p.click(".rc-ov",{position:{x:5,y:5}}).catch(()=>{});
 await p.click('.rc-ni:has-text("Team")');
 await p.click('button.rc-ba:has-text("+ Employee")');
@@ -257,81 +262,150 @@ await p.click(".rc-mod .rc-fa .rc-ba");
 await p.click('.rc-ts-seg button:has-text("Timesheets")');
 // What Reports shows a login: Payroll/mo, a labour-cost column on the Timesheets table, dollars on Labor by Technician.
 const repMoney=async pg=>{const body=await pg.locator(".rc-body").innerText();const th=await pg.locator('.rc-sh:has(.rc-sht:text-is("Timesheets")) + .rc-card thead').innerText().catch(()=>"");const lab=await pg.locator('.rc-sh:has(.rc-sht:text-is("Labor by Technician")) + .rc-card').innerText().catch(()=>"");return "payroll "+/Payroll\/mo/.test(body)+", timesheet labour cost "+/labour cost/i.test(th)+", tech dollars "+/\$\s?\d/.test(lab)+", timesheet tables "+/Unallocated Hours by Week/i.test(body);};
-const tsUpload=async file=>{await p.click('button:has-text("Upload CSV / Excel")');await p.setInputFiles("#ts-file",file);await p.waitForSelector(".rc-ts-prev");await p.click('.rc-mod button.rc-ba:has-text("Import")');const t=await p.locator(".rc-toast").innerText();await p.waitForTimeout(800);return t.trim();};
-const tsStats=async()=>(await p.locator(".rc-stat .rc-sv").allInnerTexts()).join(" / ");
-const up1=await tsUpload(CSV1);const st1=await tsStats();
-await p.screenshot({path:"shot-ts-month.png",fullPage:true});
-const up2=await tsUpload(CSV1);const n2=(await LS("timesheets")).length;
-await p.click('button:has-text("Approve October 2026")');
+const tsStats=async pg=>(await pg.locator(".rc-stat .rc-sv").allInnerTexts()).join(" / ");
+const pickMike=async pg=>{await pg.locator('select[aria-label="Employee"]').selectOption({label:"Mike Test"});};
+await pickMike(p);
+await p.click('button:has-text("See Mike\'s screen")');
+await p.waitForSelector(".rc-emp");
+const monthRows=await p.locator(".rc-my-tbl tbody tr:not(.wk)").count(),aheadBtns=await p.locator(".rc-my-tbl tr.fut button").count(),nextShut=await p.locator('button[aria-label="Next month"]').isDisabled();
+await fillToday(p);
+const todayCard=(await p.locator(".rc-my-today .rc-my-tv").innerText()).replace(/\s+/g," ");
+await p.click('button[aria-label="Previous month"]');
+await p.locator(`.rc-my-tbl tr[data-date="${PD1}"] button:has-text("Full day")`).click();
+await p.locator(`.rc-my-tbl tr[data-date="${PD2}"] button:has-text("Times")`).click();
+await p.fill("#ts-start","07:00");await p.fill("#ts-finish","17:30");await p.fill("#ts-notes","Unit 412 injectors");
+const live=(await p.locator(".rc-ts-live").innerText()).trim();
+await p.click('.rc-mod .rc-ba:has-text("Save")');
+await p.waitForTimeout(300);
+const prevTot=(await p.locator(".rc-my-month span").innerText()).trim();
+await p.screenshot({path:"shot-ts-employee.png",fullPage:true});
+console.log("employee screen: rows "+monthRows+" | buttons on days ahead "+aheadBtns+" | next month shut "+nextShut+" | today: "+todayCard+" | editor: "+live+" | "+PREV_LABEL+": "+prevTot);
+await p.click('.rc-emp button:has-text("back to the dashboard")');
+await p.waitForSelector(".rc-ts-bar");
+await pickMike(p);
+await p.locator('select[aria-label="Pay period"]').selectOption(PREV+"-01");
+const st1=await tsStats(p),appr0=(await p.locator(".rc-ts-appr").innerText()).replace(/\s+/g," ");
+await p.click(`button:has-text("Approve ${PREV_LABEL}")`);
 await p.waitForTimeout(800);
-const up3=await tsUpload(CSV2);const st3=await tsStats();
-const oct6=(await LS("timesheets")).find(r=>r.date==="2026-10-06")||{};
-console.log("timesheets upload: "+up1+" | stats "+st1+" | again: "+up2+" | rows "+n2+" | approved: "+(await LS("payPeriods")).length);
-console.log("timesheets after approval: "+up3+" | Oct 6 kept "+oct6.finish+", sheet now says "+((oct6.pending||{}).vals||{}).finish+" | stats still "+(st3===st1)+" | card: "+(await p.locator(".rc-ts-pend .rc-ts-ph").innerText()));
+await p.screenshot({path:"shot-ts-month.png",fullPage:true});
+await p.click('button:has-text("See Mike\'s screen")');
+await p.click('button[aria-label="Previous month"]');
+const lockBtns=await p.locator(`.rc-my-tbl tr[data-date="${PD2}"] button`).count(),lockIcon=await p.locator(`.rc-my-tbl tr[data-date="${PD2}"] .rc-ts-lock`).count();
+await p.click('.rc-emp button:has-text("back to the dashboard")');
+await p.waitForSelector(".rc-ts-bar");
+console.log("owner, "+PREV_LABEL+": "+st1+" | "+appr0+" | approvals "+(await LS("payPeriods")).length+" | Mike's "+PD2+" now: buttons "+lockBtns+", locked "+lockIcon);
+await pickMike(p);
+await p.locator('select[aria-label="Pay period"]').selectOption(PREV+"-01");
 const [tsSheet]=await Promise.all([p.waitForEvent("popup"),p.click('button:has-text("🖨 Print")')]);
 await tsSheet.waitForLoadState();
 const tsPages=((await tsSheet.pdf({preferCSSPageSize:true})).toString("latin1").match(/\/Type\s*\/Page(?!s)/g)||[]).length;
 await tsSheet.screenshot({path:"shot-ts-print.png",fullPage:true});
-console.log("pay-period sheet: pages",tsPages,"| gross on it:",(await tsSheet.content()).includes("$7,660.00"));
+console.log("pay-period sheet: pages",tsPages,"| gross on it:",(await tsSheet.content()).includes("$790.00"));
 await tsSheet.close();
 await p.click('button:has-text("Preview as staff")');
-const tsStaff=await p.locator(".rc-body").innerText();
+const tsStaff=await p.locator(".rc-body").innerText(),staffEd=await p.locator(".rc-ts-tbl .rc-ts-ed").count();
 await p.screenshot({path:"shot-ts-staff.png"});
 await p.click('.rc-ts-seg button:has-text("Team")');
 const teamHead=await p.locator(".rc-main table.rc-tbl thead").first().innerText();
 await p.click('.rc-ni:has-text("Reports")');
-console.log("staff preview: dollars on Timesheets",/\$\s?\d/.test(tsStaff),"| Gross pay shown",/gross pay/i.test(tsStaff),"| Team has Rate column",/\bRATE\b/i.test(teamHead),"| Reports: "+await repMoney(p));
+console.log("staff preview: dollars on Timesheets",/\$\s?\d/.test(tsStaff),"| Gross pay shown",/gross pay/i.test(tsStaff),"| edit buttons",staffEd,"| Team has Rate column",/\bRATE\b/i.test(teamHead),"| Reports: "+await repMoney(p));
 await p.click(".rc-ts-prevbar");
 const repOwner=await p.locator(".rc-body").innerText();
-console.log("owner Reports: "+await repMoney(p)+" | $7,660.00 for Mike in October",repOwner.includes("$7,660.00"));
+console.log("owner Reports: "+await repMoney(p)+" | $790.00 for Mike in "+PREV_LABEL,repOwner.includes("$790.00"));
 await p.screenshot({path:"shot-ts-reports.png",fullPage:true});
+await p.click('.rc-ni:has-text("Team")');
+await p.click('.rc-ts-seg button:has-text("Team")');
 
-// Timesheets, cloud mode against a mock Supabase (tests/fixtures/mock-supabase.mjs, which applies
-// migration 0011's owner-only rule). "Sync now" calls the real timesheet-sync Edge Function, bundled
-// and run here, with Google faked and the service-account JWT really signed and checked.
+// Timesheets in the cloud, against the mock Supabase (tests/fixtures/mock-supabase.mjs): a real Postgres
+// (PGlite) with the repo's migrations answers every request as the caller's login, so it's the actual
+// policies and history trigger at work; the team-logins Edge Function runs bundled. The owner gives Mike
+// a login; Mike sees only his timesheet and never asks for other shop data; the database refuses tomorrow
+// and an approved day; a changed day keeps its old version; office staff see hours, not dollars.
 const SBP=54399,SB="http://127.0.0.1:"+SBP;
-const sa=await fakeServiceAccount();
-const gSheets={SHEET_MIKE_2026:{title:"Mike Test - Timesheet 2026",tabs:[{title:"How to fill in",raw:HOW_TO},{title:"Sep 2026",raw:buildTab({month:"2026-09",wage:38,days:SEP_DAYS,old:true})},{title:"Oct 2026",raw:buildTab({month:"2026-10",days:OCT_DAYS})}]}};
-const google=fakeGoogle({sheets:gSheets,shared:new Set(["SHEET_MIKE_2026"]),publicKey:sa.publicKey});
-const users=[{id:"u-owner",email:"owner@rollincoal.test",password:"pw-owner",app_metadata:{role:"owner"}},{id:"u-staff",email:"staff@rollincoal.test",password:"pw-staff"}];
-const sb=mockSupabase({users,functions:{}});
-globalThis.fetch=async(input,init)=>{const u=String(input instanceof Request?input.url:input);if(u.startsWith(SB))return sb.handle(input instanceof Request?input:new Request(u,init));return google(u,init);};
-const fn=await loadEdgeFunction("timesheet-sync",{SUPABASE_URL:SB,SUPABASE_ANON_KEY:sb.anonKey,SUPABASE_SERVICE_ROLE_KEY:sb.serviceKey,GOOGLE_SA_JSON:sa.json});
+const users=[{email:"owner@rollincoal.test",password:"pw-owner-1",app_metadata:{role:"owner"}},{email:"staff@rollincoal.test",password:"pw-staff-1"}];
+const fns={};
+const sb=await mockSupabase({users,functions:fns});
+globalThis.fetch=async(input,init)=>{const u=String(input instanceof Request?input.url:input);return u.startsWith(SB)?sb.handle(input instanceof Request?input:new Request(u,init)):new Response(JSON.stringify({error:"no network in the smoke run"}),{status:503});};
+fns["team-logins"]=await loadEdgeFunction("team-logins",{SUPABASE_URL:SB,SUPABASE_ANON_KEY:sb.anonKey,SUPABASE_SERVICE_ROLE_KEY:sb.serviceKey});
+await sb.sql("insert into app_state (key, value) values ('rc:employees', $1::jsonb), ('rc:jobs', $2::jsonb), ('rc:timeEntries', $3::jsonb)",[JSON.stringify([{id:101,name:"Mike Test",nick:"Mike",role:"Diesel Tech",rate:40,hrs:40,status:"active"}]),JSON.stringify([{id:301,kind:"service",vehicle:"Unit 412 · 2016 Kenworth T880",service:"Injector job",tech:"Mike",status:"in-progress",custId:0}]),JSON.stringify([{id:401,jobId:301,tech:"Mike",date:PD2,hours:6,rate:40}])]);
 const mockSrv=createServer(async(req,res)=>{const chunks=[];for await(const c of req)chunks.push(c);const body=Buffer.concat(chunks);const rq=new Request(SB+req.url,{method:req.method,headers:Object.fromEntries(Object.entries(req.headers).filter(([k])=>k!=="host"&&k!=="connection"&&k!=="content-length")),body:["GET","HEAD"].includes(req.method)?undefined:body});
-  const r=/^\/functions\/v1\/timesheet-sync/.test(req.url)?await fn(rq):await sb.handle(rq);
-  const h=Object.fromEntries(r.headers);h["access-control-allow-origin"]="*";res.writeHead(r.status,h);res.end(Buffer.from(await r.arrayBuffer()));}).listen(SBP,"127.0.0.1");
-sb.db.set("rc:employees",[{id:101,name:"Mike Test",nick:"Mike",role:"Diesel Tech",rate:40,hrs:40,status:"active"}]);
-sb.db.set("rc:timesheetSources",[{id:201,sheetUrl:"https://docs.google.com/spreadsheets/d/SHEET_MIKE_2026/edit",sheetId:"SHEET_MIKE_2026",employeeId:101,empName:"Mike Test"}]);
-sb.db.set("rc:jobs",[{id:301,kind:"service",vehicle:"Unit 412 · 2016 Kenworth T880",service:"Injector job",tech:"Mike",status:"in-progress",custId:0}]);
-sb.db.set("rc:timeEntries",[{id:401,jobId:301,tech:"Mike",date:"2026-10-19",hours:6,rate:40}]);
+  const r=await sb.handle(rq);const h=Object.fromEntries(r.headers);h["access-control-allow-origin"]="*";res.writeHead(r.status,h);res.end(Buffer.from(await r.arrayBuffer()));}).listen(SBP,"127.0.0.1");
 execSync("npx vite build --outDir dist-smoke-cloud --emptyOutDir",{stdio:"ignore",env:{...process.env,VITE_SUPABASE_URL:SB,VITE_SUPABASE_ANON_KEY:sb.anonKey}});
 const srv2=spawn("npx",["vite","preview","--port","4174","--strictPort","--outDir","dist-smoke-cloud"],{stdio:"ignore"});
 await new Promise(r=>setTimeout(r,2500));
 const cx=await b.newContext({viewport:{width:1280,height:900}});const q=await cx.newPage();
 q.on("pageerror",e=>errs.push("cloud pageerror: "+e.message));
-q.on("console",m=>{if(m.type()==="error")errs.push("cloud console: "+m.text());});
-const signIn=async(email,pw)=>{await q.waitForSelector("input[type=email]");await q.fill("input[type=email]",email);await q.fill("input[type=password]",pw);await q.click("button[type=submit]");await q.waitForSelector(".rc-side");await q.click('.rc-ni:has-text("Team")');await q.click('.rc-ts-seg button:has-text("Timesheets")');};
-const syncNow=async()=>{await q.click('button:has-text("Sync now")');await q.waitForSelector('.rc-toast:has-text("Synced"), .rc-toast:has-text("⚠")',{timeout:20000});const t=(await q.locator(".rc-toast").innerText()).trim();await q.waitForTimeout(600);return t;};
+q.on("console",m=>{if(m.type()==="error")errs.push("cloud console: "+errOf(m));});
+const signIn=async(email,pw,ready=".rc-side")=>{await q.waitForSelector("input[type=email]");await q.fill("input[type=email]",email);await q.fill("input[type=password]",pw);await q.click("button[type=submit]");await q.waitForSelector(ready);};
+const signOut=async()=>{await q.click('.rc-link:has-text("Sign out")');await q.waitForSelector("input[type=email]");};
+const toTimesheets=async()=>{await q.click('.rc-ni:has-text("Team")');await q.click('.rc-ts-seg button:has-text("Timesheets")');await q.waitForSelector(".rc-ts-bar");await pickMike(q);await q.locator('select[aria-label="Pay period"]').selectOption(PREV+"-01");};
+const dbDay=async date=>((await sb.sql("select data from timesheet_entries where employee_id = 101 and work_date = $1::date",[date]))[0]||{}).data||null;
+const MIKE="mike@rollincoal.test";
 await q.goto("http://localhost:4174/");
 await signIn(users[0].email,users[0].password);
-const c1=await syncNow();const cs1=(await q.locator(".rc-stat .rc-sv").allInnerTexts()).join(" / ");const links=await q.locator(".rc-ts-ln").count();
+await q.click('.rc-ni:has-text("Team")');
+await q.click('button:has-text("Give a login")');
+await q.fill("#lg-email",MIKE);
+await q.waitForFunction(()=>(document.querySelector("#lg-pass")||{}).value?.length>=8);   // the form fills in a temporary password one render after it opens
+let mikePw=await q.inputValue("#lg-pass");
+await q.click('.rc-mod button:has-text("Create login")');
+await q.waitForSelector(".rc-ts-okbox");
+const cred=(await q.locator(".rc-ts-cred").innerText()).replace(/\s+/g," "),cardPw=(await q.locator(".rc-ts-cred div:has(span:text-is('Password')) b").innerText()).trim();
+const mikeU=sb.users.find(u=>u.email===MIKE)||{};
+console.log("owner gave Mike a login: "+JSON.stringify(mikeU.app_metadata)+" | card shows the password "+(cardPw===mikePw)+" ("+mikePw.replace(/\d/g,"#")+")"+" | Team shows "+JSON.stringify(await (async()=>{await q.click('.rc-mod button:has-text("Close")');return (await q.locator(".rc-main table.rc-tbl tbody tr:has-text('Mike Test')").innerText()).match(/Timesheet login|Give a login/)?.[0];})()));
+await signOut();
+let mark=sb.log.length;
+await signIn(MIKE,mikePw,".rc-emp");
+const mikeNav=await q.locator(".rc-side").count();
+await fillToday(q);
+await q.click('button[aria-label="Previous month"]');
+await q.locator(`.rc-my-tbl tr[data-date="${PD2}"] button:has-text("Times")`).click();
+await q.fill("#ts-start","07:00");await q.fill("#ts-finish","17:30");await q.fill("#ts-notes","Unit 412 injectors");
+await q.click('.rc-mod .rc-ba:has-text("Save")');
+await q.waitForTimeout(1500);
+await q.locator(`.rc-my-tbl tr[data-date="${PD2}"] button:has-text("Edit")`).click();
+await q.fill("#ts-finish","17:00");
+await q.click('.rc-mod .rc-ba:has-text("Save")');
+await q.waitForTimeout(1500);
+const tRow=await dbDay(TODAY),pRow=await dbDay(PD2);
+const mikeAsked=sb.log.slice(mark).filter(e=>e.email===MIKE&&/\/rest\/v1\/(app_state|inventory)|\/storage\/v1\//.test(e.path)).length;
+await q.click('.rc-emp-who button:has-text("Password")');
+await q.fill("#pw1","Torque-2026-Cam");await q.fill("#pw2","Torque-2026-Cam");
+await q.click('.rc-mod .rc-ba:has-text("Save")');
+await q.waitForSelector('.rc-toast:has-text("Password changed")');
+mikePw="Torque-2026-Cam";
+console.log("Mike's login: sidebar "+mikeNav+" | asked for other shop data "+mikeAsked+" | today in the database "+(tRow&&tRow.start+" to "+tRow.finish+" by "+tRow.by)+" | "+PD2+" "+(pRow&&pRow.start+" to "+pRow.finish)+", history "+JSON.stringify((pRow&&pRow.history||[]).map(h=>h.finish)));
+const mikeTok=sb.session(sb.users.find(u=>u.email===MIKE)).access_token;
+const api=(method,path,body)=>sb.handle(new Request(SB+path,{method,headers:{apikey:sb.anonKey,Authorization:"Bearer "+mikeTok,"Content-Type":"application/json",Prefer:"resolution=merge-duplicates"},body:body&&JSON.stringify(body)}));
+const ahead=await api("POST","/rest/v1/timesheet_entries",[{id:"101|"+TOMORROW,employee_id:101,work_date:TOMORROW,data:{start:"8:00 AM",finish:"4:00 PM"}}]);
+const shopData=await (await api("GET","/rest/v1/app_state?select=key")).json();
+console.log("Mike straight at the database: tomorrow "+ahead.status+" | app_state rows "+shopData.length);
+await signOut();
+await signIn(users[0].email,users[0].password);
+await toTimesheets();
+const cs=await tsStats(q);
+await q.locator(`.rc-ts-tbl tr[data-date="${PD2}"] button:has-text("edited")`).click();
+const hist=(await q.locator(".rc-ts-tbl tr.why").innerText()).replace(/\s+/g," ");
+await q.click(`button:has-text("Approve ${PREV_LABEL}")`);
+await q.waitForTimeout(1500);
+const apprN=(await sb.sql("select count(*)::int as n from timesheet_approvals"))[0].n;
 await q.screenshot({path:"shot-ts-cloud.png",fullPage:true});
-const c2=await syncNow();const rows2=sb.db.get("rc:timesheets").length;
-await q.click('button:has-text("Approve October 2026")');await q.waitForTimeout(900);
-gSheets.SHEET_MIKE_2026.tabs[2].raw=buildTab({month:"2026-10",days:OCT_DAYS,edit:{"2026-10-06":{finish:"6:30 PM"}}});
-const c3=await syncNow();const r6=sb.db.get("rc:timesheets").find(r=>r.date==="2026-10-06")||{};
-console.log("cloud sync: "+c1+" | stats "+cs1+" | Unit 412 linked "+(links>0)+" | again: "+c2+" | rows "+rows2+" | wages stored owner-only "+JSON.stringify((sb.db.get("rc:owner:tsPay")||[]).map(x=>x.month+" $"+x.wage)));
-console.log("cloud after approval: "+c3+" | Oct 6 kept "+r6.finish+", flagged "+((r6.pending||{}).vals||{}).finish+" | approvals saved "+(sb.db.get("rc:payPeriods")||[]).length+" | card "+(await q.locator(".rc-ts-pend").count()));
-await q.click('.rc-link:has-text("Sign out")');
-await q.waitForSelector("input[type=email]");
-const mark=sb.log.length;
+console.log("owner, cloud: "+cs+" | history: "+hist+" | approvals in the database "+apprN);
+const locked=await api("POST","/rest/v1/timesheet_entries",[{id:"101|"+PD2,employee_id:101,work_date:PD2,data:{start:"7:00 AM",finish:"11:00 PM"}}]);
+const pAfter=await dbDay(PD2);
+await signOut();
+await signIn(MIKE,mikePw,".rc-emp");
+await q.click('button[aria-label="Previous month"]');
+const mikeLock=await q.locator(`.rc-my-tbl tr[data-date="${PD2}"] .rc-ts-lock`).count(),mikeLockBtns=await q.locator(`.rc-my-tbl tr[data-date="${PD2}"] button`).count();
+console.log("approved day: Mike's API change "+locked.status+", still "+(pAfter&&pAfter.finish)+" | his screen: locked "+mikeLock+", buttons "+mikeLockBtns+" | new password worked true");
+await signOut();
 await signIn(users[1].email,users[1].password);
-const staffTs=await q.locator(".rc-body").innerText();
+await toTimesheets();
+const staffTs=await q.locator(".rc-body").innerText(),staffEdit=await q.locator(".rc-ts-tbl .rc-ts-ed").count();
 await q.screenshot({path:"shot-ts-cloud-staff.png",fullPage:true});
 await q.click('.rc-ts-seg button:has-text("Team")');const staffHead=await q.locator(".rc-main table.rc-tbl thead").first().innerText();
 await q.click('.rc-ni:has-text("Reports")');const staffRep=await repMoney(q);
-const asked=sb.log.slice(mark).filter(e=>e.as==="staff"&&((e.keys||[]).some(k=>String(k).startsWith("rc:owner:"))||/rc%3Aowner|rc:owner/.test(e.path)));
-console.log("staff login: asked for owner keys",asked.length,"| dollars on Timesheets",/\$\s?\d/.test(staffTs),"| sees the hours",staffTs.includes("181.00"),"| Rate column",/\bRATE\b/i.test(staffHead),"| Reports: "+staffRep);
+console.log("staff login: dollars on Timesheets",/\$\s?\d/.test(staffTs),"| sees the hours",staffTs.includes("10.00"),"| edit buttons",staffEdit,"| Rate column",/\bRATE\b/i.test(staffHead),"| Login column",/\bLOGIN\b/i.test(staffHead),"| Reports: "+staffRep);
 await cx.close();srv2.kill();mockSrv.close();
 console.log("errors:",errs.length?errs:"none");
 await b.close();srv.kill();process.exit(0);

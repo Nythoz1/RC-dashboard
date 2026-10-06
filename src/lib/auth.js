@@ -33,6 +33,15 @@ export async function signIn(email, password) {
   return { session: data?.session || null, error: error ? error.message : null };
 }
 
+// The signed-in user picks a new password (employees too, after the owner hands
+// them a temporary one). Returns an error string, or null.
+export async function changePassword(password) {
+  if (!supabase) return "Auth is not configured.";
+  if (String(password || "").length < 8) return "Use at least 8 characters.";
+  const { error } = await supabase.auth.updateUser({ password });
+  return error ? error.message : null;
+}
+
 export async function signOut() {
   if (!supabase) return;
   await supabase.auth.signOut();

@@ -18,6 +18,8 @@
 // does its own check we deploy with --no-verify-jwt: that makes getUser() the
 // real (stronger) gate AND lets the browser's credential-less CORS preflight
 // (OPTIONS) through. This is what stops the function being an open relay.
+// Employee logins (app_metadata.role "employee", timesheet only, migration 0011)
+// are refused too: they have no use for it and shouldn't spend the shop's credit.
 // ─────────────────────────────────────────────────────────────
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
@@ -46,6 +48,7 @@ Deno.serve(async (req) => {
     const sb = createClient(SB_URL, SB_ANON, { auth: { persistSession: false } });
     const { data, error } = await sb.auth.getUser(token);
     if (error || !data?.user) return json({ error: "Not authenticated" }, 401);
+    if (data.user.app_metadata?.role === "employee") return json({ error: "Not available for this login" }, 403);
   } catch (_e) {
     return json({ error: "Auth check failed" }, 401);
   }

@@ -16,6 +16,10 @@
 // typed columns for SQL/queries and a real `id` PK that child tables' foreign
 // keys (engine_id, ...) will reference. localStorage mode is unaffected (no
 // tables) — it always uses the whole-blob path.
+//
+// Timesheet days and pay-period approvals live in tables from the start
+// (migration 0011) because the database enforces who may write which day; a
+// timesheet day's id is text ("<employee id>|<date>"), hence `textId`.
 // ─────────────────────────────────────────────────────────────
 import { createClient } from "@supabase/supabase-js";
 
@@ -30,6 +34,18 @@ const TABLE = "app_state";
 // ── Per-list relational table adapters (cloud only) ──
 const num = (v) => (v === undefined || v === null || v === "" ? null : Number(v));
 const TABLE_ADAPTERS = {
+  "rc:timesheets": {
+    table: "timesheet_entries",
+    textId: true,
+    toRow: (it) => ({ id: String(it.id), employee_id: Number(it.emp), work_date: it.date, data: it }),
+  },
+  "rc:payPeriods": {
+    table: "timesheet_approvals",
+    toRow: (it) => {
+      const id = Number(it.id);
+      return { id, employee_id: Number(it.emp), start_date: it.start, end_date: it.end, data: { ...it, id } };
+    },
+  },
   "rc:inventory": {
     table: "inventory",
     // Full object in `data`; a few projected columns for querying + the id PK.
@@ -64,6 +80,7 @@ async function tableGet(a) {
 // rows it hasn't seen (the old delete-anything-missing behavior). With no
 // snapshot available we upsert everything and delete nothing — safe default.
 async function tableSet(a, valueString, prevString) {
+  const idOf = a.textId ? (v) => String(v) : (v) => Number(v);
   const arr = JSON.parse(valueString);
   const cur = (Array.isArray(arr) ? arr : []).filter((it) => it && it.id != null);
   let prev = null;
@@ -71,13 +88,13 @@ async function tableSet(a, valueString, prevString) {
   const rows = cur.map(a.toRow);
   let upserts = rows, removed = [];
   if (Array.isArray(prev)) {
-    const prevBy = new Map(prev.filter((p) => p && p.id != null).map((p) => [Number(p.id), p]));
+    const prevBy = new Map(prev.filter((p) => p && p.id != null).map((p) => [idOf(p.id), p]));
     upserts = [];
     cur.forEach((it, idx) => {
-      const p = prevBy.get(Number(it.id));
+      const p = prevBy.get(idOf(it.id));
       if (!p || JSON.stringify(p) !== JSON.stringify(it)) upserts.push(rows[idx]);
     });
-    const curIds = new Set(cur.map((it) => Number(it.id)));
+    const curIds = new Set(cur.map((it) => idOf(it.id)));
     removed = [...prevBy.keys()].filter((id) => !curIds.has(id));
   }
   if (upserts.length) {
