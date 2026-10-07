@@ -32,7 +32,7 @@ export const SPOT_BY_ID = Object.fromEntries(CREW_SPOTS.map((p) => [p.id, p]));
 // spot on the shop floor, in this order.
 const SHOP_FLOOR = ["reman1", "reman2", "truck", "bench1", "bench2", "front", "tools", "washer", "parts", "floor1", "floor2", "hotTank", "yard", "counter", "desk1", "desk2"];
 const BY_ROLE = [
-  [/office|admin|account|book|manag|owner|sales|recep|dispatch|clerk|secret|estimat/i, ["desk1", "desk2", "counter"]],
+  [/office|admin|account|book|manag|owner|sales|recep|dispatch|clerk|secret|estimat|\bit\b|computer/i, ["desk1", "desk2", "counter"]],
   [/parts|stock|inventor|shipp|receiv|counter/i, ["parts", "counter"]],
   [/clean|wash|appren|helper|labou?r|shop ?hand|porter|detail/i, ["washer", "hotTank", "bench1", "bench2"]],
   [/yard|forklift|driver|haul|truck/i, ["yard", "floor2"]],

@@ -25,6 +25,11 @@ test("everyone active gets a spot that suits their role; people on leave stay ho
   assert.equal(crew[0].short, "Mike");
 });
 
+test("the shop's own roles: mechanics on the floor, IT and the owner in the office", () => {
+  const crew = C.crewList([emp(1, "Aboud", "Mechanic"), emp(2, "Teigen", "IT"), emp(3, "Austin", "Assistant Mechanic  "), emp(4, "Kendall", "mechanic"), emp(5, "Wayne", "Owner"), emp(6, "Edith", "Diesel tech, digital")]);
+  assert.deepEqual(crew.map((c) => [c.name, c.spot.id]), [["Aboud", "reman1"], ["Teigen", "desk1"], ["Austin", "reman2"], ["Kendall", "truck"], ["Wayne", "desk2"], ["Edith", "bench1"]]);
+});
+
 test("a picked spot wins; a spot someone else already has falls back to the role", () => {
   const crew = C.crewList([emp(1, "Mike", "Tech", { station: "truck" }), emp(2, "Bob", "Tech", { station: "truck" }), emp(3, "Ann", "Tech", { station: "nowhere" })]);
   assert.deepEqual(crew.map((c) => [c.name, c.spot.id, c.how]), [["Mike", "truck", "picked"], ["Bob", "reman1", "role"], ["Ann", "reman2", "role"]]);
