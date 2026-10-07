@@ -10,6 +10,7 @@
 // set (users can't change their own):
 //   role "employee" + employeeId + name → their own timesheet, nothing else (0011)
 //   role "staff"                        → the whole dashboard, no wages
+//   no role                             → no access at all (0013) until given one
 // Owner logins can't be changed or removed here.
 //
 // Body {action, ...}:
@@ -39,7 +40,7 @@ const json = (b: unknown, status = 200) =>
 // deno-lint-ignore no-explicit-any
 type Any = Record<string, any>;
 const ROLES = ["employee", "staff"];
-const roleOf = (u: Any) => (u?.app_metadata?.role as string) || "staff";
+const roleOf = (u: Any) => (u?.app_metadata?.role as string) || "none";
 const view = (u: Any) => ({
   id: u.id, email: u.email || "", role: roleOf(u), employeeId: u.app_metadata?.employeeId ?? null,
   name: u.app_metadata?.name || "", lastSignIn: u.last_sign_in_at || null, createdAt: u.created_at || null,

@@ -17,6 +17,7 @@ const CORS = {
 };
 const TABLES = { app_state: "key", inventory: "id", timesheet_entries: "id", timesheet_approvals: "id" };
 const COL = /^[a-z_][a-z0-9_]*$/;
+const MAX_ROWS = 1000;
 const b64url = (s) => Buffer.from(s).toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 
 export async function mockSupabase({ users = [], anonKey = "anon-key", serviceKey = "service-key", functions = {} } = {}) {
@@ -67,7 +68,11 @@ export async function mockSupabase({ users = [], anonKey = "anon-key", serviceKe
       if (!cols.every((c) => c === "*" || COL.test(c))) return reply(400, { message: "bad select" });
       const ord = (url.searchParams.get("order") || "").split(".");
       const order = ord[0] && COL.test(ord[0]) ? " order by " + ord[0] + (ord[1] === "desc" ? " desc" : "") : "";
-      const sql = "select " + cols.join(", ") + " from public." + table + where(url, params) + order;
+      // .range(from, to) arrives as offset / limit, like PostgREST pages; like
+      // Supabase's default "Max rows", no response carries more than 1,000.
+      const lim = " limit " + Math.min(MAX_ROWS, /^\d+$/.test(url.searchParams.get("limit") || "") ? +url.searchParams.get("limit") : MAX_ROWS);
+      const off = /^\d+$/.test(url.searchParams.get("offset") || "") ? " offset " + url.searchParams.get("offset") : "";
+      const sql = "select " + cols.join(", ") + " from public." + table + where(url, params) + order + lim + off;
       const r = await asLogin(db, as, sql, params);
       return reply(200, r.rows.map((row) => outRow(row, r.fields)));
     }
@@ -86,6 +91,13 @@ export async function mockSupabase({ users = [], anonKey = "anon-key", serviceKe
     }
     if (req.method === "DELETE") {
       const params = [];
+      // .delete().select(cols) asks for the deleted rows back (row-level security
+      // makes a refused delete look like a delete of nothing).
+      const cols = url.searchParams.get("select");
+      if (cols && cols.split(",").every((c) => COL.test(c.trim()))) {
+        const r = await asLogin(db, as, "delete from public." + table + where(url, params) + " returning " + cols, params);
+        return reply(200, r.rows.map((row) => outRow(row, r.fields)));
+      }
       await asLogin(db, as, "delete from public." + table + where(url, params), params);
       return new Response(null, { status: 204, headers: CORS });
     }

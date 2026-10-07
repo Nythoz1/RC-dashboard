@@ -101,6 +101,13 @@ test("saving: one record per employee and day; the local mode keeps old versions
   const cloud = T.nextEntry(a, { start: "7:00 AM", finish: "4:00 PM" }, { emp: 7, date: "2026-10-05", keepHistory: false });
   assert.deepEqual(cloud.history, []);
 });
+test("employees can change days back to the first of last month, not before", () => {
+  assert.equal(T.editFloor("2026-10-07"), "2026-09-01");
+  assert.equal(T.editFloor("2026-01-15"), "2025-12-01");
+  assert.deepEqual(T.dayAccess({ date: "2026-09-01", today: "2026-10-07", locked: false, role: "employee" }), { can: true, why: "" });
+  assert.deepEqual(T.dayAccess({ date: "2026-08-31", today: "2026-10-07", locked: false, role: "employee" }), { can: false, why: "old" });
+  assert.equal(T.dayAccess({ date: "2026-08-31", today: "2026-10-07", locked: false, role: "owner" }).can, true);
+});
 test("a day first filled in on a later day counts as entered late", () => {
   assert.equal(T.enteredLate({ date: "2026-10-02", createdAt: "2026-10-05T15:00:00Z" }), true);
   assert.equal(T.enteredLate({ date: "2026-10-05", createdAt: "2026-10-06T03:00:00Z" }), false); // 9 PM on the 5th in Medicine Hat

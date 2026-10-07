@@ -8,13 +8,13 @@ Steps 1 to 3 are done once. Step 4 is done for each employee. On the shop's Supa
 
 ### Step 1. Update the database
 
-Ask Claude to "apply migrations 0010, 0011 and 0012". Or do it yourself:
+Ask Claude to "apply migrations 0010 to 0013". Or do it yourself:
 
 1. In Supabase, click **SQL Editor** → **New query**.
 2. Open `supabase/migrations/0010_ecm_files_bucket.sql` from the repo, copy all of it, paste it in, and click **Run**.
-3. Do the same with `supabase/migrations/0011_timesheets.sql`, then `supabase/migrations/0012_ts_locked_invoker.sql`.
+3. Do the same with `supabase/migrations/0011_timesheets.sql`, then `0012_ts_locked_invoker.sql`, then `0013_known_roles_only.sql`.
 
-Run them in that order, because 0011 tightens the file bucket rules that 0010 creates. Each should finish without an error, and each is safe to run again.
+Run each one once, in that order. Each should finish without an error. Never run an older migration again later: 0001, 0004 and 0010 would loosen access if they ran after the newer ones.
 
 ### Step 2. Deploy the functions
 
@@ -65,13 +65,15 @@ They can change the password after signing in, with **Password** at the top righ
 
 Office staff can get a login the same way: pick **Office staff** in step 4. They get the whole dashboard without wages, and they can look at timesheets but not change them.
 
+A login made straight in Supabase has no access at all until you give it some here: open **Give a login** on that person's row and tap the email under **Already has a login?**.
+
 ---
 
 ### How employees use it
 
 - **Today:** tap **✓ Full day** for 8:00 AM to 4:00 PM. Lunch is paid, so that's 8 hours.
 - **Different hours:** tap **Other times** and enter Start and Finish. Overtime works itself out.
-- **A mistake on an earlier day:** tap **Edit** on that day and fix it.
+- **A mistake on an earlier day:** tap **Edit** on that day and fix it. They can go back to the first of last month; older days are yours to fix.
 - **Sick, vacation or a stat holiday:** tap **Other times**, pick it under Notes, and leave the times empty.
 - **Weekends** have no Full day button. If they worked, they tap **Times** and enter the hours.
 - **On a phone**, the browser's **Add to Home Screen** makes it open like an app.
@@ -93,8 +95,10 @@ Office staff can get a login the same way: pick **Office staff** in step 4. They
 | No **Login** column on the Team tab | Step 3, then sign out and back in. |
 | "The team-logins function isn't deployed yet" | Step 2. |
 | "That email already has a login." | Use another email, or delete the old login in Supabase under **Authentication → Users**. |
+| Someone sees "This login doesn't have access yet" | The login has no role. Open **Give a login** on their row in the Team tab and tap their email under **Already has a login?**. |
 | An employee sees "This login isn't linked to a team member yet" | The login was made in Supabase directly. Delete it there and use **Give a login** on the Team tab instead. |
-| An employee can't fill in a day | Days that haven't happened yet are closed, and so are days in an approved pay period. Reopen the period, or fix the day yourself. |
-| An employee sees "Couldn't save changes" | Check the internet connection, then reload the page. If the pay period was approved while their page was open, its days are locked now. |
+| An employee can't fill in a day | Days that haven't happened yet are closed, and so are days before the first of last month and days in an approved pay period. Reopen the period, or fix the day yourself. |
+| "Couldn't save Sep 2: that pay period is approved" | The period was approved while their screen was open. The day went back to what was saved. Reopen the period if it needs fixing, or fix it yourself. |
+| "Not saved yet · retrying" at the top of the screen | That device lost its connection. It keeps trying and saves as soon as it's back; don't close the page until the message goes away. |
 | An employee forgot their password | Click **Timesheet login** in their row, then **New password**, and send it to them. |
 | Someone leaves | Click **Timesheet login** in their row, then **Remove login** twice. Their timesheet days stay. |

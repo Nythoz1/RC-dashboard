@@ -48,16 +48,17 @@ async function idbRun(mode, fn) {
   });
 }
 
-// Upload one file to `path` (`<jobId>/<filename>`). Throws a plain-English Error
-// when the type or size is wrong or the upload fails.
+// Upload one file to `path` (`<jobId>/<stamp>-<filename>`: the stamp makes every
+// upload its own object, so two people uploading "image.jpg" to the same job at
+// once can't overwrite each other). Throws a plain-English Error when the type
+// or size is wrong or the upload fails.
 export async function uploadEcmFile(path, file) {
   const type = ecmFileType(file && file.name);
   if (!type) throw new Error("That file type isn't accepted. Use CSV, TXT, XML, PDF, ZIP or an image.");
   if (file.size > ECM_MAX_BYTES) throw new Error("Files are limited to 10 MB each.");
   if (usingCloud && supabase) {
-    // upsert: a same-named file is only ever overwritten after its row was deleted
-    // (the job's live names are kept unique before we get here).
-    const { error } = await supabase.storage.from(ECM_BUCKET).upload(path, file, { contentType: type, upsert: true });
+    // Never overwrite: every upload has its own path.
+    const { error } = await supabase.storage.from(ECM_BUCKET).upload(path, file, { contentType: type, upsert: false });
     if (error) {
       const m = String(error.message || error);
       if (/bucket not found/i.test(m)) throw new Error("File storage isn't set up yet: run migration 0010_ecm_files_bucket.sql.");

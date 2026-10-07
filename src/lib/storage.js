@@ -68,11 +68,25 @@ const TABLE_ADAPTERS = {
   },
 };
 
+// Supabase returns at most 1,000 rows per request, so read in pages until a
+// short page comes back (a year of timesheets for five people passes 1,000).
+const PAGE = 1000;
 async function tableGet(a) {
-  const { data, error } = await supabase.from(a.table).select("data").order("id");
-  if (error) throw error;
-  return JSON.stringify((data || []).map((r) => r.data));
+  const all = [];
+  for (let from = 0; ; from += PAGE) {
+    const { data, error } = await supabase.from(a.table).select("data").order("id").range(from, from + PAGE - 1);
+    if (error) throw error;
+    (data || []).forEach((r) => all.push(r.data));
+    if (!data || data.length < PAGE) break;
+  }
+  return JSON.stringify(all);
 }
+
+// The database turned a row down on purpose (row-level security, a duplicate
+// approval, a check): retrying won't help. Anything else (no connection, a
+// timeout) is worth retrying later.
+const REFUSALS = new Set(["42501", "23505", "23514", "P0001"]);
+export const isRefusal = (e) => !!(e && REFUSALS.has(String(e.code || "")));
 
 // The dashboard saves the whole list; write only what changed vs the caller's
 // previous snapshot: upsert new/modified rows, delete only ids the user
@@ -97,20 +111,33 @@ async function tableSet(a, valueString, prevString) {
     const curIds = new Set(cur.map((it) => idOf(it.id)));
     removed = [...prevBy.keys()].filter((id) => !curIds.has(id));
   }
+  // One request for all of them; if the database refuses it (one timesheet day
+  // in an approved period refuses the whole statement), go row by row so the
+  // other rows still save, and report the refused ones to the caller.
+  const refused = [];
   if (upserts.length) {
     const up = await supabase.from(a.table).upsert(upserts);
-    if (up.error) throw up.error;
+    if (up.error) {
+      if (!isRefusal(up.error)) throw up.error;
+      for (const row of upserts) {
+        const one = await supabase.from(a.table).upsert(row);
+        if (one.error) { if (!isRefusal(one.error)) throw one.error; refused.push({ id: row.id, code: one.error.code, message: one.error.message }); }
+      }
+    }
   }
   if (removed.length) {
-    const del = await supabase.from(a.table).delete().in("id", removed);
+    // Row-level security makes a refused delete look like a delete of nothing,
+    // so ask for the deleted ids back and count the missing ones as refused.
+    const del = await supabase.from(a.table).delete().in("id", removed).select("id");
     if (del.error) throw del.error;
+    const gone = new Set((del.data || []).map((r) => idOf(r.id)));
+    removed.filter((id) => !gone.has(idOf(id))).forEach((id) => refused.push({ id, code: "42501", message: "not allowed to remove" }));
   }
+  return refused.length ? { refused } : undefined;
 }
 
 async function tableDel(a) {
-  const { data, error } = await supabase.from(a.table).select("id");
-  if (error) throw error;
-  const ids = (data || []).map((r) => r.id);
+  const ids = JSON.parse(await tableGet({ ...a })).map((it) => it.id);
   if (ids.length) {
     const del = await supabase.from(a.table).delete().in("id", ids);
     if (del.error) throw del.error;
@@ -157,6 +184,9 @@ export const db = {
     tableKeys.forEach((k, i) => { out[k] = tableVals[i]; });
     return out;
   },
+  // Resolves to undefined, or { refused: [{ id, code, message }] } when the
+  // database turned some table rows down (the rest were saved). Throws when the
+  // save didn't go through at all (no connection), so the caller can retry.
   async setItem(key, valueString, prevString) {
     if (!supabase) {
       localStorage.setItem(key, valueString);

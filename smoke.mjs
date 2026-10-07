@@ -322,13 +322,14 @@ await p.click('.rc-ts-seg button:has-text("Team")');
 // a login; Mike sees only his timesheet and never asks for other shop data; the database refuses tomorrow
 // and an approved day; a changed day keeps its old version; office staff see hours, not dollars.
 const SBP=54399,SB="http://127.0.0.1:"+SBP;
-const users=[{email:"owner@rollincoal.test",password:"pw-owner-1",app_metadata:{role:"owner"}},{email:"staff@rollincoal.test",password:"pw-staff-1"},{email:"old@rollincoal.test",password:"pw-old-1"}];   // the last one: made in Supabase before, linked to nobody
+const users=[{email:"owner@rollincoal.test",password:"pw-owner-1",app_metadata:{role:"owner"}},{email:"staff@rollincoal.test",password:"pw-staff-1",app_metadata:{role:"staff"}},{email:"old@rollincoal.test",password:"pw-old-1"},{email:"new@rollincoal.test",password:"pw-new-1"}];   // the last two: made in Supabase, no role yet (old gets linked to Bob, new never does)
 const fns={};
 const sb=await mockSupabase({users,functions:fns});
 globalThis.fetch=async(input,init)=>{const u=String(input instanceof Request?input.url:input);return u.startsWith(SB)?sb.handle(input instanceof Request?input:new Request(u,init)):new Response(JSON.stringify({error:"no network in the smoke run"}),{status:503});};
 fns["team-logins"]=await loadEdgeFunction("team-logins",{SUPABASE_URL:SB,SUPABASE_ANON_KEY:sb.anonKey,SUPABASE_SERVICE_ROLE_KEY:sb.serviceKey});
 await sb.sql("insert into app_state (key, value) values ('rc:employees', $1::jsonb), ('rc:jobs', $2::jsonb), ('rc:timeEntries', $3::jsonb)",[JSON.stringify([{id:101,name:"Mike Test",nick:"Mike",role:"Diesel Tech",rate:40,hrs:40,status:"active"},{id:102,name:"Bob Jones",nick:"Bob",role:"Apprentice",rate:25,hrs:40,status:"active"}]),JSON.stringify([{id:301,kind:"service",vehicle:"Unit 412 · 2016 Kenworth T880",service:"Injector job",tech:"Mike",status:"in-progress",custId:0}]),JSON.stringify([{id:401,jobId:301,tech:"Mike",date:PD2,hours:6,rate:40}])]);
-const mockSrv=createServer(async(req,res)=>{const chunks=[];for await(const c of req)chunks.push(c);const body=Buffer.concat(chunks);const rq=new Request(SB+req.url,{method:req.method,headers:Object.fromEntries(Object.entries(req.headers).filter(([k])=>k!=="host"&&k!=="connection"&&k!=="content-length")),body:["GET","HEAD"].includes(req.method)?undefined:body});
+let mockDown=false;   // true: the data API stops answering, like a dropped connection in the shop
+const mockSrv=createServer(async(req,res)=>{const chunks=[];for await(const c of req)chunks.push(c);const body=Buffer.concat(chunks);if(mockDown&&req.url.startsWith("/rest/v1/")){res.writeHead(503,{"access-control-allow-origin":"*","access-control-allow-headers":"*","access-control-allow-methods":"*","content-type":"application/json"});res.end('{"message":"down for the test"}');return;}const rq=new Request(SB+req.url,{method:req.method,headers:Object.fromEntries(Object.entries(req.headers).filter(([k])=>k!=="host"&&k!=="connection"&&k!=="content-length")),body:["GET","HEAD"].includes(req.method)?undefined:body});
   const r=await sb.handle(rq);const h=Object.fromEntries(r.headers);h["access-control-allow-origin"]="*";res.writeHead(r.status,h);res.end(Buffer.from(await r.arrayBuffer()));}).listen(SBP,"127.0.0.1");
 execSync("npx vite build --outDir dist-smoke-cloud --emptyOutDir",{stdio:"ignore",env:{...process.env,VITE_SUPABASE_URL:SB,VITE_SUPABASE_ANON_KEY:sb.anonKey}});
 const srv2=spawn("npx",["vite","preview","--port","4174","--strictPort","--outDir","dist-smoke-cloud"],{stdio:"ignore"});
@@ -343,6 +344,7 @@ const dbDay=async date=>((await sb.sql("select data from timesheet_entries where
 const MIKE="mike@rollincoal.test";
 await q.goto("http://localhost:4174/");
 await signIn(users[0].email,users[0].password);
+const resetLinks=await q.locator('.rc-sfoot .rc-link:has-text("Reset")').count();
 await q.click('.rc-ni:has-text("Team")');
 await q.click(".rc-main table.rc-tbl tbody tr:has-text('Mike Test') button:has-text('Give a login')");
 await q.fill("#lg-email",MIKE);
@@ -364,6 +366,11 @@ const oldU=sb.users.find(u=>u.email==="old@rollincoal.test")||{};
 await q.click('.rc-mod button:has-text("Close")');
 console.log("existing login linked to Bob: "+JSON.stringify(oldU.app_metadata)+" | owner email noted "+(ownerNote>0)+", create off "+ownerCreateOff+" | Team shows "+JSON.stringify((await q.locator(".rc-main table.rc-tbl tbody tr:has-text('Bob Jones')").innerText()).match(/Timesheet login|Give a login/)?.[0]));
 await signOut();
+await signIn("new@rollincoal.test","pw-new-1",".rc-root");
+await q.waitForSelector('text=doesn\'t have access yet');
+const noAccessNav=await q.locator(".rc-side, .rc-emp").count();
+await q.click('button:has-text("Sign out")');await q.waitForSelector("input[type=email]");
+console.log("login with no role: no-access screen true | dashboard or timesheet shown "+noAccessNav+" | Reset link in the cloud "+resetLinks);
 let mark=sb.log.length;
 await signIn(MIKE,mikePw,".rc-emp");
 const mikeNav=await q.locator(".rc-side").count();
@@ -391,6 +398,10 @@ const ahead=await api("POST","/rest/v1/timesheet_entries",[{id:"101|"+TOMORROW,e
 const shopData=await (await api("GET","/rest/v1/app_state?select=key")).json();
 console.log("Mike straight at the database: tomorrow "+ahead.status+" | app_state rows "+shopData.length);
 await signOut();
+const cm=await b.newContext({viewport:{width:390,height:844},isMobile:true,hasTouch:true});const mq=await cm.newPage();
+mq.on("pageerror",e=>errs.push("mike pageerror: "+e.message));
+await mq.goto("http://localhost:4174/");await mq.fill("input[type=email]",MIKE);await mq.fill("input[type=password]",mikePw);await mq.click("button[type=submit]");await mq.waitForSelector(".rc-emp");
+await mq.click('button[aria-label="Previous month"]');
 await signIn(users[0].email,users[0].password);
 await toTimesheets();
 const cs=await tsStats(q);
@@ -401,6 +412,29 @@ await q.waitForTimeout(1500);
 const apprN=(await sb.sql("select count(*)::int as n from timesheet_approvals"))[0].n;
 await q.screenshot({path:"shot-ts-cloud.png",fullPage:true});
 console.log("owner, cloud: "+cs+" | history: "+hist+" | approvals in the database "+apprN);
+// Mike's screen still shows last month open. Filling in a day there is refused by the database: the day goes back,
+// the lock shows, he's told why, and his next save (clearing today) still goes through.
+await mq.locator(`.rc-my-tbl tr[data-date="${PD1}"] button:has-text("Full day")`).click();
+const refusedToast=(await (await mq.waitForSelector('.rc-toast:has-text("pay period is approved")',{timeout:15000})).innerText()).replace(/\s+/g," ");
+await mq.waitForSelector(`.rc-my-tbl tr[data-date="${PD1}"] .rc-ts-lock`,{timeout:10000});
+const pd1Btns=await mq.locator(`.rc-my-tbl tr[data-date="${PD1}"] button`).count(),pd1Db=await dbDay(PD1);
+await mq.click('button[aria-label="Next month"]');
+await mq.locator(`.rc-my-tbl tr[data-date="${TODAY}"] button:has-text("Edit")`).click();
+await mq.click('.rc-mod button:has-text("Clear day")');
+await mq.waitForTimeout(2000);
+const clearedToday=await dbDay(TODAY);
+await cm.close();
+console.log("stale screen: "+PD1+" refused: "+refusedToast+" | buttons left "+pd1Btns+", in the database "+!!pd1Db+" | clearing today saved it empty "+(clearedToday&&clearedToday.start===""&&clearedToday.history.length>0));
+// The connection drops: the change waits with a "Not saved yet" badge, then saves when it's back.
+mockDown=true;
+await q.click('button:has-text("⚙ Settings")');await q.locator("#ts-ot").selectOption("2");
+await q.waitForSelector(".rc-savebad",{timeout:10000});
+const otWhileDown=(await sb.sql("select value->0->>'otRate' as r from app_state where key='rc:settings'"))[0]?.r??null;
+mockDown=false;   // no tap needed: it retries by itself
+await q.waitForSelector(".rc-savebad",{state:"detached",timeout:20000});
+const otAfter=(await sb.sql("select value->0->>'otRate' as r from app_state where key='rc:settings'"))[0]?.r??null;
+await q.locator("#ts-ot").selectOption("1.5");await q.click('.rc-mod button:has-text("Close")');await q.waitForTimeout(1200);
+console.log("connection dropped: badge shown true | saved while down "+otWhileDown+" | after it came back "+otAfter);
 const locked=await api("POST","/rest/v1/timesheet_entries",[{id:"101|"+PD2,employee_id:101,work_date:PD2,data:{start:"7:00 AM",finish:"11:00 PM"}}]);
 const pAfter=await dbDay(PD2);
 await signOut();

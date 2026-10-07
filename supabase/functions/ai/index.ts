@@ -18,8 +18,10 @@
 // does its own check we deploy with --no-verify-jwt: that makes getUser() the
 // real (stronger) gate AND lets the browser's credential-less CORS preflight
 // (OPTIONS) through. This is what stops the function being an open relay.
-// Employee logins (app_metadata.role "employee", timesheet only, migration 0011)
-// are refused too: they have no use for it and shouldn't spend the shop's credit.
+// Only owner and office-staff logins (app_metadata.role "owner" / "staff",
+// migrations 0011 and 0013) may use it: employee logins have no use for it, and a
+// login with no role has no access at all. A prompt over 24,000 characters is
+// refused, so nobody can run up the shop's Anthropic bill with one huge request.
 // ─────────────────────────────────────────────────────────────
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
@@ -27,6 +29,7 @@ const KEY = Deno.env.get("ANTHROPIC_API_KEY");
 const MODEL = Deno.env.get("ANTHROPIC_MODEL") || "claude-sonnet-4-6";
 const SB_URL = Deno.env.get("SUPABASE_URL");
 const SB_ANON = Deno.env.get("SUPABASE_ANON_KEY");
+const MAX_PROMPT = 24000;
 
 const cors = {
   "Access-Control-Allow-Origin": "*",
@@ -48,7 +51,7 @@ Deno.serve(async (req) => {
     const sb = createClient(SB_URL, SB_ANON, { auth: { persistSession: false } });
     const { data, error } = await sb.auth.getUser(token);
     if (error || !data?.user) return json({ error: "Not authenticated" }, 401);
-    if (data.user.app_metadata?.role === "employee") return json({ error: "Not available for this login" }, 403);
+    if (!["owner", "staff"].includes(data.user.app_metadata?.role)) return json({ error: "Not available for this login" }, 403);
   } catch (_e) {
     return json({ error: "Auth check failed" }, 401);
   }
@@ -57,6 +60,7 @@ Deno.serve(async (req) => {
   try {
     const { prompt, system } = await req.json();
     if (!prompt) return json({ error: "Missing prompt" }, 400);
+    if (String(prompt).length > MAX_PROMPT) return json({ error: "That's too much text for the AI at once. Shorten it and try again." }, 413);
     const sys = typeof system === "string" && system.trim() ? system.trim().slice(0, 4000) : null;
     const r = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",

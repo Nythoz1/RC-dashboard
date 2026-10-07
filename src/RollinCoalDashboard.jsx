@@ -150,7 +150,7 @@ const STORE_KEYS=["customers","jobs","timeEntries","quotes","inventory","invoice
 // An employee login loads and saves only these: its own days and approvals (the database shows it
 // nothing else, migration 0011). Everyone else works with every list.
 const EMP_KEYS=["timesheets","payPeriods"];
-const keysFor=role=>role==="employee"?EMP_KEYS:STORE_KEYS;
+const keysFor=role=>role==="employee"?EMP_KEYS:role==="none"?[]:STORE_KEYS;
 
 // ── Shop activity log (who-did-what, auto-captured as a byproduct of work) ──
 let CURRENT_USER="shop";
@@ -364,7 +364,7 @@ const bomBuy=(b,sh)=>{const out=[];const signed=!!(sh&&sh.decidedAt);((b&&b.line
 const bomSecs=b=>[...new Set(((b&&b.lines)||[]).map(l=>l.sec))];
 // Search string for a buy link: a known part number beats the family name.
 const buyQ=(b,l,pn)=>{const nm=String(l.part||"").replace(/[—–]/g," ").replace(/\s+/g," ").trim();const t=String(pn||"").trim();return encodeURIComponent(t?t+" "+nm:(b?((b.family||"")+" "+(b.model||"")+" ").replace(/\s+/g," "):"")+nm);};
-const buyUrl=(v,q)=>String(v.search||"").replace("{q}",q);
+const buyUrl=(v,q)=>safeUrl(String(v.search||"").replace("{q}",q))||undefined;
 const bomCost=(b,sh)=>bomBuy(b,sh).reduce((a,z)=>a+(+sheetRow(sh,z.l.id).cost||0),0);
 // ── ECM programming / tuning jobs ──
 // Parameter programming, factory calibration updates, ECM replacement/setup,
@@ -591,7 +591,10 @@ function exportBackup(s){try{const data={exported:new Date().toISOString(),app:"
 // details, price, photo only. Never includes costs, parts log, or margins.
 function listingText(i){const L=[];L.push((i.name||"Engine").toUpperCase());const id=[];if(i.serial||i.esn)id.push("ESN "+(i.serial||i.esn));if(i.sku)id.push("SKU "+i.sku);if(id.length)L.push(id.join(" · "));const sp=[];if(i.year)sp.push("Year: "+i.year);if(i.ratedHp)sp.push("Rated HP: "+i.ratedHp);if(i.oilCap)sp.push("Oil capacity: "+i.oilCap);if(i.arrangement)sp.push("Arrangement: "+i.arrangement);if(sp.length)L.push(sp.join(" · "));if(i.condition)L.push("Condition: "+i.condition);if(i.notes)L.push("",i.notes);L.push("","Price: "+(+i.price>0?$$(+i.price)+" CAD":"Call for pricing"));L.push("","Rollin Coal — Canada's Diesel Engine Specialists","Medicine Hat, AB · 1-587-863-0505 · rollin-coal.ca");return L.join("\n");}
 function listingHtml(i){const esc=t=>String(t==null?"":t).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/'/g,"&#39;");const photo=i.photo?(i.photo.startsWith("/")?window.location.origin+i.photo:i.photo):"";let h="";if(photo)h+='<img src="'+esc(photo)+'" alt="'+esc(i.name)+'" style="max-width:480px;width:100%;border-radius:8px">\n';h+="<h2>"+esc(i.name)+"</h2>\n<ul>\n";if(i.serial||i.esn)h+="<li><b>ESN:</b> "+esc(i.serial||i.esn)+"</li>\n";if(i.year)h+="<li><b>Year:</b> "+esc(i.year)+"</li>\n";if(i.ratedHp)h+="<li><b>Rated HP:</b> "+esc(i.ratedHp)+"</li>\n";if(i.oilCap)h+="<li><b>Oil capacity:</b> "+esc(i.oilCap)+"</li>\n";if(i.condition)h+="<li><b>Condition:</b> "+esc(i.condition)+"</li>\n";h+="</ul>\n";if(i.notes)h+="<p>"+esc(i.notes)+"</p>\n";h+="<p><b>Price: "+(+i.price>0?$$(+i.price)+" CAD":"Call for pricing")+"</b></p>\n<p>Rollin Coal — Canada's Diesel Engine Specialists · Medicine Hat, AB · 1-587-863-0505</p>";return h;}
-async function downloadPhoto(u,name){try{const abs=u.startsWith("/")?window.location.origin+u:u;const r=await fetch(abs);const b=await r.blob();const o=URL.createObjectURL(b);const a=document.createElement("a");a.href=o;a.download=name;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(o),3000);}catch(e){try{window.open(u,"_blank");}catch(e2){}}}
+// Only web addresses (and the app's own paths) are ever fetched, opened or linked: a "javascript:" link pasted
+// into a photo or supplier field would otherwise run inside the dashboard with the viewer's login.
+const safeUrl=u=>{const t=String(u||"").trim();return /^(https?:\/\/|\/(?!\/)|blob:|data:image\/)/i.test(t)?t:"";};
+async function downloadPhoto(raw,name){const u=safeUrl(raw);if(!u)return;try{const abs=u.startsWith("/")?window.location.origin+u:u;const r=await fetch(abs);const b=await r.blob();const o=URL.createObjectURL(b);const a=document.createElement("a");a.href=o;a.download=name;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(o),3000);}catch(e){try{window.open(u,"_blank");}catch(e2){}}}
 // The printed sheets' shared stylesheet (engine build sheet, ECM job sheet).
 const SHEET_STYLE='<style>@import url("https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap");'+
   '@page{size:letter portrait;margin:14mm 13mm;}*{box-sizing:border-box;}body{font-family:"IBM Plex Mono",monospace;color:#151515;margin:0;padding:26px;font-size:13.5px;line-height:1.5;-webkit-print-color-adjust:exact;print-color-adjust:exact;}'+
@@ -689,7 +692,16 @@ function horn(){try{const C=window.AudioContext||window.webkitAudioContext;if(!C
 // Storage
 // Save only the given (changed) lists, handing the adapter the previous
 // snapshot so table-backed lists can diff per-row instead of rewriting.
-async function saveAll(s,keys,prev,role){const failed=[];const ok=keysFor(role);for(const k of (keys||ok)){if(!ok.includes(k))continue;try{await db.setItem("rc:"+k,JSON.stringify(s[k]||[]),prev&&prev[k]!=null?JSON.stringify(prev[k]||[]):undefined);}catch(e){failed.push(k);console.error("[rc save] "+k+" failed:",e&&e.message?e.message:e);}}return failed;}
+// Returns {failed: lists that didn't reach the server (retry them), refused: {list: [rows the database turned down]}}.
+async function saveAll(s,keys,prev,role){const failed=[],refused={};const ok=keysFor(role);for(const k of (keys||ok)){if(!ok.includes(k))continue;try{const r=await db.setItem("rc:"+k,JSON.stringify(s[k]||[]),prev&&prev[k]!=null?JSON.stringify(prev[k]||[]):undefined);if(r&&r.refused&&r.refused.length)refused[k]=r.refused;}catch(e){failed.push(k);console.error("[rc save] "+k+" failed:",e&&e.message?e.message:e);}}return{failed,refused};}
+// Why the database put a change back, in plain words.
+function refusedMsg(refused,pp){
+  if((refused.payPeriods||[]).some(x=>x.code==="23505"))return "That pay period was already approved, so nothing changed.";
+  const ts=(refused.timesheets||[]).map(x=>String(x.id).split("|")).filter(p=>p.length===2);
+  if(ts.length){const today=Tsh.shopToday(),floor=Tsh.editFloor(today);const why=ts.some(([e,dt])=>Tsh.lockedBy(pp,e,dt))?"that pay period is approved":ts.some(([,dt])=>dt<floor)?"it's too far back":"it isn't open for changes";
+    return "Couldn't save "+ts.map(([,dt])=>Tsh.shortDate(dt)).join(", ")+": "+why+". It's back to what was saved. Ask the owner if something's wrong.";}
+  return "Some changes weren't allowed, so they were put back to what's saved.";
+}
 async function loadAll(role){const d={};let m=null;const keys=keysFor(role);try{m=await db.getAll(keys.map(k=>"rc:"+k));}catch(e){console.error("[rc load] batch failed:",e&&e.message?e.message:e);}if(!m){STORE_KEYS.forEach(k=>{d[k]=EMPTY[k]||[];});d.__loadError=true;return d;}let err=false;for(const k of STORE_KEYS){if(!keys.includes(k)){d[k]=[];continue;}const r=m["rc:"+k];try{d[k]=(r!=null)?JSON.parse(r):(EMPTY[k]||[]);}catch(e){err=true;d[k]=EMPTY[k]||[];console.error("[rc load] "+k+" parse failed:",e&&e.message?e.message:e);}}if(err)d.__loadError=true;else if(role!=="employee")await seedResearch(d);return d;}
 async function clearAll(){for(const k of STORE_KEYS){try{await db.removeItem("rc:"+k);}catch(e){}}}
 
@@ -1530,7 +1542,7 @@ function Timesheets({s,d,role,owner,preview,setPreview}){
         {owner?<Stat label="Gross pay" value={$$(T.pay.gross)} sub="before deductions"/>:<Stat label="Unallocated" value={T.unalloc.toFixed(2)} sub="paid, not on a job"/>}
       </div>
       <div className="rc-ts-appr">
-        {T.appr?(<><span className="rc-ts-ok">✓ Approved {fmtWhen(T.appr.approvedAt)}{T.appr.approvedBy?" by "+T.appr.approvedBy:""}. {firstName(e.name)} can't change these days now.</span>{canEdit&&<button className="rc-bs" onClick={()=>d({type:"DELETE",list:"payPeriods",id:T.appr.id})}>Reopen</button>}</>)
+        {T.appr?(<><span className="rc-ts-ok">✓ Approved {fmtWhen(T.appr.approvedAt)}{T.appr.approvedBy?" by "+T.appr.approvedBy:""}. {firstName(e.name)} can't change these days now.</span>{canEdit&&<button className="rc-bs" onClick={()=>(s.payPeriods||[]).filter(a=>String(a.emp)===String(e.id)&&a.start===P.start&&a.end===P.end).forEach(a=>d({type:"DELETE",list:"payPeriods",id:a.id}))}>Reopen</button>}</>)
         :(<>{T.missing.length>0&&<span className="rc-ts-cnt">{T.missing.length} weekday{T.missing.length===1?"":"s"} not filled in</span>}{flagN>0&&<span className="rc-ts-cnt">⚠ {flagN} to check</span>}{T.edited.length>0&&<span className="rc-ts-cnt info">{T.edited.length} filled in or changed after the day</span>}
           {canEdit?(P.end<=today?<button className="rc-ba" onClick={approve}>✓ Approve {Tsh.periodLabel(P)}</button>:<span className="rc-ts-note" style={{margin:0}}>You can approve {Tsh.periodLabel(P)} once it ends on {Tsh.shortDate(P.end)}.</span>):<span className="rc-ts-note" style={{margin:0}}>Not approved yet. The owner approves pay periods.</span>}</>)}
       </div>
@@ -1595,17 +1607,17 @@ function MyTimesheet({s,d,me,role="employee"}){
         {W&&W.min>0&&<tr className="wk"><td colSpan={2}>Week of {Tsh.shortDate(w)}{W.rule==="weekly"?" · over 44 h":""}</td><td className="n">{fH(W.min)}{W.otMin?<div className="rc-my-ot">{fH(W.otMin)} OT</div>:null}</td><td/></tr>}
       </React.Fragment>);})}
     </tbody></table></div>
-    <div className="rc-ts-dim rc-my-foot">Fill in today, or fix an earlier day if something's wrong. Days that haven't happened yet stay closed, and once a pay period is approved its days are locked. Lunch is paid, so a full day is 8:00 AM to 4:00 PM. Overtime is time over 8 hours in a day or 44 in a week.</div>
+    <div className="rc-ts-dim rc-my-foot">Fill in today, or fix an earlier day if something's wrong. Days that haven't happened yet stay closed, days before {Tsh.monthLabel(Tsh.editFloor(today).slice(0,7))} can only be changed by the owner, and once a pay period is approved its days are locked. Lunch is paid, so a full day is 8:00 AM to 4:00 PM. Overtime is time over 8 hours in a day or 44 in a week.</div>
   </div>);
 }
 
 // What an employee login sees: their timesheet and nothing else. The owner gets the same
 // screen through "See …'s screen", with a way back.
-function EmployeeShell({s,d,me,email,preview,onExit,onSignOut,themePref,chooseTheme}){
+function EmployeeShell({s,d,me,email,preview,onExit,onSignOut,saveBadge,themePref,chooseTheme}){
   return(<div className="rc-emp">
     <header className="rc-emp-top">
       <div className="rc-logo"><div className="rc-hi">RC</div><div><div className="rc-hn">Rollin Coal</div><div className="rc-hs">My timesheet</div></div></div>
-      <div className="rc-emp-who"><b>{me.name||email||""}</b>
+      <div className="rc-emp-who"><b>{me.name||email||""}</b>{saveBadge}
         <div className="rc-links">{preview?<button className="rc-fb on" onClick={onExit}>👁 {firstName(me.name)}'s screen · back to the dashboard</button>:<><button className="rc-link" onClick={()=>d({type:"MODAL",v:"my-password"})}>Password</button><button className="rc-link" onClick={onSignOut}>Sign out</button></>}</div>
       </div>
     </header>
@@ -1766,7 +1778,10 @@ function Modals({s,d,owner=true,who={role:"owner"}}){
   const CS=()=>(<div className="rc-fg"><label className="rc-fl">Customer</label><select className="rc-fi" value={f.custId||""} onChange={e=>set("custId",e.target.value)} style={{appearance:"none"}}><option value="">Select...</option>{(s.customers||[]).map(c=>(<option key={c.id} value={c.id}>{c.name}</option>))}</select></div>);
   const ES=(auto,lab)=>(<div className="rc-fg"><label className="rc-fl">{lab||"Engine (optional)"}</label><select className="rc-fi" value={f.engineId||""} onChange={e=>{const id=+e.target.value;const eng=(s.inventory||[]).find(x=>x.id===id);set("engineId",e.target.value);if(eng&&auto)auto(eng);}} style={{appearance:"none"}}><option value="">Not linked</option>{(s.inventory||[]).filter(isEngine).map(eng=>(<option key={eng.id} value={eng.id}>{eng.name} {eng.serial?`· ESN ${eng.serial}`:""}</option>))}</select></div>);
   const TS=()=>(<div className="rc-fg"><label className="rc-fl">Technician</label><select className="rc-fi" value={f.tech||""} onChange={e=>set("tech",e.target.value)} style={{appearance:"none"}}><option value="">Unassigned</option>{(s.employees||[]).filter(e=>e.status==="active").map(e=>(<option key={e.id} value={e.nick||e.name}>{e.name}</option>))}</select></div>);
-  const PH=()=>(<div className="rc-fg"><label className="rc-fl">Photo</label>{f.photo?(<div style={{position:"relative",marginBottom:6}}><img src={f.photo} alt="" style={{width:"100%",maxHeight:160,objectFit:"cover",borderRadius:4,border:"1px solid var(--ln)"}}/><button className="rc-bs rc-bsr" onClick={()=>{deletePhoto(f.photo);set("photo","");if(s.modal==="edit-part"&&s.md&&s.md.id)d({type:"UPDATE",list:"inventory",id:s.md.id,d:{photo:""}});}} style={{position:"absolute",top:6,right:6,fontSize:11}}>Remove</button></div>):null}<div style={{display:"flex",gap:6,alignItems:"center"}}><label className="rc-bs" style={{cursor:uploading?"default":"pointer",textAlign:"center",opacity:uploading?.6:1}}>{uploading?"⏳ Uploading…":"📷 Upload"}<input type="file" accept="image/*" disabled={uploading} onChange={e=>{const file=e.target.files[0];if(!file)return;setUploading(true);uploadPhoto(file).then(u=>{const old=f.photo;if(old&&old!==u)deletePhoto(old);set("photo",u);if(s.modal==="edit-part"&&s.md&&s.md.id){d({type:"UPDATE",list:"inventory",id:s.md.id,d:{photo:u}});d({type:"TOAST",d:{msg:"📷 Photo saved",t:Date.now()}});}}).catch(err=>{console.error("photo upload failed:",err&&err.message?err.message:err);d({type:"TOAST",d:{msg:"⚠ Photo upload failed — try again",t:Date.now()}});}).finally(()=>setUploading(false));}} style={{display:"none"}}/></label><input className="rc-fi" placeholder="...or paste image URL" value={(f.photo||"").startsWith("data:")?"":(f.photo||"")} onChange={e=>set("photo",e.target.value)} style={{flex:1}}/></div></div>);
+  // A replaced or removed photo's file goes 20 s later, and only if no engine or part still uses it (a cancelled edit,
+  // or a save that didn't land, keeps the picture).
+  const dropPhotoLater=u=>{if(!u)return;setTimeout(()=>{const st=sRef2.current||{};if(![...(st.inventory||[]),...(st.parts||[])].some(x=>x&&x.photo===u))deletePhoto(u);},20000);};
+  const PH=()=>(<div className="rc-fg"><label className="rc-fl">Photo</label>{f.photo?(<div style={{position:"relative",marginBottom:6}}><img src={f.photo} alt="" style={{width:"100%",maxHeight:160,objectFit:"cover",borderRadius:4,border:"1px solid var(--ln)"}}/><button className="rc-bs rc-bsr" onClick={()=>{dropPhotoLater(f.photo);set("photo","");if(s.modal==="edit-part"&&s.md&&s.md.id)d({type:"UPDATE",list:"inventory",id:s.md.id,d:{photo:""}});}} style={{position:"absolute",top:6,right:6,fontSize:11}}>Remove</button></div>):null}<div style={{display:"flex",gap:6,alignItems:"center"}}><label className="rc-bs" style={{cursor:uploading?"default":"pointer",textAlign:"center",opacity:uploading?.6:1}}>{uploading?"⏳ Uploading…":"📷 Upload"}<input type="file" accept="image/*" disabled={uploading} onChange={e=>{const file=e.target.files[0];if(!file)return;setUploading(true);uploadPhoto(file).then(u=>{const old=f.photo;if(old&&old!==u)dropPhotoLater(old);set("photo",u);if(s.modal==="edit-part"&&s.md&&s.md.id){d({type:"UPDATE",list:"inventory",id:s.md.id,d:{photo:u}});d({type:"TOAST",d:{msg:"📷 Photo saved",t:Date.now()}});}}).catch(err=>{console.error("photo upload failed:",err&&err.message?err.message:err);d({type:"TOAST",d:{msg:"⚠ Photo upload failed — try again",t:Date.now()}});}).finally(()=>setUploading(false));}} style={{display:"none"}}/></label><input className="rc-fi" placeholder="...or paste image URL" value={(f.photo||"").startsWith("data:")?"":(f.photo||"")} onChange={e=>set("photo",e.target.value)} style={{flex:1}}/></div></div>);
   const TA=(k,l,rows)=>(<div className="rc-fg"><label className="rc-fl">{l}</label><textarea className="rc-fi" rows={rows||3} value={f[k]||""} onChange={e=>set(k,e.target.value)} placeholder={l} style={{resize:"vertical",lineHeight:1.5}}/></div>);
   const SYM=(sy,tog)=>(<div style={{display:"flex",gap:5,flexWrap:"wrap"}}>{SYMPTOMS.map(t=>(<button key={t} className={"rc-fb"+(sy.includes(t)?" on":"")} onClick={()=>tog(t)} style={{textTransform:"none",letterSpacing:0,fontSize:12}}>{t}</button>))}</div>);
   const C=<button className="rc-bs" onClick={()=>d({type:"CLOSE"})}>Close</button>;
@@ -1861,7 +1876,7 @@ function Modals({s,d,owner=true,who={role:"owner"}}){
               <span style={{flex:1,minWidth:130,fontSize:13}}>{l.part}</span>
               <input className="rc-fi" type="number" placeholder="$" value={r.cost||""} onChange={e=>setRow(l.id,{cost:e.target.value})} style={{width:84,padding:"5px 8px",fontSize:12.5}}/>
               {ven&&<a className="rc-fb rc-noprint" href={buyUrl(ven,buyQ(bm,l,r.pn))} target="_blank" rel="noopener noreferrer" style={{textDecoration:"none"}}>🔎 {ven.name}</a>}
-              {r.url&&<a className="rc-fb rc-noprint" href={r.url} target="_blank" rel="noopener noreferrer" style={{textDecoration:"none",borderColor:"var(--g)",color:"var(--g)"}}>🔗 Saved</a>}
+              {r.url&&<a className="rc-fb rc-noprint" href={safeUrl(r.url)||undefined} target="_blank" rel="noopener noreferrer" style={{textDecoration:"none",borderColor:"var(--g)",color:"var(--g)"}}>🔗 Saved</a>}
               <button className="rc-fb rc-noprint" onClick={()=>d({type:"MODAL",v:"bom-note",d:{engineId:eng.id,lineId:l.id,part:l.part}})} style={{fontSize:10,padding:"3px 7px"}}>✎</button>
             </div>
             {(r.pn||r.meas||(why!=="order"&&l.note))&&<div style={{fontSize:11,color:(r.pn||r.meas)?"var(--g)":"var(--mt)",paddingLeft:37,marginTop:2}}>{[r.pn&&("PN "+r.pn),r.meas||(why!=="order"?l.note:"")].filter(Boolean).join(" · ")}</div>}
@@ -2188,7 +2203,7 @@ function Modals({s,d,owner=true,who={role:"owner"}}){
     const pickFiles=async ev=>{const picked=[...(ev.target.files||[])];ev.target.value="";if(!picked.length)return;set("upBusy",true);
       for(const file of picked){const type=ecmFileType(file.name);if(!type){d({type:"TOAST",d:{msg:"Skipped "+file.name+": use CSV, TXT, XML, PDF, ZIP or an image",long:true,t:Date.now()}});continue;}if(file.size>ECM_MAX_BYTES){d({type:"TOAST",d:{msg:"Skipped "+file.name+": it's over 10 MB",long:true,t:Date.now()}});continue;}
         const cur=ecmFilesFor(sRef2.current,j.id);const names=new Set(cur.map(x=>String(x.name).toLowerCase()));const base=file.name.replace(/[^A-Za-z0-9._ ()-]/g,"_");let nm=base,k=2;while(names.has(nm.toLowerCase())){nm=base.replace(/(\.[^.]*)?$/,m=>" ("+k+")"+m);k++;}
-        try{const r=await uploadEcmFile(j.id+"/"+nm,file);d({type:"ADD",list:"ecmFiles",keep:true,d:{jobId:j.id,path:r.path,name:nm,size:r.size,type:r.type,at:isoToday()},label:"📎 "+nm+" uploaded"});}catch(err){d({type:"TOAST",d:{msg:"Upload failed: "+(err&&err.message?err.message:String(err)),long:true,t:Date.now()}});}}
+        try{const r=await uploadEcmFile(j.id+"/"+Date.now().toString(36)+"-"+nm,file);d({type:"ADD",list:"ecmFiles",keep:true,d:{jobId:j.id,path:r.path,name:nm,size:r.size,type:r.type,at:isoToday()},label:"📎 "+nm+" uploaded"});}catch(err){d({type:"TOAST",d:{msg:"Upload failed: "+(err&&err.message?err.message:String(err)),long:true,t:Date.now()}});}}
       set("upBusy",false);};
     const openF=fl=>{openEcmFile(fl.path).catch(err=>d({type:"TOAST",d:{msg:"Couldn't open "+fl.name+": "+(err&&err.message?err.message:String(err)),long:true,t:Date.now()}}));};
     // Undoable: the row goes now; the stored file goes once the undo window has passed, if the row didn't come back.
@@ -2502,13 +2517,14 @@ function Modals({s,d,owner=true,who={role:"owner"}}){
     const val=(k,p)=>f[k]!==undefined?f[k]:p;
     const st=val("tsS",prev?Tsh.toTimeInput(prev.start):""),fi=val("tsF",prev?Tsh.toTimeInput(prev.finish):""),no=val("tsN",prev?prev.notes||"":"");
     const chk=Tsh.checkTimes(Tsh.fromTimeInput(st),Tsh.fromTimeInput(fi));const empty=!st&&!fi&&!String(no).trim();
-    // Clearing today's own entry just removes it (undo from the toast); clearing an earlier day saves it empty, so the owner still sees what it said.
-    const clear=()=>{if(!acc.can||!prev)return;if(date===today&&!Tsh.wasEdited(prev))d({type:"DELETE",list:"timesheets",id:prev.id});else tsSave(s,d,{emp,date,vals:{start:"",finish:"",notes:""},label:"Cleared "+Tsh.shortDate(date)+". The old times stay in the day's history."});d({type:"CLOSE"});};
+    // The owner clearing today's fresh entry just removes it (undo from the toast). Everything else, and anything an employee
+    // clears, is saved empty, so the history stays and the owner still sees what it said (employees can't delete, 0013).
+    const clear=()=>{if(!acc.can||!prev)return;if(role!=="employee"&&date===today&&!Tsh.wasEdited(prev))d({type:"DELETE",list:"timesheets",id:prev.id});else tsSave(s,d,{emp,date,vals:{start:"",finish:"",notes:""},label:"Cleared "+Tsh.shortDate(date)+". The old times stay in the day's history."});d({type:"CLOSE"});};
     const save=()=>{if(!acc.can||!chk.ok||empty)return;tsSave(s,d,{emp,date,vals:{start:Tsh.fromTimeInput(st),finish:Tsh.fromTimeInput(fi),notes:String(no).trim()},label:"Saved "+Tsh.shortDate(date)+(chk.min?": "+fH(chk.min)+" h":"")});d({type:"CLOSE"});};
     return W(<div>
       <div className="rc-mt">{Tsh.longDate(date)}</div>
       {name&&role!=="employee"&&<div className="rc-ts-dim" style={{marginTop:-8,marginBottom:12}}>{name}</div>}
-      {!acc.can?<div className="rc-ts-note">{acc.why==="future"?"This day hasn't happened yet, so it can't be filled in.":acc.why==="locked"?"This pay period is approved, so the day is locked. Ask the owner if something's wrong.":"Only the owner and the employee can change hours."}</div>:(<>
+      {!acc.can?<div className="rc-ts-note">{acc.why==="future"?"This day hasn't happened yet, so it can't be filled in.":acc.why==="locked"?"This pay period is approved, so the day is locked. Ask the owner if something's wrong.":acc.why==="old"?"This day is too far back to change here. Ask the owner if something's wrong.":"Only the owner and the employee can change hours."}</div>:(<>
         {acc.why==="locked"&&<div className="rc-ts-lockwarn">This day is in an approved pay period. Your change is kept in the day's history.</div>}
         {Tsh.isWeekday(date)&&<button className="rc-bs rc-ts-fullbtn" onClick={()=>sf(pp=>({...pp,tsS:"08:00",tsF:"16:00"}))}>Full day · 8:00 AM to 4:00 PM</button>}
         <div className="rc-ts-times"><div className="rc-fg"><label className="rc-fl" htmlFor="ts-start">Start</label><input id="ts-start" className="rc-fi" type="time" step="300" value={st} onChange={ev=>set("tsS",ev.target.value)}/></div><div className="rc-fg"><label className="rc-fl" htmlFor="ts-finish">Finish</label><input id="ts-finish" className="rc-fi" type="time" step="300" value={fi} onChange={ev=>set("tsF",ev.target.value)}/></div></div>
@@ -2567,7 +2583,7 @@ function Modals({s,d,owner=true,who={role:"owner"}}){
       <div className="rc-ts-dim">At least 8 characters.{f.pw2&&f.pw1!==f.pw2?" The two don't match yet.":""}</div>
       {f.pwErr&&<div className="rc-ts-errl" role="alert">{f.pwErr}</div>}
       <div className="rc-fa">{X}<button className="rc-ba" disabled={!ok||f.pwBusy} onClick={async()=>{set("pwBusy",true);const err=await changePassword(f.pw1);set("pwBusy",false);if(err){set("pwErr",err);return;}d({type:"CLOSE"});d({type:"TOAST",d:{msg:"Password changed",t:Date.now()}});}}>Save</button></div></div>);}
-  if(s.modal==="confirm-reset")return W(<div><div className="rc-mt">Reset All Data?</div><p style={{fontSize:14,color:"var(--tx2)",marginBottom:10,lineHeight:1.6}}>This permanently deletes <strong>everything</strong> — engines, customers, invoices, wins, the lot. Download a backup first.</p><button className="rc-bs" style={{marginBottom:12}} onClick={()=>exportBackup(s)}>⬇ Download backup (JSON)</button><div className="rc-fg"><label className="rc-fl">Type RESET to confirm</label><input className="rc-fi" value={f.resetConfirm||""} onChange={e=>set("resetConfirm",e.target.value)} placeholder="RESET"/></div><div className="rc-fa">{C}<button className="rc-ba" disabled={(f.resetConfirm||"")!=="RESET"} style={{background:(f.resetConfirm||"")==="RESET"?"var(--r)":"var(--rs)",borderColor:"var(--r)",opacity:(f.resetConfirm||"")==="RESET"?1:.5,cursor:(f.resetConfirm||"")==="RESET"?"pointer":"not-allowed"}} onClick={async()=>{if((f.resetConfirm||"")!=="RESET")return;await clearAll();d({type:"RESET"});d({type:"CLOSE"});}}>Reset</button></div></div>);
+  if(s.modal==="confirm-reset"&&!usingCloud)return W(<div><div className="rc-mt">Reset All Data?</div><p style={{fontSize:14,color:"var(--tx2)",marginBottom:10,lineHeight:1.6}}>This permanently deletes <strong>everything</strong> — engines, customers, invoices, wins, the lot. Download a backup first.</p><button className="rc-bs" style={{marginBottom:12}} onClick={()=>exportBackup(s)}>⬇ Download backup (JSON)</button><div className="rc-fg"><label className="rc-fl">Type RESET to confirm</label><input className="rc-fi" value={f.resetConfirm||""} onChange={e=>set("resetConfirm",e.target.value)} placeholder="RESET"/></div><div className="rc-fa">{C}<button className="rc-ba" disabled={(f.resetConfirm||"")!=="RESET"} style={{background:(f.resetConfirm||"")==="RESET"?"var(--r)":"var(--rs)",borderColor:"var(--r)",opacity:(f.resetConfirm||"")==="RESET"?1:.5,cursor:(f.resetConfirm||"")==="RESET"?"pointer":"not-allowed"}} onClick={async()=>{if((f.resetConfirm||"")!=="RESET")return;await clearAll();d({type:"RESET"});d({type:"CLOSE"});}}>Reset</button></div></div>);
   return null;
 }
 
@@ -2779,6 +2795,7 @@ const CSS=`@import url('${FONTS}');
 .rc-ts-login{display:grid;gap:10px;margin:0 0 14px;}
 .rc-ts-login div{display:grid;gap:2px;}
 .rc-ts-login b{font-size:14.5px;word-break:break-all;}
+.rc-savebad{margin-left:auto;align-self:center;border:1px solid var(--r);background:var(--rs);color:var(--r);border-radius:999px;padding:5px 12px;font:600 13px/1.3 var(--fb);cursor:pointer;white-space:nowrap;}
 .rc-emp{min-height:100vh;background:var(--bg);color:var(--tx);font-family:var(--fb);}
 .rc-emp-top{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;padding:14px 20px;background:var(--sf);border-bottom:1px solid var(--ln);}
 .rc-emp-top .rc-logo{padding:0;border:0;margin:0;}
@@ -3032,10 +3049,11 @@ export default function App(){
   const chooseTheme=k=>{setThemePref(k);setPref("rc:theme",k);};
   const[session,setSession]=useState(null);const[authReady,setAuthReady]=useState(!usingCloud);
   const authed=!usingCloud||!!session;
-  // Who's signed in: the owner (everything), an employee (their own timesheet only; migration 0011 holds the
-  // rule) or office staff (any other login: the whole dashboard, no wages). Local mode has no logins: the owner.
+  // Who's signed in: the owner (everything), office staff (the whole dashboard, no wages) or an employee (their own
+  // timesheet only). Migrations 0011 and 0013 hold the rules; a login with no role has no access at all until the
+  // owner gives it one from the Team tab. Local mode has no logins: the owner.
   const meta=(session&&session.user&&session.user.app_metadata)||{};
-  const role=!usingCloud?"owner":meta.role==="owner"?"owner":meta.role==="employee"?"employee":"staff";
+  const role=!usingCloud?"owner":["owner","staff","employee"].includes(meta.role)?meta.role:"none";
   const isOwner=role==="owner",isEmployee=role==="employee";const empId=isEmployee&&meta.employeeId!=null&&meta.employeeId!==""?meta.employeeId:null;
   // The owner can look through other eyes: "staff" (Preview as staff) or {emp, name} (See …'s screen).
   const[preview,setPreview]=useState(null);const ownerView=isOwner&&!preview;
@@ -3047,8 +3065,35 @@ export default function App(){
   // SOLD splash: air horn (unless muted) + auto-dismiss
   useEffect(()=>{if(!s.soldSplash)return;if(getSet(s).soundOn!==false)horn();const t=setTimeout(()=>d({type:"SPLASH",d:null}),6500);return()=>clearTimeout(t);},[s.soldSplash]);
   // Load data once authenticated (immediately in localStorage mode). Never loads/saves while logged out.
-  useEffect(()=>{if(!authed){setLoading(false);return;}let off=false;setLoading(true);setLoadErr(false);(async()=>{try{const data=await loadAll(role);if(off)return;if(data.__loadError){setLoadErr(true);setLoading(false);return;}lastSaved.current=data;d({type:"LOAD",d:data});}catch(e){if(!off)setLoadErr(true);}if(!off)setLoading(false);})();return()=>{off=true;};},[authed,role]);
-  useEffect(()=>{if(loading||!authed||loadErr||!lastSaved.current)return;const t=setTimeout(()=>{const prev=lastSaved.current;const ks=keysFor(role);const dirty=prev?ks.filter(k=>s[k]!==prev[k]):ks.slice();if(!dirty.length)return;saveAll(s,dirty,prev||{},role).then(failed=>{const snap={...(lastSaved.current||{})};dirty.forEach(k=>{if(!(failed||[]).includes(k))snap[k]=s[k];});lastSaved.current=snap;if(failed&&failed.length)d({type:"TOAST",d:{msg:"⚠ Couldn't save changes — check your connection",t:Date.now()}});});},500);return()=>clearTimeout(t);},[s.customers,s.jobs,s.quotes,s.inventory,s.invoices,s.schedule,s.employees,s.expenses,s.leads,s.social,s.campaigns,s.contentCalendar,s.cores,s.shipments,s.commsLog,s.purchaseOrders,s.warranties,s.parts,s.timeEntries,s.wins,s.activity,s.settings,s.diagnoses,s.issues,s.brief,s.boms,s.bomSheets,s.vendors,s.services,s.ecmJobs,s.ecmFiles,s.prospects,s.competitors,s.compare,s.timesheets,s.payPeriods,loading,authed,loadErr,role]);
+  useEffect(()=>{if(!authed||role==="none"){setLoading(false);return;}let off=false;setLoading(true);setLoadErr(false);(async()=>{try{const data=await loadAll(role);if(off)return;if(data.__loadError){setLoadErr(true);setLoading(false);return;}lastSaved.current=data;d({type:"LOAD",d:data});}catch(e){if(!off)setLoadErr(true);}if(!off)setLoading(false);})();return()=>{off=true;};},[authed,role]);
+  // Saving. One save runs at a time, in order, and each compares the lists with what was last saved, so an undo right
+  // after a delete still goes through. A save that can't reach the server is retried (on a timer, when the connection
+  // comes back, when the app comes back to the front) and the header says so until it lands. A row the database turns
+  // down (a timesheet day in an approved period, a pay period approved twice) is put back to what's saved, with the reason.
+  const saveQ=useRef(Promise.resolve());const retryT=useRef(null);const fails=useRef(0);const[saveBad,setSaveBad]=useState(false);
+  const live=useRef({});live.current={role,authed,loadErr};
+  const isDirty=()=>{const prev=lastSaved.current;return !!prev&&keysFor(live.current.role).some(k=>sRef.current[k]!==prev[k]);};
+  const putBack=async(refused,cur)=>{const keys=Object.keys(refused);const want=[...new Set([...keys,...(keys.includes("timesheets")?["payPeriods"]:[])])];let m=null;try{m=await db.getAll(want.map(k=>"rc:"+k));}catch(e){return;}
+    const upd={},snap={};want.forEach(k=>{let server=[];try{server=JSON.parse(m["rc:"+k]||"[]")||[];}catch(e){}const ids=new Set((refused[k]||[]).map(x=>String(x.id)));
+      if(!ids.size){if(sRef.current[k]===lastSaved.current[k])upd[k]=snap[k]=server;return;}
+      const byId=new Map(server.map(x=>[String(x.id),x]));const swap=list=>{const out=[],seen=new Set();(list||[]).forEach(x=>{const id=String(x.id);if(!ids.has(id)){out.push(x);return;}seen.add(id);if(byId.has(id))out.push(byId.get(id));});ids.forEach(id=>{if(!seen.has(id)&&byId.has(id))out.push(byId.get(id));});return out;};
+      const fixed=swap(lastSaved.current[k]);snap[k]=fixed;upd[k]=sRef.current[k]===cur[k]?fixed:swap(sRef.current[k]);});
+    lastSaved.current={...lastSaved.current,...snap};d({type:"LOAD",d:upd});d({type:"TOAST",d:{msg:refusedMsg(refused,upd.payPeriods||sRef.current.payPeriods),t:Date.now(),long:true}});};
+  const saveRef=useRef(null);saveRef.current=()=>{const job=saveQ.current.then(async()=>{const{role:rl,authed:au,loadErr:le}=live.current;const prev=lastSaved.current;if(!prev||!au||le)return;
+    const cur=sRef.current;const dirty=keysFor(rl).filter(k=>cur[k]!==prev[k]);if(!dirty.length){fails.current=0;setSaveBad(false);return;}
+    const r=await saveAll(cur,dirty,prev,rl);const snap={...(lastSaved.current||{})};dirty.forEach(k=>{if(!r.failed.includes(k))snap[k]=cur[k];});lastSaved.current=snap;
+    if(Object.keys(r.refused).length)await putBack(r.refused,cur);
+    clearTimeout(retryT.current);
+    if(r.failed.length){fails.current++;setSaveBad(true);if(fails.current===1)d({type:"TOAST",d:{msg:"⚠ Couldn't save. It keeps trying, and the top of the screen says so until it's saved.",t:Date.now(),long:true}});retryT.current=setTimeout(()=>saveRef.current(),Math.min(60000,4000*2**Math.min(fails.current-1,4)));}
+    else{fails.current=0;setSaveBad(false);}});saveQ.current=job.catch(()=>{});return job;};
+  useEffect(()=>{if(loading||!authed||loadErr||!lastSaved.current)return;const t=setTimeout(()=>saveRef.current(),500);return()=>clearTimeout(t);},[s.customers,s.jobs,s.quotes,s.inventory,s.invoices,s.schedule,s.employees,s.expenses,s.leads,s.social,s.campaigns,s.contentCalendar,s.cores,s.shipments,s.commsLog,s.purchaseOrders,s.warranties,s.parts,s.timeEntries,s.wins,s.activity,s.settings,s.diagnoses,s.issues,s.brief,s.boms,s.bomSheets,s.vendors,s.services,s.ecmJobs,s.ecmFiles,s.prospects,s.competitors,s.compare,s.timesheets,s.payPeriods,loading,authed,loadErr,role]);
+  // Retry as soon as the connection or the app comes back; warn before closing the page with changes not saved yet.
+  useEffect(()=>{const kick=()=>{if(document.visibilityState==="visible"&&isDirty())saveRef.current();};const warn=e=>{if(isDirty()){e.preventDefault();e.returnValue="";}};
+    window.addEventListener("online",kick);document.addEventListener("visibilitychange",kick);window.addEventListener("beforeunload",warn);
+    return()=>{window.removeEventListener("online",kick);document.removeEventListener("visibilitychange",kick);window.removeEventListener("beforeunload",warn);clearTimeout(retryT.current);};},[]);
+  // Signing out waits for anything not saved yet; if it still can't save, a second tap within 10 s leaves anyway.
+  const leaveAt=useRef(0);const leave=async()=>{try{await saveRef.current();}catch(e){}if(isDirty()&&Date.now()-leaveAt.current>10000){leaveAt.current=Date.now();d({type:"TOAST",d:{msg:"Some changes aren't saved yet (no connection?). Tap Sign out again within 10 seconds to leave without them.",t:Date.now(),long:true}});return;}await signOut();setSession(null);};
+  const saveBadge=saveBad?(<button className="rc-savebad" onClick={()=>saveRef.current()} title="Changes made on this device haven't reached the server yet. Tap to try again now.">⚠ Not saved yet · retrying</button>):null;
   // Live sync: quietly re-pull the shop's data on window focus and every 60s
   // (cloud only, never while a modal is open or local changes are unsaved),
   // so a tab left open overnight can't overwrite the crew's newer work.
@@ -3061,14 +3106,15 @@ export default function App(){
   const toastEl=s.toast&&(<div role="status" className="rc-toast" style={{position:"fixed",bottom:20,left:"50%",transform:"translateX(-50%)",background:"var(--tx)",border:"none",borderLeft:"3px solid var(--ac)",borderRadius:10,padding:"11px 16px",display:"flex",alignItems:"center",gap:14,zIndex:9999,boxShadow:"var(--sh2)",fontFamily:"var(--fb)",fontSize:14,color:"var(--bg)",maxWidth:"calc(100vw - 32px)"}}><span>{s.toast.msg}</span>{s.toast.undo&&<button className="rc-bs" onClick={()=>d({type:"UNDO"})} style={{fontSize:13,color:"var(--ac)",borderColor:"var(--ac)",background:"transparent"}}>↩ Undo</button>}</div>);
   if(usingCloud&&!authReady)return splash;
   if(usingCloud&&!session)return <Login onAuthed={setSession} theme={theme}/>;
+  if(usingCloud&&role==="none")return (<div className="rc-root" data-theme={theme} style={{display:"flex",alignItems:"center",justifyContent:"center",minHeight:"100vh",padding:20}}><style>{CSS}</style><div style={{textAlign:"center",maxWidth:360}}><div className="rc-hi" style={{width:50,height:50,fontSize:24,margin:"0 auto 12px"}}>RC</div><div style={{fontSize:14.5,color:"var(--tx2)",marginBottom:16,lineHeight:1.6}}>This login doesn't have access yet. Ask the owner to set it up from the Team tab.</div><button className="rc-bs" onClick={leave}>Sign out</button></div></div>);
   if(usingCloud&&loadErr)return (<div className="rc-root" data-theme={theme} style={{display:"flex",alignItems:"center",justifyContent:"center",minHeight:"100vh",padding:20}}><style>{CSS}</style><div style={{textAlign:"center",maxWidth:360}}><div className="rc-hi" style={{width:50,height:50,fontSize:24,margin:"0 auto 12px"}}>RC</div><div style={{fontFamily:"var(--fd)",fontSize:19,letterSpacing:1,textTransform:"uppercase",color:"var(--r)",marginBottom:8}}>Couldn't reach the server</div><div style={{fontSize:14,color:"var(--tx2)",marginBottom:16,lineHeight:1.6}}>Your shop data didn't load, so editing is paused to protect it — nothing will be saved over your cloud data until a clean load succeeds. Check your connection and retry.</div><button className="rc-ba" onClick={()=>window.location.reload()}>↻ Retry</button></div></div>);
   if(loading)return splash;
   // An employee login, or the owner looking at an employee's screen: their timesheet and nothing else.
   if(isEmployee||(preview&&preview.emp)){
-    if(isEmployee&&!empId)return (<div className="rc-root" data-theme={theme} style={{display:"flex",alignItems:"center",justifyContent:"center",minHeight:"100vh",padding:20}}><style>{CSS}</style><div style={{textAlign:"center",maxWidth:360}}><div className="rc-hi" style={{width:50,height:50,fontSize:24,margin:"0 auto 12px"}}>RC</div><div style={{fontSize:14.5,color:"var(--tx2)",marginBottom:16,lineHeight:1.6}}>This login isn't linked to a team member yet. Ask the owner to set it up from the Team tab.</div><button className="rc-bs" onClick={async()=>{await signOut();setSession(null);}}>Sign out</button></div></div>);
+    if(isEmployee&&!empId)return (<div className="rc-root" data-theme={theme} style={{display:"flex",alignItems:"center",justifyContent:"center",minHeight:"100vh",padding:20}}><style>{CSS}</style><div style={{textAlign:"center",maxWidth:360}}><div className="rc-hi" style={{width:50,height:50,fontSize:24,margin:"0 auto 12px"}}>RC</div><div style={{fontSize:14.5,color:"var(--tx2)",marginBottom:16,lineHeight:1.6}}>This login isn't linked to a team member yet. Ask the owner to set it up from the Team tab.</div><button className="rc-bs" onClick={leave}>Sign out</button></div></div>);
     const me=isEmployee?{id:empId,name:meta.name||""}:{id:preview.emp,name:preview.name};
     return (<div className="rc-root" data-theme={theme}><style>{CSS}</style>
-      <EmployeeShell s={s} d={d} me={me} email={session&&session.user&&session.user.email} preview={!isEmployee} onExit={()=>setPreview(null)} onSignOut={async()=>{await signOut();setSession(null);}} themePref={themePref} chooseTheme={chooseTheme}/>
+      <EmployeeShell s={s} d={d} me={me} email={session&&session.user&&session.user.email} preview={!isEmployee} onExit={()=>setPreview(null)} onSignOut={leave} saveBadge={saveBadge} themePref={themePref} chooseTheme={chooseTheme}/>
       <Modals s={s} d={d} owner={false} who={{role:"employee"}}/>
       {toastEl}
     </div>);
@@ -3081,14 +3127,14 @@ export default function App(){
         <div className="rc-sfoot">
           <div className="rc-seg" role="group" aria-label="Colour theme">{THEMES.map(([k,ic,l])=>(<button key={k} className={themePref===k?"on":""} aria-pressed={themePref===k} title={k==="auto"?"Follow this device's light/dark setting":l+" theme"} onClick={()=>chooseTheme(k)}><span aria-hidden="true">{ic}</span>{l}</button>))}</div>
           {usingCloud&&session&&<div className="rc-user"><span className="rc-dot"/><span>{session.user&&session.user.email}</span></div>}
-          <div className="rc-links"><button className="rc-link" onClick={()=>exportBackup(s)} title="Download a JSON backup of all shop data">Backup</button><button className="rc-link" onClick={()=>d({type:"MODAL",v:"confirm-reset"})}>Reset</button>{usingCloud&&session&&<button className="rc-link" onClick={()=>d({type:"MODAL",v:"my-password"})}>Password</button>}{usingCloud&&session&&<button className="rc-link" onClick={async()=>{await signOut();setSession(null);}}>Sign out</button>}</div>
+          <div className="rc-links"><button className="rc-link" onClick={()=>exportBackup(s)} title="Download a JSON backup of all shop data">Backup</button>{!usingCloud&&<button className="rc-link" onClick={()=>d({type:"MODAL",v:"confirm-reset"})}>Reset</button>}{usingCloud&&session&&<button className="rc-link" onClick={()=>d({type:"MODAL",v:"my-password"})}>Password</button>}{usingCloud&&session&&<button className="rc-link" onClick={leave}>Sign out</button>}</div>
         </div>
       </aside>
       <div className="rc-scrim" onClick={()=>setNavOpen(false)}/>
       <main className="rc-main">
         <div className="rc-top">
           <button className="rc-menu" aria-label="Open the menu" onClick={()=>setNavOpen(true)}><Ico n="menu"/></button>
-          <div style={{minWidth:0}}><h1 className="rc-pt">{TABL[s.tab]||"Overview"}</h1><div className="rc-psub">{time.toLocaleDateString("en-US",{weekday:"long",month:"long",day:"numeric"})} · Medicine Hat, AB</div></div>{preview==="staff"&&<button className="rc-fb on rc-ts-prevbar" onClick={()=>setPreview(null)}>👁 Previewing as staff · back to owner view</button>}
+          <div style={{minWidth:0}}><h1 className="rc-pt">{TABL[s.tab]||"Overview"}</h1><div className="rc-psub">{time.toLocaleDateString("en-US",{weekday:"long",month:"long",day:"numeric"})} · Medicine Hat, AB</div></div>{preview==="staff"&&<button className="rc-fb on rc-ts-prevbar" onClick={()=>setPreview(null)}>👁 Previewing as staff · back to owner view</button>}{saveBadge}
         </div>
         <div className="rc-body">
       {s.tab==="overview"&&<Overview s={s} d={d}/>}

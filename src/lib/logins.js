@@ -36,10 +36,17 @@ export const setLoginPassword = (userId, password) => call({ action: "password",
 export const setLoginAccess = (userId, role, employeeId) => call({ action: "access", userId, role, employeeId });
 export const removeLogin = (userId) => call({ action: "remove", userId });
 
-// A temporary password that's easy to read out or text: "Coal-4821-Torque".
-const WORDS = ["Coal", "Torque", "Piston", "Turbo", "Diesel", "Cam", "Crank", "Valve", "Injector", "Bearing", "Gasket", "Block", "Rail", "Boost", "Idle", "Shop"];
+// A temporary password that's easy to read out or text: "Coal-4821-Torque-Valve".
+// 64 words, three of them, plus four digits: about 2.4 billion combinations.
+const WORDS = ["Coal", "Torque", "Piston", "Turbo", "Diesel", "Cam", "Crank", "Valve", "Injector", "Bearing", "Gasket", "Block",
+  "Rail", "Boost", "Idle", "Shop", "Wrench", "Socket", "Ratchet", "Spanner", "Hammer", "Chisel", "Clamp", "Bolt",
+  "Nut", "Washer", "Spring", "Shaft", "Gear", "Clutch", "Axle", "Hub", "Brake", "Rotor", "Drum", "Filter",
+  "Pump", "Nozzle", "Sleeve", "Liner", "Ring", "Rod", "Head", "Pan", "Cooler", "Radiator", "Hose", "Belt",
+  "Pulley", "Starter", "Battery", "Cable", "Gauge", "Throttle", "Exhaust", "Intake", "Manifold", "Tappet", "Pushrod", "Lifter",
+  "Flywheel", "Housing", "Bracket", "Governor"];
 export function makePassword() {
-  const r = new Uint32Array(3);
+  const r = new Uint32Array(4);
   crypto.getRandomValues(r);
-  return WORDS[r[0] % WORDS.length] + "-" + String(1000 + (r[1] % 9000)) + "-" + WORDS[r[2] % WORDS.length];
+  const w = (n) => WORDS[n % WORDS.length];
+  return w(r[0]) + "-" + String(1000 + (r[1] % 9000)) + "-" + w(r[2]) + "-" + w(r[3] >>> 8);
 }

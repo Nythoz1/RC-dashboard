@@ -10,7 +10,8 @@ const SB = "http://sb.test";
 let sb, fn, ownerTok, staffTok;
 const users = [
   { email: "owner@shop.test", password: "owner-pass-1", app_metadata: { role: "owner" } },
-  { email: "office@shop.test", password: "office-pass-1" },
+  { email: "office@shop.test", password: "office-pass-1", app_metadata: { role: "staff" } },
+  { email: "new@shop.test", password: "new-pass-1" },   // made in Supabase, no role yet
 ];
 const call = async (tok, body) => { const r = await fn(new Request(SB + "/functions/v1/team-logins", { method: "POST", headers: { "Content-Type": "application/json", ...(tok ? { Authorization: "Bearer " + tok } : {}) }, body: JSON.stringify(body) })); return { status: r.status, body: await r.json() }; };
 
@@ -36,7 +37,7 @@ test("the owner gives Mike an employee login tied to his Team member", async () 
   const u = sb.users.find((x) => x.email === "mike@shop.test");
   assert.deepEqual(u.app_metadata, { role: "employee", employeeId: 101, name: "Mike Test" });
   const list = await call(ownerTok, { action: "list" });
-  assert.deepEqual(list.body.logins.map((l) => l.role).sort(), ["employee", "owner", "staff"]);
+  assert.deepEqual(list.body.logins.map((l) => l.role).sort(), ["employee", "none", "owner", "staff"]);
 });
 test("plain answers for a second login, a taken email, a short password, no Team member", async () => {
   assert.match((await call(ownerTok, { action: "create", employeeId: 101, email: "mike2@shop.test", password: "coal-4821-turbo", role: "employee" })).body.error, /Mike Test already has a login/);

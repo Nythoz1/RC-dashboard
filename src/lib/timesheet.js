@@ -170,12 +170,18 @@ export function periodList(dates, kind, anchor, today) {
 export const lockedBy = (periods, emp, date) => (periods || []).find((p) => p && String(p.emp) === String(emp) && date >= p.start && date <= p.end) || null;
 
 // ── who may change a day ──
+// The first day an employee may still fill in or change: the first of last
+// month. Mirrors public.ts_floor() in migration 0013.
+export const editFloor = (today) => addMonths(today.slice(0, 7), -1) + "-01";
+
 // role: "employee" (their own days), "owner" (anyone's), "staff" (look only).
-// Nobody fills in a day that hasn't happened yet. An approved pay period locks
-// its days for employees; the owner can still correct them.
+// Nobody fills in a day that hasn't happened yet. Employees can't go back
+// before editFloor, and an approved pay period locks its days for them; the
+// owner can still correct any of those.
 export function dayAccess({ date, today, locked, role }) {
   if (date > today) return { can: false, why: "future" };
   if (role !== "owner" && role !== "employee") return { can: false, why: "staff" };
+  if (role === "employee" && date < editFloor(today)) return { can: false, why: "old" };
   if (locked && role !== "owner") return { can: false, why: "locked" };
   return { can: true, why: locked ? "locked" : "" };
 }
