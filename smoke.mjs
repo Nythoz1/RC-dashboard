@@ -313,6 +313,23 @@ await p.click(".rc-ts-prevbar");
 const repOwner=await p.locator(".rc-body").innerText();
 console.log("owner Reports: "+await repMoney(p)+" | $790.00 for Mike in "+PREV_LABEL,repOwner.includes("$790.00"));
 await p.screenshot({path:"shot-ts-reports.png",fullPage:true});
+// The crew in Shop 3D: the owner sees Mike at work with his rate, and replaying the day pops $40.00 over
+// him when the first hour is done; staff see Mike without a dollar anywhere.
+const s3Ready=async()=>{await p.click('.rc-ni:has-text("Shop 3D")');await p.waitForFunction(()=>!document.querySelector(".rc-s3-load")&&document.querySelector(".rc-s3-clock"),null,{timeout:90000});};
+await s3Ready();
+const crewOwner=(await p.locator(".rc-s3-card").first().innerText()).replace(/\n+/g," | ");
+await p.click('.rc-s3-card .rc-ba:has-text("Play the day")');
+await p.waitForFunction(()=>[...document.querySelectorAll(".s3-pay")].some(e=>e.textContent==="$40.00"),null,{timeout:20000});
+const chipOwner=(await p.locator(".rc-s3-clock").innerText()).replace(/\s+/g," ");
+await p.screenshot({path:"shot-shop3d-crew.png"});
+await p.click('.rc-s3-clock button:has-text("Stop")');
+await p.click('.rc-ni:has-text("Team")');
+await p.click('.rc-ts-seg button:has-text("Timesheets")');
+await p.click('button:has-text("Preview as staff")');
+await s3Ready();
+const crewStaff=await p.locator(".rc-s3-card").first().innerText(),chipStaff=await p.locator(".rc-s3-clock").innerText();
+await p.click(".rc-ts-prevbar");
+console.log("crew in Shop 3D: owner "+crewOwner.slice(0,150)+" | replay: "+chipOwner+" | staff see Mike "+/Mike Test/.test(crewStaff)+", dollars "+/\$\s?\d/.test(crewStaff+chipStaff));
 await p.click('.rc-ni:has-text("Team")');
 await p.click('.rc-ts-seg button:has-text("Team")');
 

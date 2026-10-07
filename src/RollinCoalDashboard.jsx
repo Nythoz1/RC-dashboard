@@ -10,6 +10,7 @@ import { ISSUE_SEED } from "./issuesSeed";
 import { BOM_SEED, VENDOR_SEED } from "./bomSeed";
 import { SERVICE_SEED, SERVICE_CATS } from "./servicesSeed";
 import { AREA_BY_ID, PLACE_GROUPS, PLACE_ORDER, STORE_IDS, SLOT_CAP, shopLocs, areaTitle } from "./shop3d/areas";
+import { CREW_SPOTS, crewList, SHIFT, SHIFT_MIN, shopClock, onShift, workedMin, hoursDone, wagesSoFar, backAt } from "./shop3d/crew";
 import * as Tsh from "./lib/timesheet";
 import { canManageLogins, listLogins, createLogin, setLoginPassword, setLoginAccess, removeLogin, makePassword } from "./lib/logins";
 const FONTS="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700;800&family=Public+Sans:wght@400;500;600;700&display=swap";
@@ -892,29 +893,58 @@ function Inv({s,d}){
 // SHOP 3D — the shop and yard as a 3D model, with the real engines where they're kept
 // ═══════════════════════════════════════════════════════════════
 // The scene (src/shop3d/scene.js, three.js) loads on demand the first time this view opens.
+// The crew (src/shop3d/crew.js): every active Team member at a work spot, working 8:00 AM to
+// 4:00 PM on weekdays; each hour that finishes, their hourly wage pops up over them (owner only).
 const S3_COARSE=typeof window!=="undefined"&&window.matchMedia?window.matchMedia("(pointer: coarse)").matches:false;
-function Shop3D({s,d,theme}){
+const S3_SEC_H=6; // Play the day: 6 seconds an hour, the whole day in 48 seconds
+function Shop3D({s,d,theme,owner}){
   const gl=useRef(null);const api=useRef(null);
   const[ready,setReady]=useState(false);const[err,setErr]=useState("");const[prog,setProg]=useState(["Loading the 3D shop…",4]);
-  const[selA,setSelA]=useState(null);const[selE,setSelE]=useState(null);const[hint,setHint]=useState(true);
+  const[selA,setSelA]=useState(null);const[selE,setSelE]=useState(null);const[selP,setSelP]=useState(null);const[hint,setHint]=useState(true);
   const[tod,setTod]=useState(theme==="night"?"night":"day");const[walls,setWalls]=useState("cut");const[roofs,setRoofs]=useState(false);const[labels,setLabels]=useState(true);const[tour,setTour]=useState(false);const[drive,setDrive]=useState(false);
+  const[crewOn,setCrewOn]=useState(true);const[clk,setClk]=useState(()=>shopClock());const[play,setPlay]=useState(null);
   const engs=(s.inventory||[]).filter(isEngine);
   const locs=useMemo(()=>engLocs(s),[s.inventory]);
   const list=useMemo(()=>engs.filter(i=>locs.has(i.id)).map(i=>({id:i.id,sku:i.sku||"",name:i.name||"",area:locs.get(i.id),status:engStatus(i),statusLabel:engStatusLabel(engStatus(i)),size:sizeClass(i),remanned:remanned(i)})),[s.inventory,locs]);
-  const listRef=useRef(list);listRef.current=list;const start=useRef({tod,walls,roofs,labels});
+  const crew=useMemo(()=>crewList(s.employees),[s.employees]);
+  const crewScene=useMemo(()=>crew.filter(c=>c.spot).map(c=>({id:c.id,name:c.name,short:c.short,role:c.role,spot:c.spot})),[crew]);
+  const playing=!!(play&&play.t0);
+  const working=playing?clk.min<SHIFT.end:onShift(clk.date,clk.min);
+  const worked=playing?Math.max(0,clk.min-SHIFT.start):workedMin(clk.date,clk.min);
+  const listRef=useRef(list);listRef.current=list;const crewRef=useRef(crew);crewRef.current=crew;const crewSceneRef=useRef(crewScene);crewSceneRef.current=crewScene;
+  const ownerRef=useRef(owner);ownerRef.current=owner;const crewOnRef=useRef(crewOn);crewOnRef.current=crewOn;
+  const start=useRef({tod,walls,roofs,labels});
   useEffect(()=>{let dead=false;
     import("./shop3d/scene.js").then(m=>{if(dead||!gl.current)return;const o=start.current;
-      api.current=m.createShop(gl.current,{engines:listRef.current,tod:o.tod,walls:o.walls,roofs:o.roofs,labels:o.labels,
+      api.current=m.createShop(gl.current,{engines:listRef.current,crew:crewSceneRef.current,tod:o.tod,walls:o.walls,roofs:o.roofs,labels:o.labels,
         onProgress:(t,p)=>setProg([t,p]),onReady:()=>setReady(true),onError:msg=>setErr(msg),onInteract:()=>setHint(false),
-        onSelectArea:id=>{setSelA(id);setSelE(null);},onSelectEngine:id=>{setSelE(id);setSelA(null);},onTour:v=>setTour(v),onDrive:v=>setDrive(v)});})
+        onSelectArea:id=>{setSelA(id);setSelE(null);setSelP(null);},onSelectEngine:id=>{setSelE(id);setSelA(null);setSelP(null);},onSelectPerson:id=>{setSelP(id);setSelA(null);setSelE(null);},onTour:v=>setTour(v),onDrive:v=>setDrive(v)});})
       .catch(()=>{if(!dead)setErr("The 3D shop didn't load. Check your connection, then open this page again.");});
     return()=>{dead=true;if(api.current){api.current.dispose();api.current=null;}};},[]);
   useEffect(()=>{if(api.current)api.current.setEngines(list);},[list]);
+  useEffect(()=>{if(api.current)api.current.setCrew(crewScene);},[crewScene]);
+  useEffect(()=>{if(api.current)api.current.setCrewOn(crewOn&&working);},[crewOn,working,ready]);
+  // The crew's clock: Medicine Hat time, or the day replayed. Each hour that finishes pays out
+  // every working person's wage, popping up over them (only the owner sees money).
+  useEffect(()=>{let prev=null;
+    const tick=()=>{
+      const now=playing?{date:"play",min:Math.min(SHIFT.end,SHIFT.start+(performance.now()-play.t0)/1000/S3_SEC_H*60)}:shopClock();
+      if(prev&&prev.date===now.date&&ownerRef.current&&crewOnRef.current&&api.current&&hoursDone(prev.min,now.min).some(h=>playing||now.min-h<2))
+        crewRef.current.forEach(c=>{if(c.spot&&c.rate>0)api.current.pay(c.id,$$(c.rate));});
+      prev=now;setClk(now);
+      if(playing&&now.min>=SHIFT.end)setPlay({done:true});
+    };
+    tick();const iv=setInterval(tick,playing?250:1000);return()=>clearInterval(iv);},[play]);
+  useEffect(()=>{if(!play||!play.done)return;const t=setTimeout(()=>setPlay(null),8000);return()=>clearTimeout(t);},[play]);
   // "Show in 3D" from an engine's passport or the Engines list lands here with that engine picked.
-  useEffect(()=>{if(!s.focus)return;setSelE(s.focus);setSelA(null);if(ready&&api.current)api.current.selectEngine(s.focus);},[s.focus,ready]);
+  useEffect(()=>{if(!s.focus)return;setSelE(s.focus);setSelA(null);setSelP(null);if(ready&&api.current)api.current.selectEngine(s.focus);},[s.focus,ready]);
   const A=f=>{if(api.current)f(api.current);};
-  const pickArea=id=>{setSelA(id);setSelE(null);A(a=>a.selectArea(id));};
-  const pickEng=id=>{setSelE(id);setSelA(null);A(a=>a.selectEngine(id));};
+  const pickArea=id=>{setSelA(id);setSelE(null);setSelP(null);A(a=>a.selectArea(id));};
+  const pickEng=id=>{setSelE(id);setSelA(null);setSelP(null);A(a=>a.selectEngine(id));};
+  const pickPerson=id=>{setSelP(id);setSelA(null);setSelE(null);setTour(false);A(a=>a.selectPerson(id));};
+  const togglePlay=()=>{if(playing){setPlay(null);return;}setDrive(false);A(a=>a.setDrive(false));setCrewOn(true);setPlay({t0:performance.now()});};
+  const clockTxt=Tsh.fmtTime(Math.floor(clk.min));
+  const whoHere=id=>crew.filter(c=>c.spot&&c.spot.area===id);
   const count={};locs.forEach(a=>{count[a]=(count[a]||0)+1;});
   const bySku=(a,b)=>String(a.sku||a.name||"").localeCompare(String(b.sku||b.name||""),undefined,{numeric:true});
   const panel=(()=>{
@@ -933,6 +963,23 @@ function Shop3D({s,d,theme}){
         </select>
         <div className="rc-fa" style={{flexWrap:"wrap"}}>{st==="sold"&&own?<button className="rc-bs" onClick={()=>d({type:"UPDATE",list:"inventory",id:ie.id,d:{loc:""}})}>Picked up · take it off the map</button>:null}<button className="rc-bs" onClick={()=>{setSelE(null);A(a=>a.selectArea(null));}}>Close</button><button className="rc-ba" onClick={()=>d({type:"MODAL",v:"part-detail",d:ie})}>Open passport</button></div>
       </div>);}
+    const ip=selP!=null?crew.find(c=>String(c.id)===String(selP)):null;
+    if(ip){const auto=crewList((s.employees||[]).map(e=>String(e.id)===String(ip.id)?{...e,station:""}:e)).find(c=>String(c.id)===String(ip.id));
+      const taken=ip.station&&ip.how!=="picked"?crew.find(c=>c.how==="picked"&&c.station===ip.station):null;
+      return(<div className="rc-card rc-s3-card" aria-live="polite">
+        <div className="rc-s3-chips"><span className="rc-s3-chip k">Crew</span>{ip.role&&<span className="rc-s3-chip">{ip.role}</span>}</div>
+        <div className="rc-s3-h big">{ip.name}</div>
+        <div className="rc-s3-where">📍 <b>{ip.spot?ip.spot.label:"No room on the map"}</b>{ip.spot&&ip.how==="role"?<span> · placed by role</span>:null}</div>
+        {taken&&<div className="rc-s3-warn">{taken.name} already works at {(CREW_SPOTS.find(p=>p.id===ip.station)||{}).label}, so {ip.short} is placed by role.</div>}
+        <div className="rc-s3-crewst">{working?(playing?"Working · replaying the day":"Working · "+Math.floor(worked/60)+" h "+Math.floor(worked%60)+" min so far today"):"Off now, "+backAt(clk.date,clk.min)}</div>
+        {owner&&<div className="rc-s3-meter"><span>{ip.rate>0?$$(ip.rate)+" an hour · "+(playing?"so far in the replay":"today"):"No pay rate on the Team tab"}</span><b>{$$(ip.rate*worked/60)}</b></div>}
+        <label className="rc-fl" htmlFor="s3-station">Works at</label>
+        <select id="s3-station" className="rc-fi" value={CREW_SPOTS.some(p=>p.id===ip.station)?ip.station:""} onChange={e=>d({type:"UPDATE",list:"employees",id:ip.id,d:{station:e.target.value}})} style={{appearance:"none"}}>
+          <option value="">{"By role · "+(auto&&auto.spot?auto.spot.label:"no room on the map")}</option>
+          {CREW_SPOTS.map(p=>(<option key={p.id} value={p.id}>{p.label}</option>))}
+        </select>
+        <div className="rc-fa"><button className="rc-bs" onClick={()=>{setSelP(null);A(x=>x.selectArea(null));}}>Close</button></div>
+      </div>);}
     const a=selA?AREA_BY_ID[selA]:null;
     if(a){const here=engs.filter(i=>locs.get(i.id)===a.id).sort(bySku);const cap=SLOT_CAP[a.id]||0;const k=PLACE_ORDER.indexOf(a.id);
       return(<div className="rc-card rc-s3-card" aria-live="polite">
@@ -943,13 +990,24 @@ function Shop3D({s,d,theme}){
         {a.store&&(<><div className="rc-fl" style={{marginTop:6}}>Engines here · {here.length}{cap?" · "+cap+" spots":""}</div>
           {here.length===0?<div className="rc-s3-empty">No engines here right now.</div>:<div className="rc-s3-elist">{here.map(i=>(<button key={i.id} className="rc-s3-erow" onClick={()=>pickEng(i.id)}><span style={{minWidth:0}}><b>{i.sku||"Engine"}</b><span>{i.name}</span></span><Badge s={engStatus(i)}/></button>))}</div>}
           {here.length>cap&&<div className="rc-s3-warn">{here.length-cap} more than fit on the map. They're still listed here.</div>}</>)}
+        {whoHere(a.id).length>0&&(<><div className="rc-fl" style={{marginTop:6}}>Crew here</div><div className="rc-s3-elist">{whoHere(a.id).map(c=>(<button key={c.id} className="rc-s3-erow" onClick={()=>pickPerson(c.id)}><span style={{minWidth:0}}><b>{c.name}</b><span>{c.spot.label}{c.role?" · "+c.role:""}</span></span></button>))}</div></>)}
         <div className="rc-fa"><button className="rc-bs" onClick={()=>pickArea(PLACE_ORDER[(k-1+PLACE_ORDER.length)%PLACE_ORDER.length])}>← Previous</button><button className="rc-bs" onClick={()=>pickArea(PLACE_ORDER[(k+1)%PLACE_ORDER.length])}>Next →</button><button className="rc-bs" onClick={()=>{setSelA(null);A(x=>x.selectArea(null));}}>Close</button></div>
       </div>);}
-    return(<div className="rc-card rc-s3-card">
+    const away=(s.employees||[]).filter(e=>e&&e.status&&e.status!=="active");
+    const crewCard=(<div className="rc-card rc-s3-card">
+      <div className="rc-s3-hrow"><div className="rc-s3-h">Crew</div><span className="rc-s3-sub">8:00 AM to 4:00 PM · Mon to Fri</span></div>
+      <div className="rc-s3-crewst">{playing?"Replaying the day · "+clockTxt:working?"Working now · "+crew.filter(c=>c.spot).length+" on the floor":"Off now, "+backAt(clk.date,clk.min)}</div>
+      {owner&&crew.length>0&&(working||worked>0)&&<div className="rc-s3-meter"><span>{playing?"Wages so far in the replay":"Wages so far today"}</span><b>{$$(wagesSoFar(crew,worked))}</b></div>}
+      {crew.length===0?<div className="rc-s3-empty">Nobody on the Team yet. People you add under Team show up here, at work.</div>
+        :<div className="rc-s3-elist">{crew.map(c=>(<button key={c.id} className="rc-s3-erow" onClick={()=>pickPerson(c.id)}><span style={{minWidth:0}}><b>{c.name}</b><span>{c.spot?c.spot.label:"No room on the map"}{c.role?" · "+c.role:""}</span></span>{owner&&<small className="rc-s3-rate">{c.rate>0?$$(c.rate)+"/h":"No rate"}</small>}</button>))}</div>}
+      {away.length>0&&<div className="rc-s3-note">On leave: {away.map(e=>e.name).join(", ")}</div>}
+      {crew.length>0&&<div className="rc-fa"><button className={playing?"rc-bs":"rc-ba"} onClick={togglePlay}>{playing?"■ Stop the replay":"▶ Play the day"}</button></div>}
+    </div>);
+    return(<>{crewCard}<div className="rc-card rc-s3-card">
       <div className="rc-s3-h">Places</div>
       {PLACE_GROUPS.map(([g,ids])=>(<div key={g}><div className="rc-s3-pg">{g}</div>{ids.map(id=>{const ar=AREA_BY_ID[id];const n=count[id]||0;return(<button key={id} className="rc-s3-pl" style={{"--dot":ar.dot}} onClick={()=>pickArea(id)}><i/><span>{ar.title}</span>{ar.store&&<small>{n} engine{n===1?"":"s"}</small>}</button>);})}</div>))}
       <div className="rc-s3-note">Engines without a set spot are placed by status: in reman on the stands, remanned in reman inventory, cores and runners in take-out. Pick an engine to choose its spot.</div>
-    </div>);
+    </div></>);
   })();
   const seg=(label,opts,val,set)=>(<div className="rc-seg rc-s3-seg" role="group" aria-label={label}>{opts.map(([k,l])=>(<button key={k} className={val===k?"on":""} aria-pressed={val===k} onClick={()=>set(k)}>{l}</button>))}</div>);
   const pad=(k,g,cls,lab)=>(<button key={k} className={cls} aria-label={lab} onPointerDown={e=>{e.preventDefault();A(a=>a.press(k,true));}} onPointerUp={()=>A(a=>a.press(k,false))} onPointerCancel={()=>A(a=>a.press(k,false))} onPointerLeave={()=>A(a=>a.press(k,false))}>{g}</button>);
@@ -959,13 +1017,18 @@ function Shop3D({s,d,theme}){
       {seg("Walls",[["cut","Cutaway"],["up","Walls up"],["down","Walls down"]],walls,k=>{setWalls(k);A(a=>a.setWalls(k));})}
       <button className={"rc-fb"+(roofs?" on":"")} aria-pressed={roofs} onClick={()=>{setRoofs(!roofs);A(a=>a.setRoofs(!roofs));}}>Roofs</button>
       <button className={"rc-fb"+(labels?" on":"")} aria-pressed={labels} onClick={()=>{setLabels(!labels);A(a=>a.setLabels(!labels));}}>Labels</button>
-      <button className={"rc-fb"+(tour?" on":"")} aria-pressed={tour} onClick={()=>{const v=!tour;setTour(v);if(v){setDrive(false);setSelE(null);}A(a=>a.setTour(v));}}>Tour</button>
-      <button className="rc-fb" onClick={()=>{setSelA(null);setSelE(null);setTour(false);setDrive(false);A(a=>a.home());}}>Overview</button>
-      <button className={drive?"rc-bs":"rc-ba"} aria-pressed={drive} onClick={()=>{const v=!drive;setDrive(v);if(v){setTour(false);setSelA(null);setSelE(null);}A(a=>a.setDrive(v));}}>{drive?"Stop driving":"Drive the forklift"}</button>
+      <button className={"rc-fb"+(crewOn?" on":"")} aria-pressed={crewOn} onClick={()=>setCrewOn(!crewOn)}>Crew</button>
+      <button className={"rc-fb"+(tour?" on":"")} aria-pressed={tour} onClick={()=>{const v=!tour;setTour(v);if(v){setDrive(false);setSelE(null);setSelP(null);}A(a=>a.setTour(v));}}>Tour</button>
+      <button className="rc-fb" onClick={()=>{setSelA(null);setSelE(null);setSelP(null);setTour(false);setDrive(false);A(a=>a.home());}}>Overview</button>
+      <button className={drive?"rc-bs":"rc-ba"} aria-pressed={drive} onClick={()=>{const v=!drive;setDrive(v);if(v){setTour(false);setSelA(null);setSelE(null);setSelP(null);}A(a=>a.setDrive(v));}}>{drive?"Stop driving":"Drive the forklift"}</button>
     </div>
     <div className="rc-s3-wrap">
       <div className="rc-s3-stage">
         <div className="rc-s3-gl" ref={gl}/>
+        {ready&&!err&&crew.length>0&&<div className="rc-s3-clock">
+          {play&&play.done?<><b>4:00 PM</b><span>That's the day{owner?": "+$$(wagesSoFar(crew,SHIFT_MIN))+" in wages":""}</span></>
+          :<><b>{clockTxt}</b><span>{playing?"Replaying the day":working?"Crew working":"Crew's off"}</span>{owner&&(working||worked>0)&&<span className="pay">{$$(wagesSoFar(crew,worked))}</span>}<button className="rc-bs" onClick={togglePlay}>{playing?"■ Stop":"▶ Play the day"}</button></>}
+        </div>}
         {!ready&&!err&&<div className="rc-s3-load"><div className="rc-hi" style={{width:46,height:46,fontSize:22}}>RC</div><div className="rc-s3-lt">{prog[0]}</div><div className="rc-s3-bar"><span style={{width:prog[1]+"%"}}/></div></div>}
         {err&&<div className="rc-s3-load"><div className="rc-hi" style={{width:46,height:46,fontSize:22}}>RC</div><div className="rc-s3-lt" style={{maxWidth:360,lineHeight:1.5}}>{err}</div></div>}
         {ready&&hint&&!drive&&<div className="rc-s3-hint">{S3_COARSE?"Drag to turn · Pinch to zoom · Two fingers to move · Tap a place":"Drag to turn · Scroll to zoom · Right-drag to move · Click a place or an engine"}</div>}
@@ -2720,6 +2783,21 @@ const CSS=`@import url('${FONTS}');
 .rc-s3-pl small{margin-left:auto;color:var(--mt);font-size:12.5px;font-variant-numeric:tabular-nums;white-space:nowrap;}
 .rc-s3-pl:hover{background:var(--sf2);color:var(--tx);}
 .rc-s3-note{font-size:12.5px;color:var(--mt);line-height:1.5;padding:10px 2px 2px;border-top:1px solid var(--ln2);margin-top:8px;}
+.rc-s3-hrow{display:flex;justify-content:space-between;align-items:baseline;gap:8px;flex-wrap:wrap;}
+.rc-s3-crewst{font-size:14px;color:var(--tx2);margin:2px 0 8px;}
+.rc-s3-meter{display:flex;justify-content:space-between;align-items:baseline;gap:10px;background:var(--gs);border-radius:9px;padding:9px 11px;margin:4px 0 8px;}
+.rc-s3-meter span{font-size:13px;color:var(--tx2);}
+.rc-s3-meter b{font:700 22px/1 var(--fd);color:var(--g);font-variant-numeric:tabular-nums;white-space:nowrap;}
+.rc-s3-rate{font-size:12.5px;color:var(--mt);font-variant-numeric:tabular-nums;white-space:nowrap;}
+.rc-s3-clock{position:absolute;left:12px;top:12px;z-index:3;display:flex;align-items:center;gap:6px 10px;flex-wrap:wrap;max-width:calc(100% - 24px);padding:7px 8px 7px 12px;border-radius:10px;background:var(--sf);border:1px solid var(--ln);box-shadow:var(--sh1);font-size:13.5px;color:var(--tx2);}
+.rc-s3-clock b{font:700 18px/1 var(--fd);color:var(--tx);font-variant-numeric:tabular-nums;}
+.rc-s3-clock .pay{font:700 16px/1 var(--fd);color:var(--g);font-variant-numeric:tabular-nums;}
+.rc-s3-clock .rc-bs{padding:5px 10px;font-size:13px;}
+.s3-who{position:absolute;left:0;top:0;pointer-events:auto;border:1px solid var(--ln);background:var(--sf);color:var(--tx);border-radius:999px;padding:3px 9px 3px 7px;font:700 12.5px/1 var(--fd);letter-spacing:.04em;white-space:nowrap;cursor:pointer;transform-origin:50% 100%;display:flex;align-items:center;gap:5px;}
+.s3-who::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--b);flex:none;}
+.s3-who:focus-visible{outline:2px solid var(--ac);outline-offset:2px;}
+.s3-pay{position:absolute;left:0;top:0;z-index:3;pointer-events:none;border:1.5px solid var(--g);background:var(--sf);color:var(--g);border-radius:999px;padding:4px 10px;font:800 16px/1 var(--fd);letter-spacing:.02em;white-space:nowrap;box-shadow:var(--sh1);transform-origin:50% 100%;font-variant-numeric:tabular-nums;}
+.s3-who[hidden],.s3-pay[hidden]{display:none!important;}
 .rc-s3-loc{font-size:12px;color:var(--mt);margin-top:2px;cursor:pointer;width:fit-content;}
 .rc-s3-loc:hover,.rc-s3-loc:focus-visible{color:var(--act);text-decoration:underline;outline:none;}
 .rc-s3-pass{display:block;font-size:13px;font-weight:500;color:var(--act);margin:0 0 8px;}
@@ -3142,7 +3220,7 @@ export default function App(){
       {s.tab==="services"&&<Services s={s} d={d}/>}
       {s.tab==="quotes"&&<Quotes s={s} d={d}/>}
       {s.tab==="inventory"&&<Inv s={s} d={d}/>}
-      {s.tab==="shop3d"&&<Shop3D s={s} d={d} theme={theme}/>}
+      {s.tab==="shop3d"&&<Shop3D s={s} d={d} theme={theme} owner={ownerView}/>}
       {s.tab==="parts"&&<Parts s={s} d={d}/>}
       {s.tab==="boms"&&<Boms s={s} d={d}/>}
       {s.tab==="issues"&&<Issues s={s} d={d}/>}

@@ -1,7 +1,8 @@
 // The 3D shop: a game-style model of the shop and yard, drawn with three.js. The Shop 3D view
 // loads this file on demand (dynamic import), so three.js stays out of the main bundle.
 // createShop(host, opts) builds everything inside `host` and returns a small API the view drives
-// (time of day, walls, roofs, labels, tour, forklift, selection, engines). Units are feet.
+// (time of day, walls, roofs, labels, tour, forklift, selection, engines, the crew and their wage
+// pops). Units are feet.
 import * as THREE from "three";
 import { LOT, BLDG as B, SHOP_AREAS, AREA_BY_ID, PLACE_ORDER, SLOTS } from "./areas.js";
 
@@ -168,7 +169,7 @@ export function createShop(host, opts) {
   function hotTank(p, x, z, ry) { const t = grp(p, x, z, ry); box(t, 6, 3.6, 4, mat("#8d949b", { r: 0.4, m: 0.6 }), 0, 0, 0); box(t, 1.2, 1, 0.2, mat(C.dark), -2, 2.4, 2.05); box(t, 0.3, 0.3, 0.06, mat("#c0392b", { e: "#ff3a1f", r: 0.5 }), -2.2, 2.9, 2.15); return t; }
   function desk(p, x, z, ry) { const t = grp(p, x, z, ry); const w = mat("#a87a4c", { r: 0.6 }); box(t, 5, 0.2, 2.5, w, 0, 2.5, 0); box(t, 0.15, 2.5, 2.4, w, -2.4, 0, 0); box(t, 1.6, 2.5, 2.4, w, 1.6, 0, 0);
     box(t, 1.9, 1.2, 0.12, mat(C.dark, { r: 0.3 }), -0.4, 3.05, -0.8); box(t, 0.2, 0.35, 0.2, mat(C.dark), -0.4, 2.7, -0.8); box(t, 1.4, 0.06, 0.5, mat("#3a3c40"), -0.4, 2.71, 0);
-    const ch = grp(t, -0.3, 1.8, 0); box(ch, 1.7, 0.3, 1.7, mat("#2a2c30"), 0, 1.5, 0); box(ch, 1.7, 1.8, 0.25, mat("#2a2c30"), 0, 1.8, 0.75); cylY(ch, 0.12, 1.5, mat(C.steel), 0, 0, 0); return t; }
+    const ch = grp(t, -0.3, 1.8, 0); box(ch, 1.7, 0.3, 1.7, mat("#2a2c30"), 0, 1, 0); box(ch, 1.7, 2, 0.25, mat("#2a2c30"), 0, 1.3, 0.75); cylY(ch, 0.12, 1, mat(C.steel), 0, 0, 0); return t; }
   function counter(p, x, z) { const t = grp(p, x, z, 0); box(t, 10, 3.5, 2.2, mat(C.orange, { r: 0.5 }), 0, 0, 0); box(t, 10.4, 0.2, 2.6, mat("#a87a4c", { r: 0.5 }), 0, 3.5, 0); box(t, 2.2, 3.5, 4.5, mat(C.orange, { r: 0.5 }), -5.1, 0, -1.2);
     box(t, 1.7, 1.1, 0.12, mat(C.dark, { r: 0.3 }), 1.5, 3.7, -0.4); return t; }
   function chair(p, x, z, ry, col) { const t = grp(p, x, z, ry); const c = mat(col || "#2f3b4a", { r: 0.7 }); box(t, 1.8, 0.35, 1.8, c, 0, 1.4, 0); box(t, 1.8, 1.9, 0.3, c, 0, 1.75, -0.75); [[-0.75, -0.75], [0.75, -0.75], [-0.75, 0.75], [0.75, 0.75]].forEach(([a, b]) => box(t, 0.12, 1.4, 0.12, mat(C.steel), a, 0, b)); return t; }
@@ -348,6 +349,103 @@ export function createShop(host, opts) {
     if (selE && !now) selectEngine(null);
     else if (now && (!was || was.x !== now.x || was.z !== now.z)) selectEngine(selE);
     else if (now) ringAt(selE);
+    standBusy.reman1 = !!(byArea.reman1 || []).length; standBusy.reman2 = !!(byArea.reman2 || []).length; placeCrew();
+  }
+
+  // ── The crew: a blocky figure per Team member at their work spot (crew.js picks the spot; the
+  //    dashboard says when they're at work and when an hour's wage pops up over someone)
+  const SKIN = ["#f1c9a5", "#e0b48f", "#c68d62", "#a8714a", "#8d5a3b"];
+  const HAIR = ["#2a1d14", "#4a3222", "#7a5a3a", "#1d1d1d", "#9a8f84", "#b07a3e"];
+  const SUIT = ["#2b3a55", "#33443a", "#3d3f45", "#4a3628", "#28465f"];
+  const SHIRT = ["#d4581a", "#2f5f9c", "#3a3c40", "#6c7a3a", "#8a2f2f"];
+  // In feet: legs 2.6 (thigh 1.15, shin and boot 1.45), body 1.85, head 0.86 and a cap. Faces +z.
+  // Shop people wear coveralls and a cap and carry a wrench; office people a shirt and pants.
+  function figure(p, id, act) {
+    const r = rng(hash("crew:" + id)); const pk = (a) => a[Math.floor(r() * a.length)];
+    const office = act === "desk" || act === "counter";
+    const skin = mat(pk(SKIN), { r: 0.7 }), hair = mat(pk(HAIR), { r: 0.9 }), top = mat(office ? pk(SHIRT) : pk(SUIT), { r: 0.75 });
+    const legs = office ? mat(r() < 0.5 ? "#3b4f6b" : "#8c7b5c", { r: 0.85 }) : top, boot = mat("#2a2420", { r: 0.8 });
+    const g = grp(p, 0, 0, 0);
+    const hips = [-0.27, 0.27].map((x) => { const h = grp(g, x, 0, 0, 2.6); box(h, 0.46, 1.15, 0.52, legs, 0, -1.15, 0); const k = grp(h, 0, 0, 0, -1.15); box(k, 0.44, 1.05, 0.48, legs, 0, -1.05, 0); box(k, 0.5, 0.4, 0.82, boot, 0, -1.45, 0.12); return { h, k }; });
+    const up = grp(g, 0, 0, 0, 2.6);
+    box(up, 1.3, 1.85, 0.72, top, 0, 0, 0);
+    if (office) box(up, 0.52, 0.28, 0.06, mat(C.white, { r: 0.6 }), 0, 1.57, 0.35);
+    else { box(up, 1.32, 0.14, 0.74, mat("#2a2420", { r: 0.7 }), 0, 0.1, 0); box(up, 0.34, 0.24, 0.05, mat(C.orange, { r: 0.5 }), 0.3, 1.4, 0.36); }
+    const arms = [-0.82, 0.82].map((x) => { const a = grp(up, x, 0, 0, 1.72); box(a, 0.34, 1.5, 0.4, top, 0, -1.5, 0); box(a, 0.3, 0.32, 0.34, skin, 0, -1.84, 0); return a; });
+    if (!office) box(arms[1], 0.09, 0.62, 0.14, mat(C.chrome, { r: 0.3, m: 0.8 }), 0, -2.42, 0.06);
+    const head = grp(up, 0, 0, 0, 1.88);
+    box(head, 0.78, 0.86, 0.78, skin, 0, 0.02, 0);
+    [-0.17, 0.17].forEach((x) => box(head, 0.1, 0.1, 0.04, mat("#1d1d1d", { r: 0.5 }), x, 0.5, 0.39));
+    if (office) { box(head, 0.84, 0.22, 0.84, hair, 0, 0.8, 0); box(head, 0.84, 0.5, 0.18, hair, 0, 0.32, -0.36); }
+    else { const cap = mat(r() < 0.6 ? C.orange : "#2b2c2f", { r: 0.6 }); box(head, 0.84, 0.26, 0.84, cap, 0, 0.8, 0); box(head, 0.72, 0.06, 0.44, cap, 0, 0.82, 0.58); box(head, 0.84, 0.32, 0.16, hair, 0, 0.48, -0.36); }
+    // Sitting: thighs forward, shins down, onto the chair seat (1.3 ft).
+    if (act === "desk") { g.position.y = -1.04; hips.forEach((q) => { q.h.rotation.x = -Math.PI / 2; q.k.rotation.x = Math.PI / 2; }); }
+    return { g, up, head, hips, armL: arms[0], armR: arms[1], ph: r() * 6.28 };
+  }
+  const INV = new T.MeshBasicMaterial({ visible: false });
+  let crewRoot = null, CREW = [], CREW_PICK = [], crewOn = !!opts.crewOn, selP = null, lastCrew = null, clock = 0;
+  const WHO = new Map(), PAYS = [], standBusy = {};
+  // Where each person is right now: their spot, or the end of the bench while their stand is empty.
+  function placeCrew() {
+    CREW.forEach((P) => {
+      const s = P.s, at = s.alt && s.stand && !standBusy[s.stand] ? s.alt : s;
+      P.x = at.x; P.z = at.z; P.act = at.act; P.holder.position.set(at.x, 0, at.z); P.holder.rotation.y = at.ry || 0;
+      P.pk.position.set(at.x, 0, at.z); P.plate.pos.set(at.x, P.top + 0.3, at.z);
+    });
+    if (selP != null && CREW.some((P) => P.c.id === selP)) ringAtPerson(selP);
+  }
+  function setCrew(list) {
+    const sig = JSON.stringify(list || []); if (sig === lastCrew) return; lastCrew = sig;
+    if (crewRoot) scene.remove(crewRoot);
+    CREW_PICK.forEach((o) => scene.remove(o)); CREW_PICK = []; WHO.forEach((w) => w.el.remove()); WHO.clear(); PAYS.splice(0).forEach((q) => q.el.remove());
+    crewRoot = new T.Group(); crewRoot.visible = crewOn; scene.add(crewRoot); CREW = [];
+    (list || []).forEach((c) => {
+      const s = c.spot; if (!s) return;
+      const holder = grp(crewRoot, s.x, s.z, s.ry || 0); const f = figure(holder, c.id, s.act); const top = s.act === "desk" ? 5 : 6.1;
+      const pk = new T.Mesh(BOX, INV); pk.scale.set(1.9, top, 1.6); pk.position.set(s.x, 0, s.z); pk.userData.person = c.id; pk.userData.area = s.area; scene.add(pk); CREW_PICK.push(pk);
+      const el = document.createElement("button"); el.type = "button"; el.className = "s3-who"; el.textContent = c.short || c.name || "Crew"; el.hidden = true;
+      el.setAttribute("aria-label", (c.name || "Crew") + (c.role ? ", " + c.role : ""));
+      el.addEventListener("click", () => { selectPerson(c.id); call("onSelectPerson", c.id); });
+      lay.appendChild(el);
+      const P = { c, s, f, holder, pk, x: s.x, z: s.z, act: s.act, top, plate: { el, pos: new T.Vector3(s.x, top + 0.3, s.z), last: "" } };
+      WHO.set(c.id, P.plate); CREW.push(P);
+    });
+    placeCrew();
+    if (selP != null && !CREW.some((P) => P.c.id === selP)) selectPerson(null);
+  }
+  function setCrewOn(on) { crewOn = !!on; if (crewRoot) crewRoot.visible = crewOn; if (!crewOn) { WHO.forEach((W) => hideL(W)); PAYS.splice(0).forEach((q) => q.el.remove()); } }
+  // Each kind of work is a loop of arm, lean and head moves; walkers go back and forth with a
+  // look around at each end. With reduced motion everyone holds still.
+  const WALK_V = 3.4, WALK_REST = 2.2;
+  function crewStep() {
+    if (!crewRoot || !crewOn) return;
+    CREW.forEach((P) => {
+      const f = P.f, a = P.act, k = (reduce ? 0 : clock) + f.ph;
+      let lean = 0, l = -0.12, rr = -0.12, lz = 0, rz = 0, hx = 0, hy = 0, sw = 0;
+      if (a === "wrench") { const c = k % 9, look = c > 7.4; lean = look ? 0.04 : 0.3; hx = look ? 0 : 0.28; hy = look ? Math.sin((c - 7.4) * 3.9) * 0.55 : 0; rr = look ? -0.25 : -1.25 + 0.3 * Math.sin(k * 5.2); l = look ? -0.15 : -1 + 0.1 * Math.sin(k * 5.2 + 1.6); }
+      else if (a === "bench") { lean = 0.22; hx = 0.38; rr = -0.95 + 0.16 * Math.sin(k * 4); l = -0.95 - 0.16 * Math.sin(k * 4); }
+      else if (a === "wash") { lean = 0.24; hx = 0.32; rr = -1 + 0.18 * Math.sin(k * 6); l = -1 + 0.18 * Math.sin(k * 6 + 3.1); rz = 0.12 * Math.cos(k * 6); lz = -0.12 * Math.cos(k * 6 + 3.1); }
+      else if (a === "fetch") { const c = k % 7; lean = 0.12; l = -0.2; if (c < 4.5) { rr = -1.35 + 0.18 * Math.sin(k * 3); hx = 0.25; } else { rr = -1.75; hx = -0.05; hy = 0.2; } }
+      else if (a === "shelf") { const hi = k % 8 < 4; hx = -0.3; rr = hi ? -2.35 + 0.15 * Math.sin(k * 2.4) : -0.2; l = hi ? -0.25 : -2.2 + 0.15 * Math.sin(k * 2.4); }
+      else if (a === "desk") { const c = k % 11, back = c > 9; lean = back ? -0.1 : 0.12; hx = back ? -0.05 : 0.08; hy = back ? 0.35 * Math.sin((c - 9) * 3) : 0; rr = back ? -0.5 : -1.25 + 0.05 * Math.sin(k * 15); l = back ? -0.5 : -1.25 + 0.05 * Math.sin(k * 15 + 1.7); }
+      else if (a === "counter") { hy = 0.3 * Math.sin(k * 0.7); rr = -0.55 + 0.35 * Math.max(0, Math.sin(k * 1.6)); l = -0.25; }
+      else if (a === "walk") {
+        const s = P.s, dx = s.x2 - s.x, dz = s.z2 - s.z, tw = (Math.hypot(dx, dz) || 1) / WALK_V, c = k % (2 * (tw + WALK_REST));
+        let u = 0, dir = -1, moving = false;
+        if (c < tw) { u = c / tw; dir = 1; moving = true; } else if (c < tw + WALK_REST) { u = 1; dir = 1; } else if (c < 2 * tw + WALK_REST) { u = 1 - (c - tw - WALK_REST) / tw; moving = true; }
+        P.x = s.x + dx * u; P.z = s.z + dz * u; P.holder.position.set(P.x, 0, P.z); P.holder.rotation.y = Math.atan2(dx * dir, dz * dir);
+        P.pk.position.set(P.x, 0, P.z); P.plate.pos.set(P.x, P.top + 0.3, P.z); if (selP === P.c.id) ring.position.set(P.x, 0.18, P.z);
+        if (moving) { sw = Math.sin(k * 6.6); rr = 0.45 * sw; l = -0.45 * sw; } else hy = 0.5 * Math.sin(c * 2.2);
+      }
+      if (a !== "desk") { f.hips[0].h.rotation.x = 0.5 * sw; f.hips[1].h.rotation.x = -0.5 * sw; f.hips[0].k.rotation.x = 0.6 * Math.max(0, sw); f.hips[1].k.rotation.x = 0.6 * Math.max(0, -sw); }
+      f.up.rotation.x = lean; f.armL.rotation.x = l; f.armR.rotation.x = rr; f.armL.rotation.z = lz; f.armR.rotation.z = rz; f.head.rotation.x = hx; f.head.rotation.y = hy;
+    });
+  }
+  // An hour's wage rising over someone's head, then fading.
+  function pay(id, text) {
+    if (!crewOn) return; const P = CREW.find((q) => q.c.id === id); if (!P) return;
+    const el = document.createElement("div"); el.className = "s3-pay"; el.textContent = text; el.setAttribute("aria-hidden", "true"); el.hidden = true; lay.appendChild(el);
+    PAYS.push({ el, P, born: clock, last: "" });
   }
 
   // ── Lights and time of day (intensities are physical-units, about π × the old artist values)
@@ -388,7 +486,7 @@ export function createShop(host, opts) {
   // ── Picking, hover and selection
   const ray = new T.Raycaster(), ndc = new T.Vector2();
   function hitAt(x, y) { const r = canvas.getBoundingClientRect(); ndc.set(((x - r.left) / r.width) * 2 - 1, -((y - r.top) / r.height) * 2 + 1); ray.setFromCamera(ndc, camera);
-    const hits = ray.intersectObjects(ENG_PICK.concat(PICK), false); for (const h of hits) { const u = h.object.userData; if (u.engine) return { engine: u.engine, area: u.area }; if (u.area) return { area: u.area }; } return null; }
+    const hits = ray.intersectObjects((crewOn ? CREW_PICK : []).concat(ENG_PICK, PICK), false); for (const h of hits) { const u = h.object.userData; if (u.person != null) return { person: u.person, area: u.area }; if (u.engine) return { engine: u.engine, area: u.area }; if (u.area) return { area: u.area }; } return null; }
   let hover = null, hoverEng = null, sel = null, selE = null;
   const hl = new T.Group(); scene.add(hl); const hlFill = new T.Mesh(new T.PlaneGeometry(1, 1), new T.MeshBasicMaterial({ color: new T.Color(C.orange), transparent: true, opacity: 0.18, depthWrite: false })); hlFill.rotation.x = -Math.PI / 2; hl.add(hlFill);
   const edgeM = new T.MeshBasicMaterial({ color: new T.Color(C.orange) }); const edges = [0, 1, 2, 3].map(() => { const o = new T.Mesh(BOX, edgeM); hl.add(o); return o; });
@@ -399,10 +497,16 @@ export function createShop(host, opts) {
   frame(hl, hlFill, edges, null); frame(hv, hvFill, null, null);
   function ringAt(id) { const it = ENG.find((x) => x.e.id === id); if (!it) { ring.visible = false; return; } ring.visible = true; ring.position.set(it.x, 0.18, it.z); ring.rotation.y = it.ry; const w = 5.6 * it.sc, d = 4.2 * it.sc, t = 0.3;
     [[0, -d / 2, w, t], [0, d / 2, w, t], [-w / 2, 0, t, d], [w / 2, 0, t, d]].forEach(([x, z, ww, dd], i) => { ringEdges[i].scale.set(ww, 0.14, dd); ringEdges[i].position.set(x, 0, z); }); }
+  function ringAtPerson(id) { const P = CREW.find((q) => q.c.id === id); if (!P) { ring.visible = false; return; } ring.visible = true; ring.position.set(P.x, 0.18, P.z); ring.rotation.y = 0; const w = 3, t = 0.25;
+    [[0, -w / 2, w, t], [0, w / 2, w, t], [-w / 2, 0, t, w], [w / 2, 0, t, w]].forEach(([x, z, ww, dd], i) => { ringEdges[i].scale.set(ww, 0.14, dd); ringEdges[i].position.set(x, 0, z); }); }
   function setHover(id) { if (id === hover) return; hover = id; frame(hv, hvFill, null, id && id !== sel ? AREA_BY_ID[id] : null, 0.01); LBL.forEach((L) => L.el.classList.toggle("hov", L.id === id)); }
-  function selectArea(id, o) { o = o || {}; if (!o.tour) stopTour(); sel = id || null; selE = null; ring.visible = false; const a = sel ? AREA_BY_ID[sel] : null; frame(hl, hlFill, edges, a); hover = null; frame(hv, hvFill, null, null); LBL.forEach((L) => { L.el.classList.remove("hov"); L.el.classList.toggle("on", L.id === sel); }); if (a || !o.stay) flyArea(a); }
-  function selectEngine(id) { selE = id || null; if (!selE) { ring.visible = false; return; } const it = ENG.find((x) => x.e.id === selE); if (!it) { ring.visible = false; return; } stopTour(); sel = null; frame(hl, hlFill, edges, null); LBL.forEach((L) => L.el.classList.remove("on")); ringAt(selE); Gl.tx = it.x; Gl.tz = it.z; Gl.r = clamp(Math.min(Gl.r, 60), 34, 60); Gl.ph = clamp(Gl.ph, 0.62, 1.05); wrapTh(); }
-  function clickAt(x, y) { const h = hitAt(x, y); if (h && h.engine) { selectEngine(h.engine); call("onSelectEngine", h.engine); return; } if (h && h.area) { selectArea(h.area); call("onSelectArea", h.area); return; } if (sel || selE) { selectArea(null, { stay: true }); call("onSelectArea", null); } }
+  function selectArea(id, o) { o = o || {}; if (!o.tour) stopTour(); sel = id || null; selE = null; selP = null; ring.visible = false; const a = sel ? AREA_BY_ID[sel] : null; frame(hl, hlFill, edges, a); hover = null; frame(hv, hvFill, null, null); LBL.forEach((L) => { L.el.classList.remove("hov"); L.el.classList.toggle("on", L.id === sel); }); if (a || !o.stay) flyArea(a); }
+  function selectEngine(id) { selE = id || null; if (!selE) { if (selP == null) ring.visible = false; return; } const it = ENG.find((x) => x.e.id === selE); if (!it) { ring.visible = false; return; } stopTour(); sel = null; selP = null; frame(hl, hlFill, edges, null); LBL.forEach((L) => L.el.classList.remove("on")); ringAt(selE); Gl.tx = it.x; Gl.tz = it.z; Gl.r = clamp(Math.min(Gl.r, 60), 34, 60); Gl.ph = clamp(Gl.ph, 0.62, 1.05); wrapTh(); }
+  function selectPerson(id) { selP = id == null ? null : id; if (selP == null) { ring.visible = false; return; } const P = CREW.find((q) => q.c.id === selP); if (!P) { ring.visible = false; return; }
+    stopTour(); sel = null; selE = null; frame(hl, hlFill, edges, null); LBL.forEach((L) => L.el.classList.remove("on")); ringAtPerson(selP); Gl.tx = P.x; Gl.tz = P.z; Gl.r = clamp(Math.min(Gl.r, 46), 26, 46); Gl.ph = clamp(Gl.ph, 0.62, 1);
+    if (P.z < B.z0) Gl.th = Math.PI + 0.25; // out in the yard: look from the north, so the shop doesn't hide them
+    wrapTh(); }
+  function clickAt(x, y) { const h = hitAt(x, y); if (h && h.person != null) { selectPerson(h.person); call("onSelectPerson", h.person); return; } if (h && h.engine) { selectEngine(h.engine); call("onSelectEngine", h.engine); return; } if (h && h.area) { selectArea(h.area); call("onSelectArea", h.area); return; } if (sel || selE || selP != null) { selectArea(null, { stay: true }); call("onSelectArea", null); } }
 
   // ── Labels: one per place, markers for the doors and the street, a plate per engine when you're close
   const LBL = []; let labelsOn = opts.labels !== false;
@@ -423,6 +527,7 @@ export function createShop(host, opts) {
       if (!labelsOn || far || pv.z >= 1 || pv.x < -1.2 || pv.x > 1.2 || pv.y < -1.2 || pv.y > 0.97) { hideL(L); return; }
       cand.push({ L, x: (pv.x * 0.5 + 0.5) * w, y: (-pv.y * 0.5 + 0.5) * h, s: clamp(170 / d, 0.66, 1.05) * (L.mark ? 0.95 : 1), d, pri }); };
     LBL.forEach((L) => consider(L, 0, L.id && (L.id === sel || L.id === hover) ? 0 : L.mark ? 2 : 1));
+    if (crewOn) WHO.forEach((W, id) => consider(W, 110, id === selP ? 0 : 2.5)); else WHO.forEach(hideL);
     PLATES.forEach((P, id) => consider(P, 85, id === selE ? 0 : 3));
     cand.sort((a, b) => a.pri - b.pri || a.d - b.d);
     const shown = [];
@@ -431,6 +536,21 @@ export function createShop(host, opts) {
       if (r.x0 < -ww * 0.25 || r.x1 > w + ww * 0.25 || r.y0 < -hh * 0.25 || shown.some((q) => r.x0 < q.x1 && q.x0 < r.x1 && r.y0 < q.y1 && q.y0 < r.y1)) { hideL(L); return; }
       shown.push(r); if (L.el.hidden) L.el.hidden = false;
       const tr = "translate(" + c.x.toFixed(1) + "px," + c.y.toFixed(1) + "px) translate(-50%,-100%) scale(" + c.s.toFixed(3) + ")"; if (tr !== L.last) { L.el.style.transform = tr; L.last = tr; } });
+  }
+  // Wage pops float up about 7 ft over 2.8 s, whatever the labels setting, and fade at the end.
+  function paysStep() {
+    const w = canvas.clientWidth, h = canvas.clientHeight;
+    for (let i = PAYS.length - 1; i >= 0; i--) {
+      const q = PAYS[i], age = clock - q.born;
+      if (age > 2.8) { q.el.remove(); PAYS.splice(i, 1); continue; }
+      const d = camera.position.distanceTo(wp.set(q.P.x, q.P.top, q.P.z));
+      pv.set(q.P.x, q.P.top + 0.8 + (reduce ? 0 : age * 2.6), q.P.z).project(camera);
+      if (pv.z >= 1 || pv.x < -1.1 || pv.x > 1.1 || pv.y < -1.1 || pv.y > 1.1) { q.el.hidden = true; continue; }
+      q.el.hidden = false;
+      const tr = "translate(" + ((pv.x * 0.5 + 0.5) * w).toFixed(1) + "px," + ((-pv.y * 0.5 + 0.5) * h).toFixed(1) + "px) translate(-50%,-100%) scale(" + clamp(150 / d, 0.72, 1.15).toFixed(3) + ")";
+      if (tr !== q.last) { q.el.style.transform = tr; q.last = tr; }
+      q.el.style.opacity = (age < 0.2 ? age / 0.2 : age > 2 ? (2.8 - age) / 0.8 : 1).toFixed(2);
+    }
   }
 
   // ── Walls drop to knee height when they stand between you and the rooms
@@ -480,7 +600,7 @@ export function createShop(host, opts) {
   const onWheel = (e) => { e.preventDefault(); Gl.r = clamp(Gl.r * Math.exp(e.deltaY * 0.0011), RMIN, RMAX); stopTour(); touched(); };
   const DRIVE_KEYS = ["w", "a", "s", "d", "arrowup", "arrowdown", "arrowleft", "arrowright"];
   const onKey = (e) => { const k = e.key.length === 1 ? e.key.toLowerCase() : e.key.toLowerCase();
-    if (k === "escape") { if (driving) { setDrive(false); call("onDrive", false); } else if (sel || selE) { selectArea(null); call("onSelectArea", null); } return; }
+    if (k === "escape") { if (driving) { setDrive(false); call("onDrive", false); } else if (sel || selE || selP != null) { selectArea(null); call("onSelectArea", null); } return; }
     if (driving) { if (DRIVE_KEYS.includes(k)) { keys.add(k); e.preventDefault(); } return; }
     const m = { arrowleft: [40, 0], arrowright: [-40, 0], arrowup: [0, 40], arrowdown: [0, -40], a: [40, 0], d: [-40, 0], w: [0, 40], s: [0, -40] }[k];
     if (m) { panBy(m[0], m[1]); e.preventDefault(); touched(); stopTour(); } else if (k === "q") Gl.th += 0.18; else if (k === "e") Gl.th -= 0.18; else if (k === "+" || k === "=") Gl.r = clamp(Gl.r * 0.85, RMIN, RMAX); else if (k === "-") Gl.r = clamp(Gl.r / 0.85, RMIN, RMAX); };
@@ -489,8 +609,10 @@ export function createShop(host, opts) {
   canvas.addEventListener("contextmenu", onCtx); canvas.addEventListener("pointerdown", onDown); canvas.addEventListener("pointermove", onMove); canvas.addEventListener("pointerup", onUp); canvas.addEventListener("pointercancel", onUp); canvas.addEventListener("pointerleave", onLeave);
   canvas.addEventListener("wheel", onWheel, { passive: false }); canvas.addEventListener("keydown", onKey); canvas.addEventListener("keyup", onKeyUp); canvas.addEventListener("blur", onBlur); addEventListener("blur", onBlur);
   function hoverStep() { if (!lastMove || ptrs.size) return; const e = lastMove; lastMove = null; const h = hitAt(e.clientX, e.clientY);
-    setHover(h && !h.engine ? h.area : null); canvas.classList.toggle("hover", !!h);
-    if (h && h.engine) { const it = ENG.find((x) => x.e.id === h.engine); if (it) { const en = it.e; tip.textContent = [en.sku, en.name, en.statusLabel].filter(Boolean).join(" · "); const r = host.getBoundingClientRect(); tip.style.transform = "translate(" + Math.round(e.clientX - r.left + 14) + "px," + Math.round(e.clientY - r.top + 14) + "px)"; tip.hidden = false; hoverEng = h.engine; } }
+    setHover(h && !h.engine && h.person == null ? h.area : null); canvas.classList.toggle("hover", !!h);
+    const P = h && h.person != null ? CREW.find((q) => q.c.id === h.person) : null, it = h && h.engine ? ENG.find((x) => x.e.id === h.engine) : null;
+    const txt = P ? [P.c.name, P.c.role, P.s.label].filter(Boolean).join(" · ") : it ? [it.e.sku, it.e.name, it.e.statusLabel].filter(Boolean).join(" · ") : "";
+    if (txt) { tip.textContent = txt; const r = host.getBoundingClientRect(); tip.style.transform = "translate(" + Math.round(e.clientX - r.left + 14) + "px," + Math.round(e.clientY - r.top + 14) + "px)"; tip.hidden = false; hoverEng = it ? h.engine : null; }
     else { tip.hidden = true; hoverEng = null; } }
 
   // ── Size and the loop
@@ -499,13 +621,13 @@ export function createShop(host, opts) {
     camera.fov = asp < 1 ? Math.min(60, (2 * Math.atan(Math.tan((13 * Math.PI) / 180) / asp) * 180) / Math.PI) : 34; camera.updateProjectionMatrix(); HOME.r = asp < 1 ? 290 : 215; }
   const ro = typeof ResizeObserver !== "undefined" ? new ResizeObserver(resize) : null; if (ro) ro.observe(host); else addEventListener("resize", resize);
   let last = performance.now();
-  function loop(now) { if (dead) return; const raw = Math.min(0.25, (now - last) / 1000), dt = Math.min(0.05, raw); last = now;
+  function loop(now) { if (dead) return; const raw = Math.min(0.25, (now - last) / 1000), dt = Math.min(0.05, raw); last = now; clock += raw;
     if (todT < 1) { todT = Math.min(1, todT + raw / 1.2); applyTod(todT); }
     if (driving) driveStep(dt);
     if (touring) { tourT += raw; if (tourT > 5.2) { tourT = 0; tourI = (tourI + 1) % PLACE_ORDER.length; selectArea(PLACE_ORDER[tourI], { tour: true }); call("onSelectArea", PLACE_ORDER[tourI]); } }
     cars.forEach((c) => { c.o.position.x += c.v * dt; if (c.v > 0 && c.o.position.x > 330) c.o.position.x = -180; if (c.v < 0 && c.o.position.x < -180) c.o.position.x = 330; });
-    smoke(dt); camStep(raw); wallsStep(raw); hoverStep();
-    R.render(scene, camera); placeLabels(); raf = requestAnimationFrame(loop); }
+    smoke(dt); crewStep(); camStep(raw); wallsStep(raw); hoverStep();
+    R.render(scene, camera); placeLabels(); paysStep(); raf = requestAnimationFrame(loop); }
 
   // ── Build, then start
   const nextFrame = () => new Promise((r) => requestAnimationFrame(() => r()));
@@ -517,18 +639,22 @@ export function createShop(host, opts) {
       await step("Raising the walls…", 26); buildWalls();
       await step("Stocking the shelves…", 44); buildInside();
       await step("Parking the trucks…", 62); buildYard(); buildScenery();
-      await step("Unloading engines…", 82); buildPickPads(); buildLabels(); makePuffs(); setEngines(opts.engines || []);
+      await step("Unloading engines…", 82); buildPickPads(); buildLabels(); makePuffs(); setEngines(opts.engines || []); setCrew(opts.crew || []);
       await step("Turning on the lights…", 96);
       setTod(todKey, true); resize(); Object.assign(Cm, HOME); Object.assign(Gl, HOME); camStep(1); R.render(scene, camera);
-      if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => { if (dead) return; SIGNS.forEach((t) => { const d = t.userData; d.draw(d.c.getContext("2d"), d.c.width, d.c.height); t.needsUpdate = true; }); LBL.forEach((L) => (L.w = 0)); PLATES.forEach((P) => (P.w = 0)); });
+      if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => { if (dead) return; SIGNS.forEach((t) => { const d = t.userData; d.draw(d.c.getContext("2d"), d.c.width, d.c.height); t.needsUpdate = true; }); LBL.forEach((L) => (L.w = 0)); PLATES.forEach((P) => (P.w = 0)); WHO.forEach((W) => (W.w = 0)); });
       call("onReady"); raf = requestAnimationFrame(loop);
     } catch (e) { if (!dead) { console.error(e); call("onError", "Something went wrong building the 3D shop. Leave this page and open it again."); } }
   })();
 
   return {
     setEngines: (list) => { if (LBL.length) setEngines(list); else opts.engines = list; },
+    setCrew: (list) => { if (LBL.length) setCrew(list); else opts.crew = list; },
+    setCrewOn: (on) => setCrewOn(on),
+    pay: (id, text) => pay(id, text),
     selectArea: (id) => selectArea(id || null),
     selectEngine: (id) => selectEngine(id || null),
+    selectPerson: (id) => selectPerson(id == null ? null : id),
     setTod: (k) => setTod(k),
     setWalls: (m) => { wallMode = m; },
     setRoofs: (on) => { roofOn = !!on; },
