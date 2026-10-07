@@ -27,6 +27,9 @@ export function provCode(p) {
   return hit ? hit[0] : "";
 }
 export const taxForProv = (p) => HST[provCode(p)] || 0.05;
+// For the customer form's province picker.
+export const PROVINCE_NAMES = [["AB", "Alberta"], ["BC", "British Columbia"], ["MB", "Manitoba"], ["NB", "New Brunswick"], ["NL", "Newfoundland and Labrador"], ["NS", "Nova Scotia"], ["NT", "Northwest Territories"], ["NU", "Nunavut"], ["ON", "Ontario"], ["PE", "Prince Edward Island"], ["QC", "Quebec"], ["SK", "Saskatchewan"], ["YT", "Yukon"]];
+export const provName = (p) => (PROVINCE_NAMES.find(([k]) => k === provCode(p)) || [0, ""])[1];
 export const TAX_OPTS = [[0.05, "GST 5%"], [0.13, "HST 13% · Ontario"], [0.14, "HST 14% · Nova Scotia"], [0.15, "HST 15% · NB, NL, PEI"]];
 export const taxRateOf = (x) => { const v = x && x.taxRate; return v === undefined || v === null || v === "" || !isFinite(+v) ? 0.05 : +v; };
 export const taxName = (x) => (taxRateOf(x) === 0.05 ? "GST" : "HST") + " " + r2(taxRateOf(x) * 100) + "%";

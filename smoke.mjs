@@ -35,7 +35,7 @@ console.log("ISX15 rows:",isx);
 // open engine passport for an ISX-15
 await p.click('.rc-ni:has-text("Engines")');
 await p.fill("input.rc-si","ISX-15 (2010)");
-await p.click("table.rc-tbl tbody tr >> nth=0 >> td >> nth=1");
+await p.click("table.rc-tbl tbody tr >> nth=0 >> button.rc-lnk");
 await p.waitForSelector("text=Engine Unit Record");
 await p.click(".rc-mod button.rc-fb:has-text('Diagnosis')");
 await p.waitForSelector("text=Diagnosis history");
@@ -105,7 +105,7 @@ await p.fill(".rc-mod input[placeholder='Rate ($/hr)']","40");
 await p.click(".rc-mod .rc-fa .rc-ba");
 await p.click('.rc-ni:has-text("Engines")');
 await p.fill("input.rc-si","ISX-15 (2012)");
-await p.click("table.rc-tbl tbody tr >> nth=0 >> td >> nth=1");
+await p.click("table.rc-tbl tbody tr >> nth=0 >> button.rc-lnk");
 await p.waitForSelector("text=Engine Unit Record");
 await p.click(".rc-mod .rc-fa button:has-text('Sell Engine')");
 await p.waitForSelector("text=What's going with this engine?");
@@ -239,7 +239,7 @@ const shopsN=await p.locator('.rc-stat:has-text("Shops tracked") .rc-sv').innerT
 await p.click('[role=tab]:has-text("Comparison")');
 console.log("research seeds: fleets",(fleetsTitle.match(/\d+/)||[""])[0],"| shops",shopsN,"| comparison rows",await p.locator("table.rc-cmp tbody tr").count());
 await p.click('.rc-ni:has-text("Prospects")');
-await p.locator(".rc-main table.rc-tbl tbody tr",{hasText:"C & K Trucking Inc"}).locator('button:has-text("Log visit")').click();
+await p.locator(".rc-main table.rc-tbl tbody tr",{hasText:"C & K Trucking Inc"}).locator('button:has-text("Log visit"):visible').click();
 await p.waitForSelector(".rc-mod >> text=Log a Visit");
 await p.click('.rc-mod button.rc-fb:has-text("Interested")');
 await p.fill('.rc-mod textarea[aria-label="Notes"]',"Smoke visit: two ISX15s due this winter.");
