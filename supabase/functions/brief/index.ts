@@ -16,9 +16,10 @@
 // Secrets: RESEND_API_KEY (optional — without it the brief is computed + stored
 //   but not emailed), MAIL_TO (default wayne@rollin-coal.ca), MAIL_FROM (default
 //   Resend sandbox sender), DASHBOARD_URL (optional link in the email).
-// Output: upserts app_state 'rc:brief' = {date, at, subject, text, html, sent,
-//   to, reason, summary, by}; the dashboard renders it read-only.
-// Keep the cost/status helpers below in sync with RollinCoalDashboard.jsx.
+// Output: upserts app_state 'rc:brief' = {date, at, subject, text, html, staffText, staffHtml, sent,
+//   to, reason, summary, by}; the dashboard renders it read-only. The staff copy leaves out the
+//   break-even line, which includes payroll; a staff login's Send now gets that copy back too.
+// Keep the cost/status helpers below in sync with RollinCoalDashboard.jsx and src/lib/money.js.
 // ─────────────────────────────────────────────────────────────
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
@@ -31,7 +32,7 @@ const MAIL_TO = Deno.env.get("MAIL_TO") || "wayne@rollin-coal.ca";
 const MAIL_FROM = Deno.env.get("MAIL_FROM") || "Rollin Coal <onboarding@resend.dev>";
 const DASH = Deno.env.get("DASHBOARD_URL") || "";
 const TZ = "America/Edmonton";
-const BLOBS = ["wins","invoices","settings","timeEntries","diagnoses","cores","jobs","activity","expenses","employees","prospects","competitors"];
+const BLOBS = ["wins","invoices","settings","timeEntries","diagnoses","cores","jobs","activity","expenses","employees","prospects","competitors","shipments"];
 
 const cors = {
   "Access-Control-Allow-Origin": "*",
@@ -46,7 +47,8 @@ type Any = Record<string, any>;
 const isEngine = (i: Any) => i.cat === "Complete Engine" || i.cat === "Core";
 const engStatus = (i: Any) => i.status || (i.cat === "Core" ? "core" : "available");
 const partsSpend = (i: Any) => (i.partsLog || []).reduce((a: number, p: Any) => a + (+p.v || 0), 0);
-const fixedCost = (i: Any) => { const b = (+i.costCore||0)+(+i.costFreight||0)+(+i.costParts||0)+(+i.costLabor||0); return b > 0 ? b : (+i.cost || 0); };
+// The flat cost is what the engine cost to buy: it stands in for Core when Core is blank.
+const fixedCost = (i: Any) => (+i.costCore || +i.cost || 0) + (+i.costFreight||0) + (+i.costParts||0) + (+i.costLabor||0);
 const costBasis = (i: Any) => fixedCost(i) + partsSpend(i) + (+i.laborLogged||0) + (+i.dxParts||0);
 const WIP = ["core","in-reman","on-hold"];
 const uwRatio = (i: Any) => { const p = +i.price||0, cb = costBasis(i); return p > 0 && cb > 0 ? cb/p : null; };
@@ -64,6 +66,29 @@ function local(d: Date) {
 }
 const days = (iso: string) => Math.floor((Date.now() - new Date(iso).getTime()) / 864e5);
 const ymdOf = (ts: string) => ts ? local(new Date(ts)).ymd : "";
+// Stuck: more than 7 days in a WIP stage (the dashboard's rule, to the millisecond).
+const stuck = (i: Any) => WIP.includes(engStatus(i)) && !!i.stageDate && Date.now() - new Date(i.stageDate).getTime() > 7 * 864e5;
+
+// ── money, mirrored from src/lib/money.js ──
+const r2 = (n: number) => Math.round((+n || 0) * 100) / 100;
+const sameId = (a: unknown, b: unknown) => a != null && b != null && a !== "" && String(a) === String(b);
+const taxRateOf = (x: Any) => { const v = x && x.taxRate; return v === undefined || v === null || v === "" || !isFinite(+v) ? 0.05 : +v; };
+const docSub = (x: Any) => r2((x?.items || []).reduce((a: number, i: Any) => a + (+i.q || 0) * (+i.r || 0), 0));
+const docTax = (x: Any) => r2(docSub(x) * taxRateOf(x));
+const docTotal = (x: Any) => r2(docSub(x) + docTax(x));
+const addDays = (iso: string, n: number) => { const d = new Date(iso + "T12:00:00Z"); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); };
+const ISO = /^\d{4}-\d{2}-\d{2}$/;
+const docDate = (x: Any) => { const d = String(x?.date || ""); if (ISO.test(d)) return d; const t = +(x?.id); return t > 1e12 ? local(new Date(t)).ymd : ""; };
+const termsDays = (t: unknown) => { const s0 = String(t || ""); const m = s0.match(/\d+/); if (m) return +m[0]; return /receipt|cod|cash|immediate|now|upon/i.test(s0) ? 0 : 30; };
+const dueDateOf = (v: Any) => ISO.test(String(v?.dueDate || "")) ? v.dueDate : (docDate(v) ? addDays(docDate(v), termsDays(v?.due)) : "");
+const isPaid = (v: Any) => v?.status === "paid";
+const isOverdue = (v: Any, today: string) => !!v && !isPaid(v) && (v.status === "overdue" || (!!dueDateOf(v) && dueDateOf(v) < today));
+const freqKey = (v: unknown) => { const t = String(v || "").toLowerCase(); if (/once|one.?time|single|one.?off/.test(t)) return "once"; if (/bi.?week|2 ?week|two ?week|fortnight/.test(t)) return "biweekly"; if (/week/.test(t)) return "weekly"; if (/quarter|3 ?month|three ?month/.test(t)) return "quarterly"; if (/year|annual/.test(t)) return "yearly"; return "monthly"; };
+const expMonthly = (e: Any) => { const a = +e?.amount || 0; switch (freqKey(e?.freq)) { case "weekly": return a * 52 / 12; case "biweekly": return a * 26 / 12; case "quarterly": return a / 3; case "yearly": return a / 12; case "once": return 0; default: return a; } };
+const payrollMonthly = (emps: Any[]) => (emps || []).filter((e) => !e.status || e.status === "active").reduce((a, e) => a + (+e.rate || 0) * (+e.hrs || 0) * 52 / 12, 0);
+// An engine sale's cost is its cost basis at the sale less the shop labour in it (already in payroll).
+const saleCost = (w: Any) => Math.max(0, (+w.cost || 0) - (+w.labor || 0));
+const invoicedSale = (s: Any, w: Any) => { const E = s.inventory || []; const e = w.engineId != null ? E.find((i: Any) => sameId(i.id, w.engineId)) : (w.sku ? E.find((i: Any) => i.sku === w.sku) : null); return !!e && (s.invoices || []).some((v: Any) => sameId(v.engineId, e.id)); };
 
 function daily3(s: Any) {
   const c: Any[] = []; const E = (s.inventory||[]).filter(isEngine);
@@ -71,10 +96,10 @@ function daily3(s: Any) {
   E.filter((i: Any) => engStatus(i) === "available" && !(i.listedOn||[]).length).forEach((i: Any) => c.push({ t:"list", l:"Post " + (i.sku||"") + " — not advertised" }));
   E.filter((i: Any) => !i.photo).forEach((i: Any) => c.push({ t:"photo", l:"Photo " + (i.sku||i.name||"") }));
   E.filter((i: Any) => !(i.serial||i.esn)).forEach((i: Any) => c.push({ t:"esn", l:"Record ESN — " + (i.sku||i.name||"") }));
-  E.filter((i: Any) => WIP.includes(engStatus(i)) && i.stageDate && days(i.stageDate) > 7).forEach((i: Any) => c.push({ t:"stale", l:"Touch " + (i.sku||i.name||"") + " — stuck in " + STAGE[engStatus(i)] }));
-  (s.invoices||[]).filter((v: Any) => v.status === "overdue").forEach((v: Any) => c.push({ t:"inv", l:"Chase invoice " + (v.invNum||v.id) }));
-  // Prospect / shop follow-ups due today or overdue (mirrors resFollowups(s,0) in the dashboard).
+  E.filter(stuck).forEach((i: Any) => c.push({ t:"stale", l:"Touch " + (i.sku||i.name||"") + " — stuck in " + STAGE[engStatus(i)] }));
   const today = local(new Date()).ymd;
+  (s.invoices||[]).filter((v: Any) => isOverdue(v, today)).forEach((v: Any) => c.push({ t:"inv", l:"Chase invoice " + (v.invNum||v.id) }));
+  // Prospect / shop follow-ups due today or overdue (mirrors resFollowups(s,0) in the dashboard).
   [...(s.prospects||[]), ...(s.competitors||[])].filter((r: Any) => r.nextFollowUp && r.nextFollowUp <= today && !["not-a-fit","do-not-contact"].includes(r.status||""))
     .sort((a: Any, b: Any) => String(a.nextFollowUp).localeCompare(String(b.nextFollowUp)) || String(a.name).localeCompare(String(b.name)))
     .forEach((r: Any) => c.push({ t:"follow", l:"Follow up — " + (r.name||"") + (r.city ? " (" + r.city + ")" : "") }));
@@ -100,24 +125,34 @@ function compute(s: Any, now: Date) {
   const yActs = (s.activity||[]).filter((x: Any) => ymdOf(x.ts) === y);
   const yAvail = yActs.filter((x: Any) => /→ Available/.test(x.msg||"")).length;
   const uw = E.filter((i: Any) => uwLevel(i)).map((i: Any) => ({ name: label(i), pct: Math.round((uwRatio(i)||0)*100), lv: uwLevel(i) })).sort((a: Any, b: Any) => b.pct - a.pct);
-  const stale = E.filter((i: Any) => WIP.includes(engStatus(i)) && i.stageDate && days(i.stageDate) > 7).map((i: Any) => ({ name: label(i), d: days(i.stageDate), st: STAGE[engStatus(i)] })).sort((a: Any, b: Any) => b.d - a.d);
+  const stale = E.filter(stuck).map((i: Any) => ({ name: label(i), d: days(i.stageDate), st: STAGE[engStatus(i)] })).sort((a: Any, b: Any) => b.d - a.d);
   const avail = E.filter((i: Any) => engStatus(i) === "available");
   const unlisted = avail.filter((i: Any) => !(i.listedOn||[]).length).length;
   const noCost = E.filter((i: Any) => costBasis(i) <= 0).length;
-  const overdue = (s.invoices||[]).filter((v: Any) => v.status === "overdue");
-  const invTot = (v: Any) => (v.items||[]).reduce((a: number, it: Any) => a + (+it.q||0)*(+it.r||0), 0) * 1.05;
-  const overdueSum = overdue.reduce((a: number, v: Any) => a + invTot(v), 0);
+  const overdue = (s.invoices||[]).filter((v: Any) => isOverdue(v, t.ymd));
+  const overdueSum = overdue.reduce((a: number, v: Any) => a + docTotal(v), 0);
   const coresPending = (s.cores||[]).filter((c: Any) => c.status === "pending").length;
   const openDx = (s.diagnoses||[]).filter((x: Any) => (x.outcome||"open") !== "resolved").length;
   const wip = E.filter((i: Any) => WIP.includes(engStatus(i))); const wipCost = wip.reduce((a: number, i: Any) => a + costBasis(i), 0);
-  const fixedMo = (s.expenses||[]).reduce((a: number, e: Any) => a + (+e.amount||0), 0) + (s.employees||[]).reduce((a: number, e: Any) => a + (+e.rate||0)*(+e.hrs||0), 0) * 4.33;
-  return { t, y, E: E.length, avail: avail.length, wip: wip.length, wipCost, yWins, mWins, mRev, goal, yParts, yHours, yActs: yActs.length, yAvail, yDx: dxY.length, uw, stale, unlisted, noCost, overdue, overdueSum, coresPending, openDx, fixedMo, d3: daily3(s) };
+  // Break-even (mirrors breakEven in src/lib/money.js): this month's fixed costs (expenses by how often
+  // they're paid, one-time ones in their month, and payroll) against what the month earned after the
+  // engines' cost: invoices before tax + engines sold without one − those engines' cost − freight.
+  const inMonth = (d: string) => !!d && d.slice(0, 7) === ym;
+  const fixedMo = r2((s.expenses||[]).reduce((a: number, e: Any) => a + expMonthly(e) + (freqKey(e.freq) === "once" && inMonth(docDate(e)) ? (+e.amount || 0) : 0), 0) + payrollMonthly(s.employees));
+  const earned = r2((s.invoices||[]).filter((v: Any) => inMonth(docDate(v))).reduce((a: number, v: Any) => a + docSub(v), 0)
+    + mWins.filter((w: Any) => !invoicedSale(s, w)).reduce((a: number, w: Any) => a + (+w.price || 0), 0)
+    - mWins.reduce((a: number, w: Any) => a + saleCost(w), 0)
+    - (s.shipments||[]).filter((x: Any) => inMonth(x.shipDate || docDate(x))).reduce((a: number, x: Any) => a + (+x.freightCost || 0), 0));
+  return { t, y, E: E.length, avail: avail.length, wip: wip.length, wipCost, yWins, mWins, mRev, goal, yParts, yHours, yActs: yActs.length, yAvail, yDx: dxY.length, uw, stale, unlisted, noCost, overdue, overdueSum, coresPending, openDx, fixedMo, earned, d3: daily3(s) };
 }
 
 const esc = (t: unknown) => String(t ?? "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
 const sec = (t: string) => `<div style="font-size:11px;letter-spacing:2px;text-transform:uppercase;color:#d4581a;font-weight:700;margin-top:14px;border-left:3px solid #d4581a;padding-left:8px">${t}</div>`;
 
-function render(c: Any) {
+// staff: true leaves out the break-even line, which includes payroll.
+function render(c: Any, staff = false) {
+  const be = !staff && c.fixedMo > 0;
+  const beTxt = be ? ` · fixed costs ${$(c.fixedMo)} a month: ${c.earned >= c.fixedMo ? "✓ break-even cleared" : $(Math.max(0, c.fixedMo - c.earned)) + " more margin to break even"}` : "";
   const pct = c.goal > 0 ? Math.min(999, Math.round(c.mRev / c.goal * 100)) : 0;
   const yRev = c.yWins.reduce((a: number, w: Any) => a + (+w.price||0), 0);
   const att: string[] = [];
@@ -140,7 +175,7 @@ function render(c: Any) {
     ``, `NEEDS ATTENTION TODAY`, ...(att.length ? att.map(l => "  " + l) : ["  ✓ Nothing urgent — lot's clean."]),
     ``, `TODAY'S 3`, ...(c.d3.length ? c.d3.map((x: Any, i: number) => `  ${i + 1}. ${x.l}`) : ["  Lot's clean — go sell something."]),
     ``, `MONTH SO FAR`,
-    `  ${$(c.mRev)} of ${$(c.goal)} goal (${pct}%) · ${c.mWins.length} engine${c.mWins.length === 1 ? "" : "s"} sold` + (c.fixedMo > 0 ? ` · break-even ${$(c.fixedMo)}${c.mRev >= c.fixedMo ? " ✓ cleared" : ""}` : ""),
+    `  ${$(c.mRev)} of ${$(c.goal)} goal (${pct}%) · ${c.mWins.length} engine${c.mWins.length === 1 ? "" : "s"} sold` + beTxt,
     `  Lot: ${c.E} engines · ${c.avail} available · ${c.wip} in WIP holding ${$K(c.wipCost)}`,
     ``, ...(DASH ? [`Open the dashboard: ${DASH}`, ``] : []), `Sent automatically by your Rollin Coal dashboard.`,
   ].join("\n");
@@ -153,7 +188,7 @@ function render(c: Any) {
   ${sec("Needs attention today")}${att.length ? `<ul style="padding-left:18px;margin:6px 0 14px;font-size:14px;line-height:1.5">${li(att)}</ul>` : `<p style="font-size:14px;color:#1e7a34;margin:6px 0 14px">✓ Nothing urgent — lot's clean.</p>`}
   ${sec("Today's 3")}${c.d3.length ? `<ol style="padding-left:20px;margin:6px 0 14px;font-size:14px;line-height:1.6">${c.d3.map((x: Any) => `<li>${esc(x.l)}</li>`).join("")}</ol>` : `<p style="font-size:14px;margin:6px 0 14px">Lot's clean — go sell something.</p>`}
   ${sec("Month so far")}
-  <div style="font-size:14px;margin:6px 0 4px"><b>${esc($(c.mRev))}</b> of ${esc($(c.goal))} goal · ${pct}% · ${c.mWins.length} engine${c.mWins.length === 1 ? "" : "s"} sold${c.fixedMo > 0 ? ` · break-even ${esc($(c.fixedMo))}${c.mRev >= c.fixedMo ? " ✓" : ""}` : ""}</div>
+  <div style="font-size:14px;margin:6px 0 4px"><b>${esc($(c.mRev))}</b> of ${esc($(c.goal))} goal · ${pct}% · ${c.mWins.length} engine${c.mWins.length === 1 ? "" : "s"} sold${esc(beTxt)}</div>
   <div style="height:10px;background:#eee;border-radius:6px;overflow:hidden;margin:6px 0 10px"><div style="height:100%;width:${Math.min(100, pct)}%;background:${pct >= 100 ? "#3fae5a" : "#d4581a"}"></div></div>
   <div style="font-size:12px;color:#666">Lot: ${c.E} engines · ${c.avail} available · ${c.wip} in WIP holding ${esc($K(c.wipCost))}</div>
   ${DASH ? `<p style="margin:16px 0 0"><a href="${esc(DASH)}" style="background:#d4581a;color:#fff;text-decoration:none;padding:9px 14px;border-radius:7px;font-size:13px;font-weight:700">Open the dashboard →</a></p>` : ""}
@@ -178,7 +213,7 @@ Deno.serve(async (req) => {
   if (!SB_URL || !SB_SERVICE) return json({ error: "Server not configured" }, 500);
   const svc = createClient(SB_URL, SB_SERVICE, { auth: { persistSession: false } });
   // ── authorize: cron secret · service role · signed-in user ──
-  let mode = "";
+  let mode = "", callerRole = "";
   const hdr = req.headers.get("x-brief-secret") || "";
   const token = (req.headers.get("Authorization") || "").replace(/^Bearer\s+/i, "").trim();
   if (hdr) {
@@ -188,7 +223,7 @@ Deno.serve(async (req) => {
   }
   if (!mode && token) {
     if (token === SB_SERVICE) mode = "service";
-    else if (SB_ANON) { try { const sb = createClient(SB_URL, SB_ANON, { auth: { persistSession: false } }); const { data, error } = await sb.auth.getUser(token); if (!error && data?.user && ["owner", "staff"].includes(data.user.app_metadata?.role)) mode = "user"; } catch (_e) { /* fall through */ } }
+    else if (SB_ANON) { try { const sb = createClient(SB_URL, SB_ANON, { auth: { persistSession: false } }); const { data, error } = await sb.auth.getUser(token); if (!error && data?.user && ["owner", "staff"].includes(data.user.app_metadata?.role)) { mode = "user"; callerRole = data.user.app_metadata.role; } } catch (_e) { /* fall through */ } }
   }
   if (!mode) return json({ error: "Not authorized" }, 401);
 
@@ -216,10 +251,10 @@ Deno.serve(async (req) => {
   }
   // ── compute → email → store ──
   const c = compute(s, now);
-  const out = render(c);
+  const out = render(c), staffOut = render(c, true);
   const mail: Any = await sendEmail(out.subject, out.html, out.text);
-  const brief = { date: t.ymd, at: now.toISOString(), subject: out.subject, text: out.text, html: out.html, sent: !!mail.sent, to: mail.sent ? MAIL_TO : null, reason: mail.sent ? null : (mail.reason || null), summary: out.summary, by: mode };
+  const brief = { date: t.ymd, at: now.toISOString(), subject: out.subject, text: out.text, html: out.html, staffText: staffOut.text, staffHtml: staffOut.html, sent: !!mail.sent, to: mail.sent ? MAIL_TO : null, reason: mail.sent ? null : (mail.reason || null), summary: out.summary, by: mode };
   const up = await svc.from("app_state").upsert({ key: "rc:brief", value: brief, updated_at: now.toISOString() });
   if (up.error) console.error("brief store failed:", up.error.message);
-  return json({ ok: true, date: t.ymd, sent: brief.sent, to: brief.to, reason: brief.reason, subject: out.subject, text: out.text, summary: out.summary, stored: !up.error });
+  return json({ ok: true, date: t.ymd, sent: brief.sent, to: brief.to, reason: brief.reason, subject: out.subject, text: callerRole === "staff" ? staffOut.text : out.text, summary: out.summary, stored: !up.error });
 });

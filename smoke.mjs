@@ -97,6 +97,7 @@ await p.click("table.rc-tbl tbody tr >> nth=0 >> td >> nth=3");await p.waitForSe
 // work order billed on it, and hours logged on the swap stay off the engine's cost basis.
 await p.click(".rc-ov",{position:{x:5,y:5}}).catch(()=>{});
 const LS=k=>p.evaluate(k=>JSON.parse(localStorage.getItem("rc:"+k)||"[]"),k);
+const shopDay0=n=>{const t=new Intl.DateTimeFormat("en-CA",{timeZone:"America/Edmonton",year:"numeric",month:"2-digit",day:"2-digit"}).format(new Date());const x=new Date(t+"T12:00:00Z");x.setUTCDate(x.getUTCDate()+n);return x.toISOString().slice(0,10);};
 await p.click('.rc-ni:has-text("Team")');
 await p.click('button.rc-ba:has-text("+ Employee")');
 await p.fill(".rc-mod input[placeholder='Name']","Dale");
@@ -129,6 +130,55 @@ console.log("swap work order:",(await p.locator(".rc-mod .rc-3c").innerText()).r
 await p.waitForTimeout(900);
 const lab1=+((await LS("inventory")).find(x=>sInv&&x.id===sInv.engineId)||{}).laborLogged||0;
 console.log("swap hours kept off the engine's cost basis:",lab1===lab0);
+// Money. The sale above is in the sales feed once, with its engine. Marking another engine Sold by mistake
+// and back leaves no sale and no warranty behind. An invoice that sells an engine records the invoiced price;
+// one dated 60 days ago on Net 30 is overdue by itself; a quote turns into one invoice only.
+await p.click(".rc-ov",{position:{x:5,y:5}}).catch(()=>{});
+const winsOf=async id=>(await LS("wins")).filter(w=>String(w.engineId)===String(id)).length;
+const soldOnce=sInv?await winsOf(sInv.engineId):-1;
+await p.click('.rc-ni:has-text("Engines")');
+await p.fill("input.rc-si","");
+await p.click('button.rc-fb:has-text("Available")');
+const engRow=n=>p.locator(".rc-main table.rc-tbl tbody tr").nth(n);
+const misSku=(await engRow(0).locator("td").nth(2).innerText()).trim(),sellSku=(await engRow(1).locator("td").nth(2).innerText()).trim();
+const setStage=async(sku,st)=>{await p.fill("input.rc-si",sku);await p.click('button.rc-fb:has-text("All")');await p.locator(".rc-main table.rc-tbl tbody tr").first().locator('button:has-text("✎")').click();await p.locator(".rc-mod select").filter({has:p.locator('option[value="sold"]')}).selectOption(st);await p.click(".rc-mod .rc-fa .rc-ba");await p.waitForSelector(".rc-splash",{timeout:3000}).then(()=>p.click(".rc-splash")).catch(()=>{});await p.waitForTimeout(400);};
+await setStage(misSku,"sold");await setStage(misSku,"available");
+await p.waitForTimeout(900);
+const misEng=(await LS("inventory")).find(x=>x.sku===misSku)||{};
+const misLeft=(await winsOf(misEng.id))+" sales, "+(await LS("warranties")).filter(w=>String(w.engineId)===String(misEng.id)).length+" warranties";
+const invCount=async()=>(await LS("invoices")).length;const inv0=await invCount();
+await p.click('.rc-ni:has-text("Invoicing")');
+await p.click('button.rc-ba:has-text("+ Invoice")');
+await p.locator(".rc-mod select").first().selectOption({label:"Smoke Test Hauling"});
+const sellEng=(await LS("inventory")).find(x=>x.sku===sellSku)||{};
+await p.locator(".rc-mod select").nth(1).selectOption(String(sellEng.id));
+await p.fill(".rc-mod #f-salePrice","12345");
+await p.locator('.rc-mod input[aria-label="Line 1 description"]').fill(sellEng.name||"Engine");
+await p.locator('.rc-mod input[aria-label="Line 1 price"]').fill("12345");
+await p.click('.rc-mod button:has-text("Create")');
+await p.waitForSelector(".rc-splash",{timeout:5000}).then(()=>p.click(".rc-splash")).catch(()=>{});
+const ago=shopDay0(-60);
+await p.click('button.rc-ba:has-text("+ Invoice")');
+await p.locator(".rc-mod select").first().selectOption({label:"Smoke Test Hauling"});
+await p.fill(".rc-mod #f-date",ago);
+await p.locator('.rc-mod input[aria-label="Line 1 description"]').fill("Old repair");
+await p.locator('.rc-mod input[aria-label="Line 1 price"]').fill("500");
+await p.click('.rc-mod button:has-text("Create")');
+await p.waitForTimeout(900);
+const soldWin=(await LS("wins")).find(w=>String(w.engineId)===String(sellEng.id))||{};
+await p.click('button.rc-fb:has-text("Overdue")');
+const lateRow=(await p.locator(".rc-main table.rc-tbl tbody tr").first().innerText()).replace(/\s+/g," ");
+await p.click('.rc-ni:has-text("Quotes")');
+await p.click('button.rc-ba:has-text("+ Quote")');
+await p.locator(".rc-mod select").first().selectOption({label:"Smoke Test Hauling"});
+await p.fill(".rc-mod #f-description","Smoke quote");
+await p.locator('.rc-mod input[aria-label="Line 1 description"]').fill("Head gasket job");
+await p.locator('.rc-mod input[aria-label="Line 1 price"]').fill("2400");
+await p.click('.rc-mod button:has-text("Save")');
+const qRow=p.locator(".rc-main table.rc-tbl tbody tr",{hasText:"Smoke quote"});
+await qRow.locator('button:has-text("Send")').click();await qRow.locator("button.rc-bsg").click();
+const inv1=await invCount();await qRow.locator('button:has-text("→Inv")').click();await p.waitForTimeout(900);
+console.log("money: Sell Engine sale in the feed "+soldOnce+"× | mis-tapped Sold and back: "+misLeft+" | invoice sold "+sellSku+" at $"+soldWin.price+" | "+ago+" on Net 30: "+lateRow.slice(0,90)+" | quote → invoices +"+((await invCount())-inv1)+", →Inv left "+(await qRow.locator('button:has-text("→Inv")').count())+", status "+((await LS("quotes")).find(q=>q.description==="Smoke quote")||{}).status);
 // ECM: intake to complete. A "No" emissions answer blocks completion; passed checks at both ends plus the
 // customer's sign-off complete it, book the 30/60/90-day follow-ups and bill to an invoice. All of it survives a reload.
 await p.click(".rc-ov",{position:{x:5,y:5}}).catch(()=>{});
