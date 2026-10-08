@@ -3,7 +3,7 @@
   "private": true,
   "version": "5.0.0",
   "type": "module",
-  "description": "Rollin Coal \u2014 diesel engine shop management dashboard",
+  "description": "Rollin Coal — diesel engine shop management dashboard",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.0",
+    "qrcode": "^1.5.4",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "three": "^0.186.1"

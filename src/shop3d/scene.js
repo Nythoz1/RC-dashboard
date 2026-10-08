@@ -283,13 +283,15 @@ export function createShop(host, opts) {
   let yardTruck = null, forkObj = null;
   function buildYard() {
     const rm = new T.Group(), yd = new T.Group(), pk = new T.Group();
-    const post = mat("#7c838a", { r: 0.5, m: 0.5 }); [106.6, 146.9].forEach((x) => [34.6, 49.5, 64.5, 79.5, 94.2].forEach((z) => cylY(rm, 0.32, 14, post, x, 0, z, CYL8)));
-    box(rm, 40.9, 0.7, 0.5, post, 126.75, 13.6, 34.6); box(rm, 40.9, 0.7, 0.5, post, 126.75, 13.6, 94.2); box(rm, 0.5, 0.7, 60, post, 106.6, 13.6, 64.4); box(rm, 0.5, 0.7, 60, post, 146.9, 13.6, 64.4);
-    for (let x = 111; x < 146; x += 5) box(rm, 0.25, 0.4, 59.6, post, x, 13.9, 64.4);
+    // the carport (36 × 20 ft): posts every 9 ft down both long sides, beams, purlins, the roof
+    const R = AREA_BY_ID.reman, px0 = R.x0 + 0.3, px1 = R.x1 - 0.3, pz0 = R.z0 + 0.3, pz1 = R.z1 - 0.3;
+    const post = mat("#7c838a", { r: 0.5, m: 0.5 }); [px0, px1].forEach((x) => [0, 1, 2, 3, 4].forEach((k) => cylY(rm, 0.32, 12, post, x, 0, pz0 + (pz1 - pz0) * k / 4, CYL8)));
+    box(rm, R.w, 0.7, 0.5, post, R.cx, 11.6, pz0); box(rm, R.w, 0.7, 0.5, post, R.cx, 11.6, pz1); box(rm, 0.5, 0.7, R.d, post, px0, 11.6, R.cz); box(rm, 0.5, 0.7, R.d, post, px1, 11.6, R.cz);
+    for (let x = R.x0 + 2.5; x < R.x1 - 1; x += 5) box(rm, 0.25, 0.4, R.d - 0.4, post, x, 11.9, R.cz);
     yardTruck = semi(yd, 56.5, 13, -Math.PI / 2, "#efece6", { sleeper: true, stripe: C.orange }); bollard(yd, 48.6, 34.6); bollard(yd, 64.4, 34.6);
     pickup(pk, 10, 53, Math.PI, "#2b2d31"); car(pk, 10, 80, Math.PI, "#9b2f2a");
     [[rm, "reman"], [yd, "yard"], [pk, "parking"]].forEach(([g, a]) => merged(g, a));
-    const cr = new T.Mesh(BOX, mat("#a3aab1", { r: 0.6, m: 0.4 })); cr.scale.set(42, 0.4, 61); cr.position.set(126.75, 14.3, 64.4); cr.castShadow = cr.receiveShadow = true; ROOF.push(cr); scene.add(cr);
+    const cr = new T.Mesh(BOX, mat("#a3aab1", { r: 0.6, m: 0.4 })); cr.scale.set(R.w + 1.5, 0.4, R.d + 1.5); cr.position.set(R.cx, 12.3, R.cz); cr.castShadow = cr.receiveShadow = true; ROOF.push(cr); scene.add(cr);
     forkObj = forklift(scene, 30, 40, Math.PI / 2); engine(forkObj, 4.6, 0, 0, "take", MAKES[2][1], 0.5);
     forkObj.traverse((o) => { if (o.isMesh) { o.userData.area = "parking"; PICK.push(o); } });
   }

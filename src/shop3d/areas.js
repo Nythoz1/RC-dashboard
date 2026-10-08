@@ -11,8 +11,9 @@ export const SHOP_AREAS = [
     blurb: "Used engines pulled from trucks. They sit on pallets until they sell as take-outs or go in for reman.", items: ["Forklift lane down the middle"] },
   { id: "takeoutE", name: "Take-out inventory", sub: "East", kind: "Outside", store: true, x0: 107, x1: 147.5, z0: 2, z1: 31, h: 7, dot: "#8a7558",
     blurb: "The second take-out pad, across the truck yard from the first.", items: ["Forklift lane down the middle"] },
-  { id: "reman", name: "Reman inventory", kind: "Outside", store: true, x0: 106, x1: 147.5, z0: 34, z1: 94.5, h: 17, dot: "#3f7d4a",
-    blurb: "Finished remanufactured engines, painted and ready to ship anywhere in Canada.", items: ["Canopy overhead (shown with Roofs)", "Aisle down the middle for the forklift"] },
+  // The carport: exactly 36 ft long (north to south) by 20 ft wide, where most engines are kept.
+  { id: "reman", name: "Carport", sub: "Reman inventory", kind: "Outside", store: true, x0: 116.75, x1: 136.75, z0: 46.25, z1: 82.25, h: 15, dot: "#3f7d4a",
+    blurb: "The covered carport, 36 × 20 ft. Most engines are kept here: finished remans first, then cores and runners while there's room.", items: ["Canopy overhead (shown with Roofs)", "Two rows of seven 4 × 6 ft spots", "6 ft forklift lane down the middle"] },
   { id: "yard", name: "Truck yard", kind: "Outside", store: true, x0: 43, x1: 105, z0: 1, z1: 34.5, h: 6, dot: "#5a6470",
     blurb: "Trucks wait here, then pull into Bay 1 through the overhead door. Engines going out on a truck can be staged here.", items: ["A truck waiting for Bay 1, rolling coal", "Concrete apron at the overhead door"] },
   { id: "parking", name: "Parking", kind: "Outside", x0: 0.5, x1: 36.5, z0: 35, z1: 95.5, h: 6, dot: "#5a6470",
@@ -52,11 +53,15 @@ export const STORE_IDS = ["takeoutW", "takeoutE", "reman", "yard", "bay1", "rema
 // reman station (stand:true, the engine sits on it without a pallet), and a strip beside the
 // truck in Bay 1. ry turns the pallet.
 const range = (a, b, step) => { const out = []; for (let v = a; v < b; v += step) out.push(Math.round(v * 100) / 100); return out; };
+const CARPORT = SHOP_AREAS.find((a) => a.id === "reman");
+// A spot's footprint in feet (across, along) before ry turns it: the carport's 6 × 4 ft spots, a pallet elsewhere.
+export const SLOT_SIZE = { reman: [6, 4], default: [5, 3.6] };
 const rows = (xs, zs, ry = 0) => zs.flatMap((z) => xs.map((x) => ({ x, z, ry })));
 export const SLOTS = {
   takeoutW: rows(range(5, 38.6, 6.6), [6.5, 11.5, 23.5, 28.5]),
   takeoutE: rows(range(110.5, 144.2, 6.6), [6, 11, 21, 26]),
-  reman: [110.5, 117.3, 136.2, 143].flatMap((x) => range(38.5, 92, 6.4).map((z) => ({ x, z, ry: 0 }))),
+  // two rows of seven 4 × 6 ft spots (6 ft across, 4 ft along the carport, 1 ft between), lane between
+  reman: [CARPORT.x0 + 4, CARPORT.x1 - 4].flatMap((x) => range(CARPORT.z0 + 3, CARPORT.z1 - 2, 5).map((z) => ({ x, z, ry: 0 }))),
   yard: rows(range(74, 101, 6.6), [21.5, 27.5]),
   bay1: range(42, 77, 6.4).map((z) => ({ x: 50.4, z, ry: Math.PI / 2 })),
   reman1: [{ x: 78.3, z: 58.8, ry: 0, stand: true }, { x: 88, z: 61.2, ry: 0 }],
@@ -66,13 +71,14 @@ export const SLOT_CAP = Object.fromEntries(Object.entries(SLOTS).map(([k, v]) =>
 
 // Where each engine is: its own `loc` when that names a storage area, otherwise its lifecycle
 // stage decides. In reman now → the Reman 1 stand, then Reman 2, then Bay 1. Went through reman
-// in the shop → reman inventory. Cores and runners → take-out inventory, West first, East once
-// West is full. Sold engines leave the map unless someone gave them a spot (waiting for pickup).
+// in the shop → the carport. Cores and runners → the carport while it has room, then take-out
+// inventory, West first, East once West is full. Sold engines leave the map unless someone gave them a spot (waiting for pickup).
 // Returns Map(engine id → area id). `status(i)` and `remanned(i)` come from the dashboard.
 export function shopLocs(engines, { status, remanned }) {
   const out = new Map();
   const used = {};
   const take = (id) => { used[id] = (used[id] || 0) + 1; return id; };
+  const rest = [];
   const list = [...engines].sort((a, b) => String(a.sku || a.name || "").localeCompare(String(b.sku || b.name || ""), undefined, { numeric: true }) || String(a.id).localeCompare(String(b.id)));
   list.forEach((i) => { if (i.loc && STORE_IDS.includes(i.loc)) out.set(i.id, take(i.loc)); });
   list.forEach((i) => {
@@ -81,7 +87,9 @@ export function shopLocs(engines, { status, remanned }) {
     if (st === "sold") return;
     if (st === "in-reman") { out.set(i.id, take((used.reman1 || 0) < 1 ? "reman1" : (used.reman2 || 0) < 1 ? "reman2" : "bay1")); return; }
     if (st !== "core" && remanned(i)) { out.set(i.id, take("reman")); return; }
-    out.set(i.id, take((used.takeoutW || 0) < SLOT_CAP.takeoutW ? "takeoutW" : "takeoutE"));
+    rest.push(i);
   });
+  // finished remans got the carport first; the rest fill what's left of it, then take-out
+  rest.forEach((i) => out.set(i.id, take((used.reman || 0) < SLOT_CAP.reman ? "reman" : (used.takeoutW || 0) < SLOT_CAP.takeoutW ? "takeoutW" : "takeoutE")));
   return out;
 }

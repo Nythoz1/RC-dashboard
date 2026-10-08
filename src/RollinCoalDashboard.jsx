@@ -9,7 +9,8 @@ import { uploadEcmFile, openEcmFile, readEcmText, removeEcmFiles, ecmFileType, e
 import { ISSUE_SEED } from "./issuesSeed";
 import { BOM_SEED, VENDOR_SEED } from "./bomSeed";
 import { SERVICE_SEED, SERVICE_CATS } from "./servicesSeed";
-import { AREA_BY_ID, PLACE_GROUPS, PLACE_ORDER, STORE_IDS, SLOT_CAP, shopLocs, areaTitle } from "./shop3d/areas";
+import { AREA_BY_ID, PLACE_GROUPS, PLACE_ORDER, STORE_IDS, SLOT_CAP, SLOTS, SLOT_SIZE, SHOP_AREAS, LOT, BLDG, shopLocs, areaTitle } from "./shop3d/areas";
+import { engineUrl, takeEngineParam, qrSvg } from "./lib/qr";
 import { CREW_SPOTS, crewList, SHIFT, SHIFT_MIN, shopClock, onShift, workedMin, hoursDone, wagesSoFar, backAt } from "./shop3d/crew";
 import * as Tsh from "./lib/timesheet";
 import * as Mny from "./lib/money";
@@ -322,6 +323,33 @@ const SIZE_HD=["MAXXFORCE13","MAXXFORCE11","60SERIES","SERIES60","ISX15","X15","
 const SIZE_SM=["C33","4JJ1","W04","M53","4034","YANMAR","DEUTZ","PERKINS","KUBOTA","GM65"];
 const sizeClass=i=>{const k=familyKey(i);return SIZE_HD.includes(k)?"hd":SIZE_SM.includes(k)?"sm":"mid";};
 const engLocs=s=>shopLocs((s.inventory||[]).filter(isEngine),{status:engStatus,remanned});
+// Make, model and year read from what's typed (a make / model / year field wins), else from the engine's name.
+const ENG_MAKES=[[/\bcat(erpillar)?\b|\bc(7|9|10|11|12|13|15|16|18)\b|\b3(116|126|176|406|408)\b/i,"Caterpillar"],[/cummins|\bisx|\bx1[25]\b|\bisb|\bisl|\bism|\bisc\b|\bn14\b|\bl10\b|\b6\.7l?\b/i,"Cummins"],[/detroit|\bdd1[356]\b|series ?60|\bs60\b/i,"Detroit Diesel"],[/international|navistar|maxxforce|\bdt ?4(66|08)|\bdt ?530/i,"International"],[/paccar|\bmx-?1[13]\b/i,"Paccar"],[/mercedes|\bmbe\b|\bom ?\d{3}/i,"Mercedes-Benz"],[/\bmack\b|\bmp[78]\b|\be7\b/i,"Mack"],[/volvo|\bd1[136]\b/i,"Volvo"],[/deere/i,"John Deere"],[/power ?stroke|\bford\b/i,"Ford"],[/duramax/i,"Duramax"],[/hino/i,"Hino"],[/isuzu/i,"Isuzu"]];
+const engMake=i=>(i&&i.make)||((ENG_MAKES.find(([re])=>re.test((i&&i.name)||""))||[0,""])[1]);
+const engYear=i=>(i&&i.year)||((String((i&&i.name)||"").match(/\((19|20)\d{2}\)/)||[""])[0].replace(/[()]/g,""));
+const engModel=i=>{if(i&&i.model)return i.model;const mk=engMake(i);let n=String((i&&i.name)||"").replace(/\((19|20)\d{2}\)/,"").trim();const lead=new RegExp("^("+[mk,"caterpillar","cat","cummins","detroit diesel","detroit","international","navistar","paccar","mercedes-benz","mercedes","mack","volvo","john deere","ford"].filter(Boolean).map(x=>x.replace(/[-]/g,"\\-")).join("|")+")\\b\\s*","i");n=n.replace(lead,"").trim();return n||"—";};
+const hpTxt=i=>i&&i.ratedHp?(/hp/i.test(String(i.ratedHp))?String(i.ratedHp):i.ratedHp+" HP"):"";
+// What's on an engine: from its BOM worksheet (new, reused in spec, at the machine shop) and the parts log.
+const enginePartsList=(s,i)=>{const sh=sheetFor(s,i.id),b=sh?bomById(s,sh.bomId):null;const nm=t=>String(t||"").toLowerCase().replace(/[^a-z0-9]/g,"");
+  const fresh=b?bomBuy(b,sh).map(z=>({part:z.l.part,qty:z.l.qty,note:z.why==="miss"?"missing from the core":z.why==="repl"?"replaced":""})):[];
+  const kept=b?bomPick(b,sh,"reuse").map(l=>({part:l.part,qty:l.qty,note:(sheetRow(sh,l.id)||{}).meas||""})):[];
+  const mach=b?bomPick(b,sh,"mach").map(l=>({part:l.part,qty:l.qty})):[];
+  const seen=new Set(fresh.map(p=>nm(p.part)));const logged=(i.partsLog||[]).filter(p=>p&&p.d&&!seen.has(nm(p.d))).map(p=>({part:p.d,note:p.date||""}));
+  return{fresh,kept,mach,logged,bom:b,signed:!!(sh&&sh.decidedAt)};};
+// QR tags: 3.5 × 2 in, ten to a Letter page, with cut lines. Each code opens that engine's record in the dashboard.
+async function printQrTags(engs){
+  const w=window.open("","_blank","width=920,height=1080");if(!w)return false;
+  w.document.write('<p style="font-family:Arial,sans-serif;padding:20px">Making the tags…</p>');
+  const esc=t=>String(t==null?"":t).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+  let tags;try{tags=await Promise.all(engs.map(async i=>({i,svg:await qrSvg(engineUrl(i.id))})));}catch(e){w.document.body.innerHTML='<p style="font-family:Arial,sans-serif;padding:20px">The QR codes didn\'t load. Check the connection and try again.</p>';return true;}
+  const tag=({i,svg})=>{const mm=[engMake(i),engModel(i)].filter(x=>x&&x!=="—").join(" ")||i.name||"Engine";
+    return '<div class="tag"><div class="qr">'+svg+'</div><div class="tx"><div class="br">ROLLIN COAL</div><div class="sku">'+esc(i.sku||"—")+'</div><div class="nm">'+esc(mm)+'</div><div class="ln">'+esc([engYear(i),hpTxt(i)].filter(Boolean).join(" · "))+'</div>'+((i.serial||i.esn)?'<div class="ln">ESN '+esc(i.serial||i.esn)+'</div>':'')+'<div class="sc">Scan for the full record</div></div></div>';};
+  const html='<!doctype html><html><head><meta charset="utf-8"><title>QR tags</title><style>@page{size:letter portrait;margin:0.5in 0.5in;}*{box-sizing:border-box;}body{margin:0;font-family:Arial,Helvetica,sans-serif;color:#000;background:#fff;}'+
+    '.sheet{display:grid;grid-template-columns:3.5in 3.5in;grid-auto-rows:2in;gap:0;justify-content:center;}.tag{border:1px dashed #999;padding:0.14in;display:flex;gap:0.14in;align-items:center;break-inside:avoid;overflow:hidden;}'+
+    '.qr{width:1.62in;height:1.62in;flex:none;}.qr svg{width:100%;height:100%;display:block;}.tx{min-width:0;line-height:1.2;}.br{font-size:7.5pt;font-weight:700;letter-spacing:1.5px;}.sku{font-size:17pt;font-weight:800;margin:2px 0 1px;}'+
+    '.nm{font-size:10pt;font-weight:700;}.ln{font-size:8.5pt;}.sc{font-size:7pt;margin-top:5px;color:#333;}</style></head><body><div class="sheet">'+tags.map(tag).join("")+'</div>'+
+    '<scr'+'ipt>window.onload=function(){setTimeout(function(){window.print();},250);};</scr'+'ipt></body></html>';
+  w.document.open();w.document.write(html);w.document.close();return true;}
 // Itemized parts bought into an engine during reman: [{d,v,date}] on the record
 const partsSpend=i=>(i.partsLog||[]).reduce((a,p)=>a+(+p.v||0),0);
 // Total landed+reman cost basis: the breakdown + itemized parts + diagnosis parts + auto labor.
@@ -917,7 +945,7 @@ function Inv({s,d}){
   </div>);}
   return (<div>
     <div className="rc-g4"><Stat label="Engines" value={engs.length}/><Stat label="Available" value={avail}/><Stat label="Advertised" value={listed+" / "+(engs.filter(i=>engStatus(i)!=="sold").length)}/><Stat label="Stock Value" value={$K(tv)}/></div>
-    <SH title="Inventory"><button className="rc-fb" onClick={()=>setView("board")}>🔧 Reman Board</button><input className="rc-si" placeholder="Search name, SKU, ESN, CPL..." value={q} onChange={e=>sq(e.target.value)}/><button className="rc-ba" onClick={()=>d({type:"MODAL",v:"add-part",d:{cat:"Complete Engine",status:"available"}})}>+ Engine</button><button className="rc-bs" onClick={()=>d({type:"MODAL",v:"add-part"})}>+ Part</button></SH>
+    <SH title="Inventory"><button className="rc-fb" onClick={()=>setView("board")}>🔧 Reman Board</button><button className="rc-fb" onClick={()=>d({type:"MODAL",v:"qr-tags",d:{ids:null}})}>🏷 QR tags</button><input className="rc-si" placeholder="Search name, SKU, ESN, CPL..." value={q} onChange={e=>sq(e.target.value)}/><button className="rc-ba" onClick={()=>d({type:"MODAL",v:"add-part",d:{cat:"Complete Engine",status:"available"}})}>+ Engine</button><button className="rc-bs" onClick={()=>d({type:"MODAL",v:"add-part"})}>+ Part</button></SH>
     {(()=>{const E=s.inventory.filter(isEngine);if(!E.length)return null;const av=E.filter(i=>engStatus(i)==="available");const M=[["📷 Photos",E.filter(i=>i.photo).length,E.length],["📣 Listed",av.filter(i=>(i.listedOn||[]).length>0).length,av.length],["💲 Cost",E.filter(i=>costBasis(i)>0).length,E.length],["🔢 ESN",E.filter(i=>i.serial||i.esn).length,E.length]];const full=M.every(([l,n,t])=>t===0||n===t);return(<div className="rc-lm">{M.map(([l,n,t],i)=>(<div key={i} className={"rc-lm-c"+(t>0&&n===t?" done":"")}><span className="rc-lm-l">{l}</span><span className="rc-lm-n">{t===0?"—":n+"/"+t}</span><div className="rc-lm-b"><div style={{width:(t>0?n/t*100:0)+"%"}}/></div></div>))}{full&&<span className="rc-lm-full">🏁 FULL LOT</span>}</div>);})()}
     <Fil opts={[["all","All"],["engines","Engines"],["available","Available"],["unlisted","Not Listed"],["in-reman","In Reman"],["on-hold","On Hold"],["sold","Sold"],["parts","Parts"]]} active={f} set={sf}/>
     {aiR&&(<div className="rc-card rc-ai-res" style={{padding:16,borderColor:"var(--p)",marginBottom:16}}><div style={{display:"flex",justifyContent:"space-between",marginBottom:10}}><span style={{fontFamily:"var(--fd)",fontWeight:700,color:"var(--p)",letterSpacing:2,textTransform:"uppercase",fontSize:14.5}}>✨ AI Listing — {aiR.item.name}</span><button className="rc-bs" onClick={()=>setAiR(null)} style={{fontSize:14.5}}>✕</button></div><div style={{background:"var(--sf2)",borderRadius:6,padding:14,fontSize:14,lineHeight:1.8,whiteSpace:"pre-wrap"}}>{aiR.text}</div><BtnRow><button className="rc-ba" onClick={()=>navigator.clipboard.writeText(aiR.text)}>📋 Copy</button><button className="rc-bs" onClick={()=>genListing(aiR.item)} style={{color:"var(--p)",borderColor:"var(--p)"}}>🔄</button></BtnRow></div>)}
@@ -931,6 +959,37 @@ function Inv({s,d}){
 // The scene (src/shop3d/scene.js, three.js) loads on demand the first time this view opens.
 // The crew (src/shop3d/crew.js): every active Team member at a work spot, working 8:00 AM to
 // 4:00 PM on weekdays; each hour that finishes, their hourly wage pops up over them (owner only).
+// SHOP MAP 2D: the same plan from above, to scale in feet: every place, every engine spot (dashed
+// when empty) and the engines in them, coloured by status. Same spots as the 3D shop.
+function ShopMap2D({list,count,selA,selE,zoom,onArea,onEngine}){
+  const byArea={};list.forEach(e=>{if(SLOTS[e.area])(byArea[e.area]=byArea[e.area]||[]).push(e);});
+  const bx=zoom==="shop"?BLDG:zoom&&AREA_BY_ID[zoom]?AREA_BY_ID[zoom]:{x0:0,x1:LOT.w,z0:0,z1:LOT.d};
+  const pad=zoom?7:3,vx=bx.x0-pad,vz=bx.z0-pad,vw=bx.x1-bx.x0+pad*2,vh=bx.z1-bx.z0+pad*2;
+  const R=AREA_BY_ID.reman;const key=f=>e=>{if(e.key==="Enter"||e.key===" "){e.preventDefault();f();}};
+  return(<svg className="rc-map2d" viewBox={vx+" "+vz+" "+vw+" "+vh} preserveAspectRatio="xMidYMid meet" role="group" aria-label="The shop and lot from above, to scale">
+    <rect className="m-lot" x={0} y={0} width={LOT.w} height={LOT.d}/>
+    {SHOP_AREAS.map(a=>(<g key={a.id} className={"m-area"+(selA===a.id?" on":"")} role="button" tabIndex={0} aria-label={a.title+(a.store?", "+(count[a.id]||0)+" engines":"")} onClick={()=>onArea(a.id)} onKeyDown={key(()=>onArea(a.id))}>
+      <rect x={a.x0} y={a.z0} width={a.w} height={a.d} style={{fill:tint(a.dot,a.store?18:9),stroke:tint(a.dot,75)}}/></g>))}
+    <rect className="m-bldg" x={BLDG.x0} y={BLDG.z0} width={BLDG.x1-BLDG.x0} height={BLDG.z1-BLDG.z0}/>
+    {Object.entries(SLOTS).map(([aid,slots])=>slots.map((sl,k)=>{const[w0,d0]=SLOT_SIZE[aid]||SLOT_SIZE.default;const turn=Math.abs(Math.sin(sl.ry||0))>0.5;const W=turn?d0:w0,D=turn?w0:d0;const e=(byArea[aid]||[])[k];const x=sl.x-W/2,y=sl.z-D/2;
+      if(!e)return <rect key={aid+k} className="m-slot" x={x} y={y} width={W} height={D} rx={0.3}/>;
+      const c=BC[e.status]||"var(--mt)";const lab=String(e.sku||e.name||"").slice(0,8);
+      return(<g key={aid+k} className={"m-eng"+(selE===e.id?" on":"")} role="button" tabIndex={0} aria-label={(e.sku?e.sku+", ":"")+e.name+", "+e.statusLabel} onClick={ev=>{ev.stopPropagation();onEngine(e.id);}} onKeyDown={key(()=>onEngine(e.id))}>
+        <title>{(e.sku?e.sku+" · ":"")+e.name+" · "+e.statusLabel}</title>
+        <rect x={x} y={y} width={W} height={D} rx={0.35} style={{fill:tint(c,38),stroke:c}}/>
+        <text className="m-et" x={sl.x} y={sl.z+0.4} transform={turn?"rotate(-90 "+sl.x+" "+sl.z+")":undefined}>{lab}</text></g>);}))}
+    <g className="m-dim" aria-hidden="true"><line x1={R.x0} y1={R.z1+1.6} x2={R.x1} y2={R.z1+1.6}/><line x1={R.x0} y1={R.z1+0.9} x2={R.x0} y2={R.z1+2.3}/><line x1={R.x1} y1={R.z1+0.9} x2={R.x1} y2={R.z1+2.3}/><text x={R.cx} y={R.z1+3.7}>20 ft</text>
+      <line x1={R.x1+1.6} y1={R.z0} x2={R.x1+1.6} y2={R.z1}/><line x1={R.x1+0.9} y1={R.z0} x2={R.x1+2.3} y2={R.z0}/><line x1={R.x1+0.9} y1={R.z1} x2={R.x1+2.3} y2={R.z1}/><text transform={"translate("+(R.x1+3.4)+" "+R.cz+") rotate(90)"}>36 ft</text></g>
+    <g className="m-labels" aria-hidden="true">{SHOP_AREAS.map(a=>{const tall=a.w<12&&a.d>a.w;const n=count[a.id]||0;const cnt=n+" engine"+(n===1?"":"s")+" · "+(SLOT_CAP[a.id]||0)+" spots";
+      // the outside pads are full of spots right to their edge, so their label sits just above them
+      if(a.store&&a.kind==="Outside"&&a.id!=="yard")return(<g key={a.id}><text className="m-at" x={a.x0} y={a.z0-2.4}>{a.name}{a.sub?" · "+a.sub:""}</text><text className="m-ac" x={a.x0} y={a.z0-0.7}>{cnt}</text></g>);
+      return(<g key={a.id}>
+      <text className="m-at" transform={tall?"translate("+(a.x0+2.1)+" "+(a.z1-1.2)+") rotate(-90)":"translate("+(a.x0+0.9)+" "+(a.z0+2.2)+")"}>{a.name}{a.sub&&!tall?" · "+a.sub:""}</text>
+      {a.store&&!tall&&<text className="m-ac" x={a.x0+0.9} y={a.z0+4}>{cnt}</text>}</g>);})}</g>
+    <g className="m-scale" aria-hidden="true" transform={"translate("+(vx+1.5)+" "+(vz+vh-1.4)+")"}><line x1={0} y1={0} x2={10} y2={0}/><line x1={0} y1={-0.6} x2={0} y2={0.6}/><line x1={10} y1={-0.6} x2={10} y2={0.6}/><text x={11} y={0.5}>10 ft</text></g>
+    <text className="m-north" x={vx+vw-1.5} y={vz+2.6}>N ↑</text>
+  </svg>);
+}
 const S3_COARSE=typeof window!=="undefined"&&window.matchMedia?window.matchMedia("(pointer: coarse)").matches:false;
 const S3_SEC_H=6; // Play the day: 6 seconds an hour, the whole day in 48 seconds
 function Shop3D({s,d,theme,owner}){
@@ -939,6 +998,9 @@ function Shop3D({s,d,theme,owner}){
   const[selA,setSelA]=useState(null);const[selE,setSelE]=useState(null);const[selP,setSelP]=useState(null);const[hint,setHint]=useState(true);
   const[tod,setTod]=useState(theme==="night"?"night":"day");const[walls,setWalls]=useState("cut");const[roofs,setRoofs]=useState(false);const[labels,setLabels]=useState(true);const[tour,setTour]=useState(false);const[drive,setDrive]=useState(false);
   const[crewOn,setCrewOn]=useState(true);const[clk,setClk]=useState(()=>shopClock());const[play,setPlay]=useState(null);
+  // 3D or the 2D map (remembered per device); the 3D scene only loads while 3D is showing.
+  const[mode,setMode]=useState(()=>getPref("rc:shopView","3d")==="2d"?"2d":"3d");const[zoom,setZoom]=useState(null);
+  const pickMode=m=>{if(m===mode)return;setMode(m);setPref("rc:shopView",m);setReady(false);setErr("");setProg(["Loading the 3D shop…",4]);setTour(false);setDrive(false);};
   const engs=(s.inventory||[]).filter(isEngine);
   const locs=useMemo(()=>engLocs(s),[s.inventory]);
   const list=useMemo(()=>engs.filter(i=>locs.has(i.id)).map(i=>({id:i.id,sku:i.sku||"",name:i.name||"",area:locs.get(i.id),status:engStatus(i),statusLabel:engStatusLabel(engStatus(i)),size:sizeClass(i),remanned:remanned(i)})),[s.inventory,locs]);
@@ -950,13 +1012,15 @@ function Shop3D({s,d,theme,owner}){
   const listRef=useRef(list);listRef.current=list;const crewRef=useRef(crew);crewRef.current=crew;const crewSceneRef=useRef(crewScene);crewSceneRef.current=crewScene;
   const ownerRef=useRef(owner);ownerRef.current=owner;const crewOnRef=useRef(crewOn);crewOnRef.current=crewOn;
   const start=useRef({tod,walls,roofs,labels});
-  useEffect(()=>{let dead=false;
+  useEffect(()=>{if(mode!=="3d")return;let dead=false;
     import("./shop3d/scene.js").then(m=>{if(dead||!gl.current)return;const o=start.current;
       api.current=m.createShop(gl.current,{engines:listRef.current,crew:crewSceneRef.current,tod:o.tod,walls:o.walls,roofs:o.roofs,labels:o.labels,
         onProgress:(t,p)=>setProg([t,p]),onReady:()=>setReady(true),onError:msg=>setErr(msg),onInteract:()=>setHint(false),
         onSelectArea:id=>{setSelA(id);setSelE(null);setSelP(null);},onSelectEngine:id=>{setSelE(id);setSelA(null);setSelP(null);},onSelectPerson:id=>{setSelP(id);setSelA(null);setSelE(null);},onTour:v=>setTour(v),onDrive:v=>setDrive(v)});})
       .catch(()=>{if(!dead)setErr("The 3D shop didn't load. Check your connection, then open this page again.");});
-    return()=>{dead=true;if(api.current){api.current.dispose();api.current=null;}};},[]);
+    return()=>{dead=true;if(api.current){api.current.dispose();api.current=null;}};},[mode]);
+  // On the 2D map, picking an engine or a place zooms to it.
+  useEffect(()=>{if(mode!=="2d")return;if(selE){const a=locs.get(selE);if(a)setZoom(a);}else if(selA&&SLOTS[selA])setZoom(selA);},[selE,selA,mode]);
   useEffect(()=>{if(api.current)api.current.setEngines(list);},[list]);
   useEffect(()=>{if(api.current)api.current.setCrew(crewScene);},[crewScene]);
   useEffect(()=>{if(api.current)api.current.setCrewOn(crewOn&&working);},[crewOn,working,ready]);
@@ -1042,13 +1106,15 @@ function Shop3D({s,d,theme,owner}){
     return(<>{crewCard}<div className="rc-card rc-s3-card">
       <div className="rc-s3-h">Places</div>
       {PLACE_GROUPS.map(([g,ids])=>(<div key={g}><div className="rc-s3-pg">{g}</div>{ids.map(id=>{const ar=AREA_BY_ID[id];const n=count[id]||0;return(<button key={id} className="rc-s3-pl" style={{"--dot":ar.dot}} onClick={()=>pickArea(id)}><i/><span>{ar.title}</span>{ar.store&&<small>{n} engine{n===1?"":"s"}</small>}</button>);})}</div>))}
-      <div className="rc-s3-note">Engines without a set spot are placed by status: in reman on the stands, remanned in reman inventory, cores and runners in take-out. Pick an engine to choose its spot.</div>
+      <div className="rc-s3-note">Engines without a set spot are placed by status: in reman on the stands, finished remans in the carport, then cores and runners in the carport while it has room, then take-out. Pick an engine to choose its spot.</div>
     </div></>);
   })();
   const seg=(label,opts,val,set)=>(<div className="rc-seg rc-s3-seg" role="group" aria-label={label}>{opts.map(([k,l])=>(<button key={k} className={val===k?"on":""} aria-pressed={val===k} onClick={()=>set(k)}>{l}</button>))}</div>);
   const pad=(k,g,cls,lab)=>(<button key={k} className={cls} aria-label={lab} onPointerDown={e=>{e.preventDefault();A(a=>a.press(k,true));}} onPointerUp={()=>A(a=>a.press(k,false))} onPointerCancel={()=>A(a=>a.press(k,false))} onPointerLeave={()=>A(a=>a.press(k,false))}>{g}</button>);
   return(<div>
     <div className="rc-s3-tools">
+      {seg("View",[["3d","3D"],["2d","2D map"]],mode,pickMode)}
+      {mode==="2d"?<>{seg("Zoom",[["lot","Whole lot"],["reman","Carport"],["shop","Shop"]],zoom==="reman"||zoom==="shop"?zoom:"lot",k=>setZoom(k==="lot"?null:k))}{zoom&&zoom!=="reman"&&zoom!=="shop"&&<span className="rc-s3-zoomed">{areaTitle(zoom)}</span>}</>:<>
       {seg("Time of day",[["day","Day"],["dusk","Dusk"],["night","Night"]],tod,k=>{setTod(k);A(a=>a.setTod(k));})}
       {seg("Walls",[["cut","Cutaway"],["up","Walls up"],["down","Walls down"]],walls,k=>{setWalls(k);A(a=>a.setWalls(k));})}
       <button className={"rc-fb"+(roofs?" on":"")} aria-pressed={roofs} onClick={()=>{setRoofs(!roofs);A(a=>a.setRoofs(!roofs));}}>Roofs</button>
@@ -1056,20 +1122,21 @@ function Shop3D({s,d,theme,owner}){
       <button className={"rc-fb"+(crewOn?" on":"")} aria-pressed={crewOn} onClick={()=>setCrewOn(!crewOn)}>Crew</button>
       <button className={"rc-fb"+(tour?" on":"")} aria-pressed={tour} onClick={()=>{const v=!tour;setTour(v);if(v){setDrive(false);setSelE(null);setSelP(null);}A(a=>a.setTour(v));}}>Tour</button>
       <button className="rc-fb" onClick={()=>{setSelA(null);setSelE(null);setSelP(null);setTour(false);setDrive(false);A(a=>a.home());}}>Overview</button>
-      <button className={drive?"rc-bs":"rc-ba"} aria-pressed={drive} onClick={()=>{const v=!drive;setDrive(v);if(v){setTour(false);setSelA(null);setSelE(null);setSelP(null);}A(a=>a.setDrive(v));}}>{drive?"Stop driving":"Drive the forklift"}</button>
+      <button className={drive?"rc-bs":"rc-ba"} aria-pressed={drive} onClick={()=>{const v=!drive;setDrive(v);if(v){setTour(false);setSelA(null);setSelE(null);setSelP(null);}A(a=>a.setDrive(v));}}>{drive?"Stop driving":"Drive the forklift"}</button></>}
     </div>
     <div className="rc-s3-wrap">
-      <div className="rc-s3-stage">
+      <div className={"rc-s3-stage"+(mode==="2d"?" m2d":"")}>
+        {mode==="2d"?<ShopMap2D list={list} count={count} selA={selA} selE={selE} zoom={zoom} onArea={pickArea} onEngine={pickEng}/>:<>
         <div className="rc-s3-gl" ref={gl}/>
         {ready&&!err&&crew.length>0&&<div className="rc-s3-clock">
           {play&&play.done?<><b>4:00 PM</b><span>That's the day{owner?": "+$$(wagesSoFar(crew,SHIFT_MIN))+" in wages":""}</span></>
           :<><b>{clockTxt}</b><span>{playing?"Replaying the day":working?"Crew working":"Crew's off"}</span>{owner&&(working||worked>0)&&<span className="pay">{$$(wagesSoFar(crew,worked))}</span>}<button className="rc-bs" onClick={togglePlay}>{playing?"■ Stop":"▶ Play the day"}</button></>}
         </div>}
         {!ready&&!err&&<div className="rc-s3-load"><div className="rc-hi" style={{width:46,height:46,fontSize:22}}>RC</div><div className="rc-s3-lt">{prog[0]}</div><div className="rc-s3-bar"><span style={{width:prog[1]+"%"}}/></div></div>}
-        {err&&<div className="rc-s3-load"><div className="rc-hi" style={{width:46,height:46,fontSize:22}}>RC</div><div className="rc-s3-lt" style={{maxWidth:360,lineHeight:1.5}}>{err}</div></div>}
+        {err&&<div className="rc-s3-load"><div className="rc-hi" style={{width:46,height:46,fontSize:22}}>RC</div><div className="rc-s3-lt" style={{maxWidth:360,lineHeight:1.5}}>{err}</div><button className="rc-ba" onClick={()=>pickMode("2d")}>Use the 2D map</button></div>}
         {ready&&hint&&!drive&&<div className="rc-s3-hint">{S3_COARSE?"Drag to turn · Pinch to zoom · Two fingers to move · Tap a place":"Drag to turn · Scroll to zoom · Right-drag to move · Click a place or an engine"}</div>}
         {drive&&<div className="rc-s3-drivebar">Driving the forklift · W A S D or the arrow keys · Esc to stop</div>}
-        {drive&&S3_COARSE&&<div className="rc-s3-pad">{pad("w","▲","u","Forward")}{pad("a","◀","l","Turn left")}{pad("s","▼","d","Reverse")}{pad("d","▶","r","Turn right")}</div>}
+        {drive&&S3_COARSE&&<div className="rc-s3-pad">{pad("w","▲","u","Forward")}{pad("a","◀","l","Turn left")}{pad("s","▼","d","Reverse")}{pad("d","▶","r","Turn right")}</div>}</>}
       </div>
       <div className="rc-s3-side">{panel}</div>
     </div>
@@ -1871,7 +1938,9 @@ function Reports({s,owner=true}){
 function Modals({s,d,owner=true,who={role:"owner"}}){
   const sRef2=useRef(s);sRef2.current=s;
   const logins=useLogins(owner);
-  const[f,sf]=useState({});const[lines,setLines]=useState([{d:"",q:1,r:0}]);const[ptab,setPtab]=useState("overview");const lastEng=useRef(null);const[etab,setEtab]=useState("intake");const lastEcm=useRef(null);const[uploading,setUploading]=useState(false);
+  const[f,sf]=useState({});const[lines,setLines]=useState([{d:"",q:1,r:0}]);const[ptab,setPtab]=useState("overview");const[qrPrev,setQrPrev]=useState("");
+  useEffect(()=>{const one=s.modal==="qr-tags"&&s.md&&s.md.ids&&s.md.ids.length===1?s.md.ids[0]:null;if(one==null){setQrPrev("");return;}let on=true;qrSvg(engineUrl(one)).then(v=>{if(on)setQrPrev(v);},()=>{});return()=>{on=false;};},[s.modal,s.md]);
+  const lastEng=useRef(null);const[etab,setEtab]=useState("intake");const lastEcm=useRef(null);const[uploading,setUploading]=useState(false);
   const set=(k,v)=>sf(p=>({...p,[k]:v}));
   useEffect(()=>{if(!s.modal){lastEng.current=null;lastEcm.current=null;}
     // Reset the form for the modal first; the per-modal prefills below merge on top of it.
@@ -2085,6 +2154,16 @@ const FM=(t,flds,onSave,need)=>W(<div><div className="rc-mt">{t}</div>{flds.map(
       <div className="rc-fa">{X}{!ok&&<span style={{fontSize:12.5,color:"var(--mt)",alignSelf:"center"}}>{svc?"Pick a customer and a service":"Pick the engine"}</span>}<button className="rc-ba" disabled={!ok} onClick={save}>{ed?"Save Changes":"Open Work Order"}</button></div>
     </div>);}
   if(s.modal==="add-time"){const job=s.md&&s.md.job;return W(<div><div className="rc-mt">Log Time{job&&job.service?" — "+job.service:""}</div><div className="rc-fg"><label className="rc-fl">Technician</label><select className="rc-fi" value={f.tech||""} onChange={e=>{const v=e.target.value;const emp=(s.employees||[]).find(x=>(x.nick||x.name)===v);set("tech",v);if(emp)set("rate",String(emp.rate||0));}} style={{appearance:"none"}}><option value="">Select tech...</option>{(s.employees||[]).filter(e=>e.status==="active").map(e=>(<option key={e.id} value={e.nick||e.name}>{e.name}{owner&&e.rate?` · $${e.rate}/hr`:""}</option>))}</select></div>{[["date","Date"],["hours","Hours","number"],["rate","Rate ($/hr)","number"],["notes","Notes"]].filter(([k])=>owner||k!=="rate").map(([k,l,t])=>F(k,l,t))}<div className="rc-fa">{X}<button className="rc-ba" onClick={()=>{if(!(job&&f.tech&&+f.hours>0))return;d({type:"ADD",list:"timeEntries",d:{jobId:job.id,tech:f.tech,date:f.date||isoToday(),hours:+f.hours||0,rate:+f.rate||0,notes:f.notes||""},label:"Time logged"});d({type:"MODAL",v:"job-detail",d:job});}}>Save</button></div></div>);}
+  if(s.modal==="qr-tags"){const all=(s.inventory||[]).filter(isEngine);const pool=s.md&&s.md.ids?all.filter(i=>s.md.ids.some(x=>sameId(x,i.id))):all.filter(i=>engStatus(i)!=="sold").sort((a,b)=>String(a.sku||"").localeCompare(String(b.sku||""),undefined,{numeric:true}));const off=f.qrOff||{};const pick=pool.filter(i=>!off[i.id]);const one=pool.length===1?pool[0]:null;
+    return W(<div><div className="rc-mt">{one?"QR tag":"QR tags"}</div>
+      <p className="rc-qr-p">Scan a tag with a phone's camera and it opens that engine's record here: make, model, year, HP and the parts on it. Whoever scans signs in first, so nothing is public.</p>
+      {one?(<div className="rc-qr-one"><div className="rc-qr-img" aria-label={"QR code for "+(one.sku||one.name)} role="img" dangerouslySetInnerHTML={{__html:qrPrev}}/><div style={{minWidth:0}}><div className="rc-ml">{one.sku||"Engine"}</div><div className="rc-tn">{[engMake(one),engModel(one)].filter(x=>x&&x!=="—").join(" ")||one.name}</div><div style={{fontSize:13.5,color:"var(--tx2)",marginTop:2}}>{[engYear(one),hpTxt(one),(one.serial||one.esn)?"ESN "+(one.serial||one.esn):""].filter(Boolean).join(" · ")||"Add the year and HP on Edit"}</div><div className="rc-qr-url">{engineUrl(one.id)}</div></div></div>)
+      :pool.length===0?<div className="rc-qr-p">No engines on the lot to tag.</div>
+      :(<><div className="rc-qr-bar"><span>{pick.length} of {pool.length} picked</span><button className="rc-lnk" onClick={()=>set("qrOff",{})}>All</button><button className="rc-lnk" onClick={()=>set("qrOff",Object.fromEntries(pool.map(i=>[i.id,1])))}>None</button></div>
+        <div className="rc-qr-list">{pool.map(i=>(<label key={i.id} className="rc-qr-row"><input type="checkbox" checked={!off[i.id]} onChange={e=>set("qrOff",{...off,[i.id]:e.target.checked?0:1})}/><b>{i.sku||"—"}</b><span>{i.name}</span></label>))}</div></>)}
+      <div className="rc-qr-note">Tags print ten to a Letter page, 3.5 × 2 in each, with cut lines. Use weatherproof label stock or laminate them for the carport.</div>
+      {WHY(pick.length?"":"Pick at least one engine.")}
+      <div className="rc-fa">{X}<button className="rc-ba" disabled={!pick.length} onClick={async()=>{const ok=await printQrTags(pick);if(!ok)d({type:"TOAST",d:{msg:"The browser blocked the print window. Allow pop-ups for this site, then try again.",t:Date.now(),long:true}});}}>🖨 Print {pick.length===1?"tag":pick.length+" tags"}</button></div></div>);}
   if(s.modal==="part-detail"){const i=engById(s,s.md&&s.md.id)||s.md;const eng=isEngine(i);const cb=costBasis(i);const tm=trueMargin(i);const mp=marginPct(i);
     if(!eng){return W(<div><div className="rc-mt">{i.name}</div>{i.photo&&<img src={i.photo} alt="" style={{width:"100%",maxHeight:240,objectFit:"cover",borderRadius:5,border:"1px solid var(--ln)",marginBottom:12}}/>}<div className="rc-3c" style={{marginBottom:12}}><div><div className="rc-ml">SKU</div><div className="rc-mv" style={{fontSize:14.5}}>{i.sku}</div></div><div><div className="rc-ml">Price</div><div className="rc-mv" style={{color:"var(--act)"}}>{i.price>0?$$(i.price):"Core"}</div></div><div><div className="rc-ml">Qty</div><div className="rc-mv">{i.qty}</div></div></div>{i.notes&&<div className="rc-fg"><div className="rc-fl">Notes</div><div style={{fontSize:14,color:"var(--tx2)"}}>{i.notes}</div></div>}<div className="rc-fa">{C}<button className="rc-bs" onClick={()=>d({type:"MODAL",v:"edit-part",d:i})}>✎ Edit</button></div></div>);}
     const lk=engLinks(s,i.id);const cur=engStatus(i);
@@ -2095,7 +2174,11 @@ const FM=(t,flds,onSave,need)=>W(<div><div className="rc-mt">{t}</div>{flds.map(
       {(()=>{const dxN=dxFor(s,i.id).length;const bsh=sheetFor(s,i.id);const bbm=bsh?bomById(s,bsh.bomId):null;const bst=bbm?bomStats(bbm,bsh):null;return(<div style={{display:"flex",gap:6,marginBottom:12,paddingBottom:10,borderBottom:"1px solid var(--ln)",flexWrap:"wrap"}}>{[["overview","Overview"],["costs","Costs · "+$K(cb)],["bom","BOM"+(bst?(bst.ordered&&bst.signed?" · ✓":" · open"):"")],["diagnosis","Diagnosis"+(dxN?" · "+dxN:"")],["sell","Sell"]].map(([k,l])=>(<button key={k} className={"rc-fb"+(ptab===k?" on":"")} onClick={()=>setPtab(k)}>{l}</button>))}</div>);})()}
       {ptab==="overview"&&(<>
       <div className="rc-fl" style={{marginBottom:6}}>Engine identity</div>
-      <div className="rc-card" style={{marginBottom:12,padding:12}}><div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:"12px 8px"}}><div><div className="rc-ml">Arrangement</div><div style={{fontSize:14}}>{i.arrangement||"—"}</div></div><div><div className="rc-ml">Year</div><div style={{fontSize:14}}>{i.year||"—"}</div></div><div><div className="rc-ml">Rated HP</div><div style={{fontSize:14}}>{i.ratedHp||"—"}</div></div><div><div className="rc-ml">Oil Cap</div><div style={{fontSize:14}}>{i.oilCap||"—"}</div></div><div><div className="rc-ml">Condition</div><div style={{fontSize:14}}>{i.condition||"—"}</div></div><div><div className="rc-ml">Source Core</div><div style={{fontSize:14,color:"var(--tx2)"}}>{i.sourceCore||"—"}</div></div></div></div>
+      <div className="rc-card" style={{marginBottom:12,padding:12}}><div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:"12px 8px"}}><div><div className="rc-ml">Make</div><div style={{fontSize:14}}>{engMake(i)||"—"}</div></div><div><div className="rc-ml">Model</div><div style={{fontSize:14}}>{engModel(i)}</div></div><div><div className="rc-ml">Stock #</div><div style={{fontSize:14}}>{i.sku||"—"}</div></div><div><div className="rc-ml">Arrangement</div><div style={{fontSize:14}}>{i.arrangement||"—"}</div></div><div><div className="rc-ml">Year</div><div style={{fontSize:14}}>{engYear(i)||"—"}</div></div><div><div className="rc-ml">Rated HP</div><div style={{fontSize:14}}>{i.ratedHp||"—"}</div></div><div><div className="rc-ml">Oil Cap</div><div style={{fontSize:14}}>{i.oilCap||"—"}</div></div><div><div className="rc-ml">Condition</div><div style={{fontSize:14}}>{i.condition||"—"}</div></div><div><div className="rc-ml">Source Core</div><div style={{fontSize:14,color:"var(--tx2)"}}>{i.sourceCore||"—"}</div></div></div></div>
+      {(()=>{const PL=enginePartsList(s,i);const groups=[["New parts",PL.fresh],["Reused, measured in spec",PL.kept],["At the machine shop",PL.mach],["Bought for this engine",PL.logged]].filter(([,l])=>l.length);
+        return(<><div className="rc-fl" style={{marginBottom:6}}>Parts on this engine</div><div className="rc-card rc-eparts">{groups.length===0?<div className="rc-eparts-none">No parts recorded yet. They show here from the engine's BOM worksheet (new, reused, machine shop) and the parts log on the Costs tab.</div>
+          :groups.map(([g,l])=>(<div key={g} className="rc-eparts-g"><div className="rc-eparts-h">{g} · {l.length}</div>{l.map((p,k)=>(<div key={k} className="rc-eparts-r"><span>{p.part}</span>{+p.qty>1?<small>× {p.qty}</small>:null}{p.note?<small>{p.note}</small>:null}</div>))}</div>))}
+          {PL.bom&&<div className="rc-eparts-src">From the {PL.bom.label} worksheet{PL.signed?"":" · decisions not signed off yet, so only ordered and missing parts count as new"}</div>}</div></>);})()}
       <div className="rc-card" style={{marginBottom:12,padding:12}}><div className="rc-3c"><div><div className="rc-ml">Total in</div><div className="rc-mv">{$$(cb)}</div></div><div><div className="rc-ml">List price</div><div className="rc-mv" style={{color:"var(--act)"}}>{i.price>0?$$(i.price):"—"}</div></div><div><div className="rc-ml">True margin</div><div className="rc-mv" style={{color:tm>0?"var(--g)":"var(--r)"}}>{i.price>0?$$(tm)+" · "+mp.toFixed(0)+"%":"—"}</div></div></div><div style={{fontSize:11,color:"var(--mt)",marginTop:8}}>Full breakdown, parts and labor live on the <span style={{color:"var(--act)",cursor:"pointer"}} onClick={()=>setPtab("costs")}>Costs tab →</span></div></div>
       </>)}
       {ptab==="costs"&&(<>
@@ -2208,7 +2291,7 @@ const FM=(t,flds,onSave,need)=>W(<div><div className="rc-mt">{t}</div>{flds.map(
         </div></>);})()}
       </>)}
       {ptab==="overview"&&i.notes&&<div className="rc-fg" style={{marginTop:8}}><div className="rc-fl">Notes</div><div style={{fontSize:14,color:"var(--tx2)"}}>{i.notes}</div></div>}
-      <div className="rc-fa">{C}{engStatus(i)==="available"&&<button className="rc-ba" onClick={()=>d({type:"MODAL",v:"sell-engine",d:{engineId:i.id}})}>Sell Engine →</button>}<button className="rc-bs" onClick={()=>d({type:"MODAL",v:"export-engine",d:i})}>🌐 Export</button><button className="rc-bs" onClick={()=>printEngine(s,i)}>🖨 Print</button><button className="rc-bs" onClick={()=>d({type:"MODAL",v:"edit-part",d:i})}>✎ Edit</button></div></div>);}
+      <div className="rc-fa">{C}{engStatus(i)==="available"&&<button className="rc-ba" onClick={()=>d({type:"MODAL",v:"sell-engine",d:{engineId:i.id}})}>Sell Engine →</button>}<button className="rc-bs" onClick={()=>d({type:"MODAL",v:"export-engine",d:i})}>🌐 Export</button><button className="rc-bs" onClick={()=>printEngine(s,i)}>🖨 Print</button><button className="rc-bs" onClick={()=>d({type:"MODAL",v:"qr-tags",d:{ids:[i.id]}})}>🏷 QR tag</button><button className="rc-bs" onClick={()=>d({type:"MODAL",v:"edit-part",d:i})}>✎ Edit</button></div></div>);}
   if(s.modal==="add-part"){const eng=isEngine({cat:f.cat});return W(<div><div className="rc-mt">Add {eng?"Engine":"Part"}</div>{PH()}{[["name","Name"],["sku","SKU"],["cat","Category"]].map(([k,l,t])=>F(k,l,t))}{eng?(<><div className="rc-fl" style={{marginTop:8}}>Engine identity</div><div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>{F("serial","ESN / Serial")}{F("cpl","CPL / AR#")}{F("arrangement","Arrangement")}{F("year","Year")}{F("ratedHp","Rated HP")}{F("oilCap","Oil Capacity")}</div>{F("sourceCore","Source Core")}{F("condition","Condition")}<div className="rc-fg"><label className="rc-fl">Lifecycle Status</label><select className="rc-fi" value={f.status||"available"} onChange={e=>set("status",e.target.value)} style={{appearance:"none"}}>{ENG_STATUSES.map(st=>(<option key={st} value={st}>{engStatusLabel(st)}</option>))}</select></div><div className="rc-fl" style={{marginTop:8}}>Cost basis breakdown</div><div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>{F("costCore","Core Purchase","number")}{F("costFreight","Inbound Freight","number")}{F("costParts","Parts Kit (flat $ — itemized log is on the passport)","number")}{F("costLabor","Machine + Assembly","number")}</div>{F("price","Sell Price","number")}</>):(<>{[["cost","Cost","number"],["price","Price","number"],["qty","Qty","number"],["reorder","Reorder","number"],["condition","Condition"],["serial","Serial"]].map(([k,l,t])=>F(k,l,t))}</>)}{F("notes","Notes")}<div className="rc-fa">{X}<button className="rc-ba" disabled={uploading} onClick={()=>{if(!(f.name&&f.sku))return;const d2=eng?{...f,cat:f.cat||"Complete Engine",status:f.status||"available",qty:1,reorder:0,price:+f.price||0,cost:+f.cost||0,costCore:+f.costCore||0,costFreight:+f.costFreight||0,costParts:+f.costParts||0,costLabor:+f.costLabor||0}:{...f,qty:+f.qty||0,reorder:+f.reorder||2,price:+f.price||0,cost:+f.cost||0};d({type:"ADD",list:"inventory",d:d2});}}>Save</button></div></div>);}
   if(s.modal==="add-appt")return W(<div><div className="rc-mt">Book Appointment</div>{CS()}{[["date","Date"],["time","Time","time"],["duration","Duration (min)","number"]].map(([k,l,t])=>F(k,l,t))}{TS()}{F("service","Service")}{WHY(!f.custId?"Pick a customer.":!(f.service||"").trim()?"Add the service.":"")}<div className="rc-fa">{X}<button className="rc-ba" disabled={!!(!f.custId?"Pick a customer.":!(f.service||"").trim()?"Add the service.":"")} onClick={()=>f.custId&&f.service&&d({type:"ADD",list:"schedule",d:{...f,custId:+f.custId,duration:+f.duration||120,status:"pending"}})}>Save</button></div></div>);
   if(s.modal==="add-emp")return FM("Add Employee",[["name","Name"],["nick","Short Name"],["role","Role"],["phone","Phone"],["rate","Rate ($/hr)","number"],["hrs","Hours/Week","number"],["specialties","Specialties (comma sep)"],["certs","Certs (comma sep)"],["hireDate","Hire Date"]].filter(([k])=>owner||k!=="rate"),()=>f.name&&d({type:"ADD",list:"employees",d:{...f,rate:+f.rate||0,hrs:+f.hrs||0,status:"active",specialties:(f.specialties||"").split(",").map(x=>x.trim()).filter(Boolean),certs:(f.certs||"").split(",").map(x=>x.trim()).filter(Boolean)}}),!(""+(f.name||"")).trim()&&"Add the person's name.");
@@ -2808,6 +2891,21 @@ const CSS=`@import url('${FONTS}');
 .rc-eng-img{width:80px;height:80px;object-fit:cover;border-radius:6px;border:1px solid var(--ln);cursor:pointer;display:block;}
 .rc-eng-img.none{border-style:dashed;display:flex;align-items:center;justify-content:center;font-size:26px;color:var(--ft);}
 .rc-sm-only{display:none;}
+.rc-s3-stage.m2d{background:var(--sf2);}.rc-map2d{width:100%;height:100%;display:block;font-family:var(--fb);touch-action:manipulation;}
+.rc-map2d .m-lot{fill:var(--sf);stroke:var(--ln);stroke-width:.3px;}.rc-map2d .m-bldg{fill:none;stroke:var(--tx2);stroke-width:.55px;pointer-events:none;}
+.rc-map2d .m-area{cursor:pointer;outline:none;}.rc-map2d .m-area rect{stroke-width:.25px;}.rc-map2d .m-area:hover rect{stroke-width:.5px;}.rc-map2d .m-area.on rect,.rc-map2d .m-area:focus-visible rect{stroke:var(--ac)!important;stroke-width:.6px;}
+.rc-map2d .m-slot{fill:none;stroke:var(--mt);stroke-width:.12px;stroke-dasharray:.5 .4;pointer-events:none;}
+.rc-map2d .m-eng{cursor:pointer;outline:none;}.rc-map2d .m-eng rect{stroke-width:.22px;}.rc-map2d .m-eng:hover rect{stroke-width:.45px;}.rc-map2d .m-eng.on rect,.rc-map2d .m-eng:focus-visible rect{stroke:var(--ac)!important;stroke-width:.6px;}
+.rc-map2d text{pointer-events:none;}.rc-map2d .m-et{font-size:1.05px;font-weight:700;fill:var(--tx);text-anchor:middle;}
+.rc-map2d .m-at{font-size:1.75px;font-weight:700;fill:var(--tx);paint-order:stroke;stroke:var(--sf);stroke-width:.4px;}.rc-map2d .m-ac{font-size:1.3px;fill:var(--tx2);paint-order:stroke;stroke:var(--sf);stroke-width:.35px;}
+.rc-map2d .m-dim line,.rc-map2d .m-scale line{stroke:var(--act);stroke-width:.18px;}.rc-map2d .m-dim text{font-size:1.5px;font-weight:700;fill:var(--act);text-anchor:middle;}.rc-map2d .m-scale text{font-size:1.3px;fill:var(--tx2);}.rc-map2d .m-north{font-size:1.6px;font-weight:700;fill:var(--tx2);text-anchor:end;}
+.rc-s3-zoomed{font-size:13px;color:var(--tx2);align-self:center;}
+.rc-eparts{margin-bottom:12px;padding:12px;display:grid;gap:10px;}.rc-eparts-none,.rc-eparts-src{font-size:13px;color:var(--mt);line-height:1.5;}.rc-eparts-h{font-size:12px;font-weight:700;letter-spacing:.6px;text-transform:uppercase;color:var(--tx2);margin-bottom:4px;}
+.rc-eparts-r{display:flex;gap:8px;align-items:baseline;flex-wrap:wrap;font-size:14px;padding:3px 0;border-bottom:1px solid var(--ln2);}.rc-eparts-r small{font-size:12.5px;color:var(--mt);}
+.rc-qr-p{font-size:14px;color:var(--tx2);line-height:1.5;margin:0 0 12px;}.rc-qr-one{display:flex;gap:16px;align-items:center;flex-wrap:wrap;margin-bottom:12px;}.rc-qr-img{width:150px;height:150px;flex:none;background:#fff;padding:8px;border-radius:8px;border:1px solid var(--ln);}.rc-qr-img svg{width:100%;height:100%;display:block;}
+.rc-qr-url{font-size:12px;color:var(--mt);word-break:break-all;margin-top:6px;}.rc-qr-bar{display:flex;gap:12px;align-items:center;font-size:13.5px;color:var(--tx2);margin-bottom:6px;}
+.rc-qr-list{max-height:300px;overflow:auto;border:1px solid var(--ln);border-radius:8px;}.rc-qr-row{display:flex;gap:10px;align-items:center;padding:8px 10px;border-bottom:1px solid var(--ln2);font-size:14px;cursor:pointer;}.rc-qr-row b{min-width:64px;}.rc-qr-row span{color:var(--tx2);}
+.rc-qr-note{font-size:12.5px;color:var(--mt);margin:10px 0 0;line-height:1.5;}
 .rc-badge{display:inline-flex;align-items:center;gap:5px;white-space:nowrap;padding:3px 10px;border-radius:20px;font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;font-family:var(--fb);}.rc-bdot{width:6px;height:6px;border-radius:50%;flex:none;}
 .rc-clip{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:340px;}
 .rc-bmv{flex:1;min-height:36px;padding:4px 0!important;font-size:15px!important;}
@@ -3276,6 +3374,11 @@ export default function App(){
   useEffect(()=>{if(!s.soldSplash)return;if(getSet(s).soundOn!==false)horn();const t=setTimeout(()=>d({type:"SPLASH",d:null}),6500);return()=>clearTimeout(t);},[s.soldSplash]);
   // Load data once authenticated (immediately in localStorage mode). Never loads/saves while logged out.
   useEffect(()=>{if(!authed||role==="none"){setLoading(false);return;}let off=false;setLoading(true);setLoadErr(false);(async()=>{try{const data=await loadAll(role);if(off)return;if(data.__loadError){setLoadErr(true);setLoading(false);return;}took(data);}catch(e){if(!off)setLoadErr(true);}if(!off)setLoading(false);})();return()=>{off=true;};},[authed,role]);
+  // A scanned QR tag (?engine=<id>) opens that engine's record once the shop's data is in (after signing in).
+  useEffect(()=>{if(loading||!authed||loadErr)return;const id=takeEngineParam();if(!id)return;
+    if(role==="employee"||role==="none"){d({type:"TOAST",d:{msg:"That tag opens an engine's record, and this login doesn't have access to the inventory.",t:Date.now(),long:true}});return;}
+    const eng=(sRef.current.inventory||[]).find(x=>sameId(x.id,id));
+    if(eng){d({type:"TAB",v:"inventory"});d({type:"MODAL",v:"part-detail",d:{...eng,ptab:"overview"}});}else d({type:"TOAST",d:{msg:"That engine isn't in the inventory any more.",t:Date.now(),long:true}});},[loading,authed,loadErr,role]);
   // Saving. One save runs at a time, in order, and each compares the lists with what was last saved, so an undo right
   // after a delete still goes through. A save that can't reach the server is retried (on a timer, when the connection
   // comes back, when the app comes back to the front) and the header says so until it lands. A row the database turns
