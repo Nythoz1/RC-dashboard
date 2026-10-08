@@ -95,3 +95,19 @@ export function shopLocs(engines, { status, remanned }) {
   rest.forEach((i) => out.set(i.id, take((used.reman || 0) < SLOT_CAP.reman ? "reman" : (used.takeoutW || 0) < SLOT_CAP.takeoutW ? "takeoutW" : "takeoutE")));
   return out;
 }
+
+// Which spot each engine takes. An engine someone put in a spot (`spot`, an index into its area's
+// SLOTS) keeps it while it's free (the first to claim it wins); the rest fill the free spots in
+// order. `list` is [{id, area, spot}]. Returns Map(id → {area, k}); engines past an area's spots
+// get none (they're listed, not drawn). The 3D scene and the 2D map both use this.
+export function placeEngines(list) {
+  const out = new Map(), by = {};
+  (list || []).forEach((e) => { if (e && SLOTS[e.area]) (by[e.area] = by[e.area] || []).push(e); });
+  Object.entries(by).forEach(([aid, items]) => {
+    const n = SLOTS[aid].length, taken = new Array(n).fill(false);
+    items.forEach((e) => { const k = e.spot === "" || e.spot == null ? NaN : Number(e.spot); if (Number.isInteger(k) && k >= 0 && k < n && !taken[k]) { taken[k] = true; out.set(e.id, { area: aid, k }); } });
+    let f = 0;
+    items.forEach((e) => { if (out.has(e.id)) return; while (f < n && taken[f]) f++; if (f < n) { taken[f] = true; out.set(e.id, { area: aid, k: f }); } });
+  });
+  return out;
+}

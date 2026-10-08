@@ -9,7 +9,7 @@ import { uploadEcmFile, openEcmFile, readEcmText, removeEcmFiles, ecmFileType, e
 import { ISSUE_SEED } from "./issuesSeed";
 import { BOM_SEED, VENDOR_SEED } from "./bomSeed";
 import { SERVICE_SEED, SERVICE_CATS } from "./servicesSeed";
-import { AREA_BY_ID, PLACE_GROUPS, PLACE_ORDER, STORE_IDS, SLOT_CAP, SLOTS, SLOT_SIZE, SHOP_AREAS, LOT, BLDG, shopLocs, areaTitle } from "./shop3d/areas";
+import { AREA_BY_ID, PLACE_GROUPS, PLACE_ORDER, STORE_IDS, SLOT_CAP, SLOTS, SLOT_SIZE, SHOP_AREAS, LOT, BLDG, shopLocs, areaTitle, placeEngines } from "./shop3d/areas";
 import { engineUrl, takeEngineParam, qrSvg } from "./lib/qr";
 import { CREW_SPOTS, crewList, SHIFT, SHIFT_MIN, shopClock, onShift, workedMin, hoursDone, wagesSoFar, backAt } from "./shop3d/crew";
 import * as Tsh from "./lib/timesheet";
@@ -244,7 +244,7 @@ function reducer(s,a){switch(a.type){
       if(a.d.status==="in-reman"&&!(s.jobs||[]).some(j=>+j.engineId===it.id&&jobKind(j)==="reman"&&j.status!=="complete")){const nj={id:Date.now()+2,kind:"reman",engineId:it.id,custId:0,vehicle:it.sku||"",service:"Reman — "+(it.name||it.sku||"engine"),type:"Reman",tech:"Unassigned",due:"",priority:"medium",status:"in-progress",notes:"Auto-opened when the engine entered reman.",auto:true};extra.jobs=[...(s.jobs||[]),nj];autos.push("🛠 Reman work order auto-opened: "+nj.service);}
     }else if(a.list==="inventory"&&it&&a.d.photo&&it.photo!==a.d.photo){act="📷 Photo added: "+(it.name||it.sku||"");}
     else if(a.list==="inventory"&&it&&a.d.partsLog&&(a.d.partsLog||[]).length>(it.partsLog||[]).length){const np=a.d.partsLog[(a.d.partsLog||[]).length-1]||{};act="🧩 Part into "+(it.name||it.sku||"engine")+": "+(np.d||"part")+" — $"+(+np.v||0).toLocaleString();}
-    else if(a.list==="inventory"&&it&&a.d.loc!==undefined&&(it.loc||"")!==(a.d.loc||"")){act="📍 "+(it.sku||it.name||"Engine")+" → "+(a.d.loc?areaTitle(a.d.loc):"placed by status");}
+    else if(a.list==="inventory"&&it&&a.d.loc!==undefined&&((it.loc||"")!==(a.d.loc||"")||(a.d.spot!=null&&String(it.spot??"")!==String(a.d.spot)))){act="📍 "+(it.sku||it.name||"Engine")+" → "+(a.d.loc?areaTitle(a.d.loc)+(a.d.spot!=null&&a.d.spot!==""?" · spot "+(+a.d.spot+1):""):"placed by status");}
     else if(a.list==="invoices"&&it&&a.d.status==="paid"&&it.status!=="paid"){act="💰 Invoice paid: "+(it.invNum||a.id);}
     else if((a.list==="prospects"||a.list==="competitors")&&it&&Array.isArray(a.d.log)&&a.d.log.length>(it.log||[]).length&&a.d.log[a.d.log.length-1].type!=="note"){const e=a.d.log[a.d.log.length-1];act={visit:"🚚 Visit",call:"📞 Call",email:"✉ Email"}[e.type]+": "+(it.name||"")+(e.outcome?" · "+e.outcome:"");}
     else if((a.list==="prospects"||a.list==="competitors")&&it&&a.d.status!==undefined&&(it.status||"")!==(a.d.status||"")){act="🎯 "+(it.name||"")+" → "+pstOf(a.d.status)[1];}
@@ -961,23 +961,34 @@ function Inv({s,d}){
 // 4:00 PM on weekdays; each hour that finishes, their hourly wage pops up over them (owner only).
 // SHOP MAP 2D: the same plan from above, to scale in feet: every place, every engine spot (dashed
 // when empty) and the engines in them, coloured by status. Same spots as the 3D shop.
-function ShopMap2D({list,count,selA,selE,zoom,onArea,onEngine}){
-  const byArea={};list.forEach(e=>{if(SLOTS[e.area])(byArea[e.area]=byArea[e.area]||[]).push(e);});
+function ShopMap2D({list,plan,count,selA,selE,zoom,moving,onArea,onEngine,onMove}){
+  // who's in each spot ("area:k" → engine), from the same plan the 3D scene uses
+  const at={};list.forEach(e=>{const p=plan.get(e.id);if(p)at[p.area+":"+p.k]=e;});
+  const svgRef=useRef(null);const[drag,setDrag]=useState(null);
+  const toSvg=ev=>{const sv=svgRef.current;const m=sv&&sv.getScreenCTM();if(!m)return null;const pt=sv.createSVGPoint();pt.x=ev.clientX;pt.y=ev.clientY;const q=pt.matrixTransform(m.inverse());return{x:q.x,z:q.y};};
+  const spotAt=(x,z)=>{let best=null,bd=3.4;Object.entries(SLOTS).forEach(([aid,slots])=>slots.forEach((sl,k)=>{const dd=Math.hypot(sl.x-x,sl.z-z);if(dd<bd){bd=dd;best={aid,k};}}));return best;};
+  const down=(ev,e)=>{if(ev.button>0)return;const q=toSvg(ev);if(!q)return;ev.preventDefault();try{svgRef.current.setPointerCapture(ev.pointerId);}catch(x){}setDrag({id:e.id,x0:q.x,z0:q.z,x:q.x,z:q.z,over:null,moved:false});};
+  const move=ev=>{if(!drag)return;const q=toSvg(ev);if(!q)return;const moved=drag.moved||Math.hypot(q.x-drag.x0,q.z-drag.z0)>1.2;setDrag({...drag,x:q.x,z:q.z,moved,over:moved?spotAt(q.x,q.z):null});};
+  const up=()=>{if(!drag)return;const g=drag;setDrag(null);
+    if(!g.moved){const p=plan.get(g.id);if(moving&&!sameId(moving,g.id)&&p){onMove(moving,p.area,p.k);return;}onEngine(g.id);return;}
+    if(g.over)onMove(g.id,g.over.aid,g.over.k);};
   const bx=zoom==="shop"?BLDG:zoom&&AREA_BY_ID[zoom]?AREA_BY_ID[zoom]:{x0:0,x1:LOT.w,z0:-1,z1:LOT.d+5};
   const pad=zoom?7:3,vx=bx.x0-pad,vz=bx.z0-pad,vw=bx.x1-bx.x0+pad*2,vh=bx.z1-bx.z0+pad*2;
   const R=AREA_BY_ID.reman;const key=f=>e=>{if(e.key==="Enter"||e.key===" "){e.preventDefault();f();}};
-  return(<svg className="rc-map2d" viewBox={vx+" "+vz+" "+vw+" "+vh} preserveAspectRatio="xMidYMid meet" role="group" aria-label="The shop and lot from above, to scale">
+  return(<svg ref={svgRef} className={"rc-map2d"+(drag&&drag.moved||moving?" dragging":"")} viewBox={vx+" "+vz+" "+vw+" "+vh} preserveAspectRatio="xMidYMid meet" role="group" aria-label="The shop and lot from above, to scale. Drag an engine onto a spot to move it." onPointerMove={move} onPointerUp={up} onPointerCancel={()=>setDrag(null)}>
     <rect className="m-lot" x={0} y={0} width={LOT.w} height={LOT.d}/>
     {SHOP_AREAS.map(a=>(<g key={a.id} className={"m-area"+(selA===a.id?" on":"")} role="button" tabIndex={0} aria-label={a.title+(a.store?", "+(count[a.id]||0)+" engines":"")} onClick={()=>onArea(a.id)} onKeyDown={key(()=>onArea(a.id))}>
       <rect x={a.x0} y={a.z0} width={a.w} height={a.d} style={{fill:tint(a.dot,a.store?18:9),stroke:tint(a.dot,75)}}/></g>))}
     <rect className="m-bldg" x={BLDG.x0} y={BLDG.z0} width={BLDG.x1-BLDG.x0} height={BLDG.z1-BLDG.z0}/>
-    {Object.entries(SLOTS).map(([aid,slots])=>slots.map((sl,k)=>{const[w0,d0]=SLOT_SIZE[aid]||SLOT_SIZE.default;const turn=Math.abs(Math.sin(sl.ry||0))>0.5;const W=turn?d0:w0,D=turn?w0:d0;const e=(byArea[aid]||[])[k];const x=sl.x-W/2,y=sl.z-D/2;
-      if(!e)return <rect key={aid+k} className="m-slot" x={x} y={y} width={W} height={D} rx={0.3}/>;
+    {Object.entries(SLOTS).map(([aid,slots])=>slots.map((sl,k)=>{const[w0,d0]=SLOT_SIZE[aid]||SLOT_SIZE.default;const turn=Math.abs(Math.sin(sl.ry||0))>0.5;const W=turn?d0:w0,D=turn?w0:d0;const e=at[aid+":"+k];const x=sl.x-W/2,y=sl.z-D/2;
+      const over=drag&&drag.over&&drag.over.aid===aid&&drag.over.k===k;const name=areaTitle(aid)+", spot "+(k+1);
+      if(!e)return <rect key={aid+k} className={"m-slot"+(over?" drop":"")} x={x} y={y} width={W} height={D} rx={0.3} role={moving?"button":undefined} tabIndex={moving?0:undefined} aria-label={moving?"Move here: "+name+" (empty)":undefined} onClick={moving?ev=>{ev.stopPropagation();onMove(moving,aid,k);}:undefined} onKeyDown={moving?key(()=>onMove(moving,aid,k)):undefined}><title>{name+" · empty"}</title></rect>;
       const c=BC[e.status]||"var(--mt)";const lab=String(e.sku||e.name||"").slice(0,8);
-      return(<g key={aid+k} className={"m-eng"+(selE===e.id?" on":"")} role="button" tabIndex={0} aria-label={(e.sku?e.sku+", ":"")+e.name+", "+e.statusLabel} onClick={ev=>{ev.stopPropagation();onEngine(e.id);}} onKeyDown={key(()=>onEngine(e.id))}>
+      return(<g key={aid+k} className={"m-eng"+(selE===e.id?" on":"")+(over?" drop":"")+(drag&&drag.moved&&drag.id===e.id?" lifted":"")} role="button" tabIndex={0} aria-label={(e.sku?e.sku+", ":"")+e.name+", "+e.statusLabel+", "+name} onPointerDown={ev=>down(ev,e)} onKeyDown={key(()=>moving&&!sameId(moving,e.id)?onMove(moving,aid,k):onEngine(e.id))}>
         <title>{(e.sku?e.sku+" · ":"")+e.name+" · "+e.statusLabel}</title>
         <rect x={x} y={y} width={W} height={D} rx={0.35} style={{fill:tint(c,38),stroke:c}}/>
         <text className="m-et" x={sl.x} y={sl.z+0.4} transform={turn?"rotate(-90 "+sl.x+" "+sl.z+")":undefined}>{lab}</text></g>);}))}
+    {drag&&drag.moved&&(()=>{const e=list.find(o=>sameId(o.id,drag.id));if(!e)return null;const c=BC[e.status]||"var(--mt)";return(<g className="m-ghost" aria-hidden="true"><rect x={drag.x-3} y={drag.z-2} width={6} height={4} rx={0.35} style={{fill:tint(c,55),stroke:c}}/><text className="m-et" x={drag.x} y={drag.z+0.4}>{String(e.sku||e.name||"").slice(0,8)}</text></g>);})()}
     <g className="m-dim" aria-hidden="true"><line x1={R.x0} y1={R.z1+1.6} x2={R.x1} y2={R.z1+1.6}/><line x1={R.x0} y1={R.z1+0.9} x2={R.x0} y2={R.z1+2.3}/><line x1={R.x1} y1={R.z1+0.9} x2={R.x1} y2={R.z1+2.3}/><text x={R.cx} y={R.z1+3.7}>20 ft</text>
       <line x1={R.x1+1.6} y1={R.z0} x2={R.x1+1.6} y2={R.z1}/><line x1={R.x1+0.9} y1={R.z0} x2={R.x1+2.3} y2={R.z0}/><line x1={R.x1+0.9} y1={R.z1} x2={R.x1+2.3} y2={R.z1}/><text transform={"translate("+(R.x1+3.4)+" "+R.cz+") rotate(90)"}>36 ft</text></g>
     <g className="m-labels" aria-hidden="true">{SHOP_AREAS.map(a=>{const tall=a.w<12&&a.d>a.w;const n=count[a.id]||0;const cnt=n+" engine"+(n===1?"":"s")+" · "+(SLOT_CAP[a.id]||0)+" spots";
@@ -1001,10 +1012,21 @@ function Shop3D({s,d,theme,owner}){
   const[crewOn,setCrewOn]=useState(true);const[clk,setClk]=useState(()=>shopClock());const[play,setPlay]=useState(null);
   // 3D or the 2D map (remembered per device); the 3D scene only loads while 3D is showing.
   const[mode,setMode]=useState(()=>getPref("rc:shopView","3d")==="2d"?"2d":"3d");const[zoom,setZoom]=useState(null);
+  // Moving an engine: drop it on a spot (the 2D map) and it's kept there; an engine already in that spot swaps places with it.
+  const[moving,setMoving]=useState(null);
+  const moveEng=(id,aid,k)=>{const e=engs.find(x=>sameId(x.id,id));if(!e)return;const pE=plan.get(e.id);const occ=list.find(o=>{const p=plan.get(o.id);return p&&p.area===aid&&p.k===k;});setMoving(null);
+    if(occ&&sameId(occ.id,e.id))return;
+    d({type:"UPDATE",list:"inventory",id:e.id,d:{loc:aid,spot:k}});
+    if(occ)d({type:"UPDATE",list:"inventory",id:occ.id,d:pE?{loc:pE.area,spot:pE.k}:{spot:null}});
+    setSelE(e.id);setSelA(null);setSelP(null);
+    d({type:"TOAST",d:{msg:"📍 "+(e.sku||e.name||"Engine")+" → "+areaTitle(aid)+" · spot "+(k+1)+(occ?" · swapped with "+(occ.sku||occ.name||"the engine there"):""),t:Date.now()}});};
+  useEffect(()=>{if(!moving)return;const k=e=>{if(e.key==="Escape"){e.preventDefault();setMoving(null);}};window.addEventListener("keydown",k);return()=>window.removeEventListener("keydown",k);},[moving]);
   const pickMode=m=>{if(m===mode)return;setMode(m);setPref("rc:shopView",m);setReady(false);setErr("");setProg(["Loading the 3D shop…",4]);setTour(false);setDrive(false);};
   const engs=(s.inventory||[]).filter(isEngine);
   const locs=useMemo(()=>engLocs(s),[s.inventory]);
-  const list=useMemo(()=>engs.filter(i=>locs.has(i.id)).map(i=>({id:i.id,sku:i.sku||"",name:i.name||"",area:locs.get(i.id),status:engStatus(i),statusLabel:engStatusLabel(engStatus(i)),size:sizeClass(i),remanned:remanned(i)})),[s.inventory,locs]);
+  const list=useMemo(()=>engs.filter(i=>locs.has(i.id)).map(i=>({id:i.id,sku:i.sku||"",name:i.name||"",area:locs.get(i.id),spot:i.loc&&i.loc===locs.get(i.id)?i.spot:null,status:engStatus(i),statusLabel:engStatusLabel(engStatus(i)),size:sizeClass(i),remanned:remanned(i)})),[s.inventory,locs]);
+  const plan=useMemo(()=>placeEngines(list),[list]);
+
   const crew=useMemo(()=>crewList(s.employees),[s.employees]);
   const crewScene=useMemo(()=>crew.filter(c=>c.spot).map(c=>({id:c.id,name:c.name,short:c.short,role:c.role,spot:c.spot})),[crew]);
   const playing=!!(play&&play.t0);
@@ -1055,14 +1077,15 @@ function Shop3D({s,d,theme,owner}){
       const over=lo&&(count[lo]||0)>(SLOT_CAP[lo]||0);
       return(<div className="rc-card rc-s3-card" aria-live="polite">
         <div style={{display:"flex",justifyContent:"space-between",gap:10,alignItems:"flex-start"}}><div style={{minWidth:0}}><div className="rc-ml">{ie.sku||"Engine"}</div><div className="rc-s3-h">{ie.name}</div>{(ie.serial||ie.esn)&&<div className="rc-s3-sub">ESN {ie.serial||ie.esn}</div>}</div><Badge s={st}/></div>
-        <div className="rc-s3-where">📍 <b>{lo?areaTitle(lo):"Not on the map"}</b>{lo&&!own?<span> · placed by status</span>:null}</div>
+        <div className="rc-s3-where">📍 <b>{lo?areaTitle(lo):"Not on the map"}{plan.get(ie.id)?" · spot "+(plan.get(ie.id).k+1):""}</b>{lo&&!own?<span> · placed by status</span>:null}</div>
         {over&&<div className="rc-s3-warn">{areaTitle(lo)} has more engines than spots, so a few aren't drawn. They're all listed on the area's card.</div>}
         <label className="rc-fl" htmlFor="s3-loc">Where it's kept</label>
-        <select id="s3-loc" className="rc-fi" value={own} onChange={e=>d({type:"UPDATE",list:"inventory",id:ie.id,d:{loc:e.target.value}})} style={{appearance:"none"}}>
+        <select id="s3-loc" className="rc-fi" value={own} onChange={e=>d({type:"UPDATE",list:"inventory",id:ie.id,d:{loc:e.target.value,spot:null}})} style={{appearance:"none"}}>
           <option value="">{st==="sold"?"Off the map (sold)":"By status · "+areaTitle(auto)}</option>
           {STORE_IDS.map(id=>(<option key={id} value={id}>{areaTitle(id)}</option>))}
         </select>
-        <div className="rc-fa" style={{flexWrap:"wrap"}}>{st==="sold"&&own?<button className="rc-bs" onClick={()=>d({type:"UPDATE",list:"inventory",id:ie.id,d:{loc:""}})}>Picked up · take it off the map</button>:null}<button className="rc-bs" onClick={()=>{setSelE(null);A(a=>a.selectArea(null));}}>Close</button><button className="rc-ba" onClick={()=>d({type:"MODAL",v:"part-detail",d:ie})}>Open passport</button></div>
+        <div className="rc-fa" style={{flexWrap:"wrap"}}>{st==="sold"&&own?<button className="rc-bs" onClick={()=>d({type:"UPDATE",list:"inventory",id:ie.id,d:{loc:""}})}>Picked up · take it off the map</button>:null}<button className="rc-bs" onClick={()=>{setSelE(null);A(a=>a.selectArea(null));}}>Close</button><button className="rc-bs" onClick={()=>{pickMode("2d");setMoving(ie.id);}}>{moving&&sameId(moving,ie.id)?"Tap a spot on the map…":"Move to a spot"}</button><button className="rc-ba" onClick={()=>d({type:"MODAL",v:"part-detail",d:ie})}>Open passport</button></div>
+        <div className="rc-s3-note">On the 2D map, drag an engine onto any spot. A spot that's taken swaps the two engines.</div>
       </div>);}
     const ip=selP!=null?crew.find(c=>String(c.id)===String(selP)):null;
     if(ip){const auto=crewList((s.employees||[]).map(e=>String(e.id)===String(ip.id)?{...e,station:""}:e)).find(c=>String(c.id)===String(ip.id));
@@ -1127,7 +1150,7 @@ function Shop3D({s,d,theme,owner}){
     </div>
     <div className="rc-s3-wrap">
       <div className={"rc-s3-stage"+(mode==="2d"?" m2d":"")}>
-        {mode==="2d"?<ShopMap2D list={list} count={count} selA={selA} selE={selE} zoom={zoom} onArea={pickArea} onEngine={pickEng}/>:<>
+        {mode==="2d"?<><ShopMap2D list={list} plan={plan} count={count} selA={selA} selE={selE} zoom={zoom} moving={moving} onArea={id=>{if(moving)return;pickArea(id);}} onEngine={pickEng} onMove={moveEng}/>{moving&&<div className="rc-s3-movebar" role="status">Tap a spot for {(engs.find(x=>sameId(x.id,moving))||{}).sku||"the engine"} · a full spot swaps <button className="rc-bs" onClick={()=>setMoving(null)}>Cancel</button></div>}</>:<>
         <div className="rc-s3-gl" ref={gl}/>
         {ready&&!err&&crew.length>0&&<div className="rc-s3-clock">
           {play&&play.done?<><b>4:00 PM</b><span>That's the day{owner?": "+$$(wagesSoFar(crew,SHIFT_MIN))+" in wages":""}</span></>
@@ -2899,7 +2922,7 @@ const CSS=`@import url('${FONTS}');
 .rc-map2d .m-eng{cursor:pointer;outline:none;}.rc-map2d .m-eng rect{stroke-width:.22px;}.rc-map2d .m-eng:hover rect{stroke-width:.45px;}.rc-map2d .m-eng.on rect,.rc-map2d .m-eng:focus-visible rect{stroke:var(--ac)!important;stroke-width:.6px;}
 .rc-map2d text{pointer-events:none;}.rc-map2d .m-et{font-size:1.05px;font-weight:700;fill:var(--tx);text-anchor:middle;}
 .rc-map2d .m-at{font-size:1.75px;font-weight:700;fill:var(--tx);paint-order:stroke;stroke:var(--sf);stroke-width:.4px;}.rc-map2d .m-ac{font-size:1.3px;fill:var(--tx2);paint-order:stroke;stroke:var(--sf);stroke-width:.35px;}
-.rc-map2d .m-dim line,.rc-map2d .m-scale line{stroke:var(--act);stroke-width:.18px;}.rc-map2d .m-dim text{font-size:1.5px;font-weight:700;fill:var(--act);text-anchor:middle;}.rc-map2d .m-scale text{font-size:1.3px;fill:var(--tx2);}.rc-map2d .m-street{font-size:1.6px;font-weight:700;letter-spacing:.4px;fill:var(--mt);text-anchor:middle;}.rc-map2d .m-north{font-size:1.6px;font-weight:700;fill:var(--tx2);text-anchor:end;}
+.rc-map2d .m-dim line,.rc-map2d .m-scale line{stroke:var(--act);stroke-width:.18px;}.rc-map2d .m-dim text{font-size:1.5px;font-weight:700;fill:var(--act);text-anchor:middle;}.rc-map2d .m-scale text{font-size:1.3px;fill:var(--tx2);}.rc-map2d .m-street{font-size:1.6px;font-weight:700;letter-spacing:.4px;fill:var(--mt);text-anchor:middle;}.rc-map2d.dragging .m-slot{stroke:var(--act);stroke-width:.22px;pointer-events:all;cursor:pointer;}.rc-map2d .m-slot.drop,.rc-map2d .m-eng.drop rect{stroke:var(--ac)!important;stroke-width:.7px;fill:var(--acs);}.rc-map2d .m-eng{touch-action:none;}.rc-map2d .m-eng.lifted{opacity:.35;}.rc-map2d .m-ghost{pointer-events:none;opacity:.9;}.rc-s3-movebar{position:absolute;left:50%;bottom:14px;transform:translateX(-50%);display:flex;gap:10px;align-items:center;background:var(--sf);border:1px solid var(--ac);border-radius:10px;padding:8px 10px 8px 14px;font-size:13.5px;box-shadow:var(--sh2);max-width:calc(100% - 24px);}.rc-map2d .m-north{font-size:1.6px;font-weight:700;fill:var(--tx2);text-anchor:end;}
 .rc-s3-zoomed{font-size:13px;color:var(--tx2);align-self:center;}
 .rc-eparts{margin-bottom:12px;padding:12px;display:grid;gap:10px;}.rc-eparts-none,.rc-eparts-src{font-size:13px;color:var(--mt);line-height:1.5;}.rc-eparts-h{font-size:12px;font-weight:700;letter-spacing:.6px;text-transform:uppercase;color:var(--tx2);margin-bottom:4px;}
 .rc-eparts-r{display:flex;gap:8px;align-items:baseline;flex-wrap:wrap;font-size:14px;padding:3px 0;border-bottom:1px solid var(--ln2);}.rc-eparts-r small{font-size:12.5px;color:var(--mt);}

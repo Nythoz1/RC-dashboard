@@ -4,7 +4,7 @@
 // (time of day, walls, roofs, labels, tour, forklift, selection, engines, the crew and their wage
 // pops). Units are feet.
 import * as THREE from "three";
-import { LOT, BLDG as B, SHOP_AREAS, AREA_BY_ID, PLACE_ORDER, SLOTS } from "./areas.js";
+import { LOT, BLDG as B, SHOP_AREAS, AREA_BY_ID, PLACE_ORDER, SLOTS, placeEngines } from "./areas.js";
 
 const T = THREE;
 const EXT_H = 18, INT_H = 10, WT = 0.6;
@@ -332,11 +332,11 @@ export function createShop(host, opts) {
     engRoot = new T.Group(); scene.add(engRoot); ENG = [];
     Object.keys(counts).forEach((k) => delete counts[k]);
     const byArea = {}; (list || []).forEach((e) => { if (!e.area || !SLOTS[e.area]) return; (byArea[e.area] = byArea[e.area] || []).push(e); counts[e.area] = (counts[e.area] || 0) + 1; });
-    const inv = new T.MeshBasicMaterial({ visible: false });
+    const inv = new T.MeshBasicMaterial({ visible: false }); const plan = placeEngines(list);
     Object.entries(byArea).forEach(([aid, items]) => {
       const g = new T.Group(); const slots = SLOTS[aid];
-      items.slice(0, slots.length).forEach((e, k) => {
-        const s = slots[k]; const r = rng(hash(e.id)); const pal = makeLook(e); const sc = SIZE[e.size] || 1;
+      items.forEach((e) => {
+        const p = plan.get(e.id); if (!p) return; const s = slots[p.k]; const r = rng(hash(e.id)); const pal = makeLook(e); const sc = SIZE[e.size] || 1;
         const kind = s.stand ? "bare" : (aid === "reman" || e.remanned) ? "reman" : "take";
         const holder = grp(g, s.x, s.z, s.ry, s.stand ? 2.9 : 0); const en = engine(holder, 0, 0, 0, kind, pal, 0, r); en.scale.setScalar(sc);
         const tagY = (en.userData.top || 3) * sc + (s.stand ? 2.9 : 0);
