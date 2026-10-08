@@ -5,7 +5,9 @@
 // triggers answer every request, run as the caller's login. Edge Functions are
 // plugged in as handlers. handle(Request) → Response works as a fetch() stand-in
 // in Node and behind a local HTTP server for the browser.
-// Every request is logged as {method, path, as, email}.
+// Database functions answer at /rest/v1/rpc/<name> like PostgREST (named
+// arguments in a JSON body, run as the caller). Every request is logged as
+// {method, path, as, email}.
 import { randomUUID } from "node:crypto";
 import { freshDb, asLogin } from "./pg.mjs";
 
@@ -160,6 +162,15 @@ export async function mockSupabase({ users = [], anonKey = "anon-key", serviceKe
       // ── data ──
       const tm = p.match(/^\/rest\/v1\/([a-z_]+)$/);
       if (tm && TABLES[tm[1]]) return await rest(req, url, tm[1], as);
+      const fn = p.match(/^\/rest\/v1\/rpc\/([a-z_][a-z0-9_]*)$/);
+      if (fn && req.method === "POST") {
+        const body = await req.json().catch(() => ({}));
+        const names = Object.keys(body || {});
+        if (!names.every((c) => COL.test(c))) return reply(400, { message: "bad argument" });
+        const args = names.map((n) => { const v = body[n]; return v == null ? null : typeof v === "object" ? JSON.stringify(v) : v; });
+        const r = await asLogin(db, as, "select public." + fn[1] + "(" + names.map((n, i) => n + " => $" + (i + 1)).join(", ") + ") as r", args);
+        return reply(200, r.rows.length ? r.rows[0].r : null);
+      }
       if (p.startsWith("/storage/v1/")) return reply(200, []);
       return reply(404, { message: "mock: no route for " + req.method + " " + p });
     } catch (e) {

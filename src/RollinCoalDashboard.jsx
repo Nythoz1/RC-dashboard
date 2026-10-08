@@ -495,7 +495,7 @@ const SEEDS={
   competitors:[()=>import("./data/competitors.json"),rows=>rows.map(compWork)],
   compare:[()=>import("./data/competitor-comparison.json"),rows=>rows.map((r,i)=>({id:"cmp-"+String(i+1).padStart(2,"0"),us:/rollin/i.test(r.business||""),...r}))],
 };
-async function seedResearch(d){for(const k of Object.keys(SEEDS)){if(Array.isArray(d[k])&&d[k].length)continue;try{const m=await SEEDS[k][0]();d[k]=SEEDS[k][1](m.default||[]);}catch(e){console.error("[rc seed] "+k+" failed:",e&&e.message?e.message:e);d[k]=[];}}}
+async function seedResearch(d){const seeded=[];for(const k of Object.keys(SEEDS)){if(Array.isArray(d[k])&&d[k].length)continue;try{const m=await SEEDS[k][0]();d[k]=SEEDS[k][1](m.default||[]);seeded.push(k);}catch(e){console.error("[rc seed] "+k+" failed:",e&&e.message?e.message:e);d[k]=[];}}return seeded;}
 const resById=(s,list,id)=>(s[list]||[]).find(x=>String(x.id)===String(id));
 // The pipeline. "" is "not contacted" (records start with an empty status).
 const PST=[["","Not contacted","var(--mt)"],["contacted","Visited / called","var(--b)"],["interested","Interested","var(--ac)"],["quoted","Quoted","var(--p)"],["customer","Customer","var(--g)"],["not-a-fit","Not a fit","var(--ft)"],["do-not-contact","Do not contact","var(--r)"]];
@@ -712,7 +712,8 @@ function horn(){try{const C=window.AudioContext||window.webkitAudioContext;if(!C
 // Save only the given (changed) lists, handing the adapter the previous
 // snapshot so table-backed lists can diff per-row instead of rewriting.
 // Returns {failed: lists that didn't reach the server (retry them), refused: {list: [rows the database turned down]}}.
-async function saveAll(s,keys,prev,role){const failed=[],refused={};const ok=keysFor(role);for(const k of (keys||ok)){if(!ok.includes(k))continue;try{const r=await db.setItem("rc:"+k,JSON.stringify(s[k]||[]),prev&&prev[k]!=null?JSON.stringify(prev[k]||[]):undefined);if(r&&r.refused&&r.refused.length)refused[k]=r.refused;}catch(e){failed.push(k);console.error("[rc save] "+k+" failed:",e&&e.message?e.message:e);}}return{failed,refused};}
+// Each list goes up as what changed since `prev` (lib/merge.js); a list in `fresh` was never stored, so it goes up whole too.
+async function saveAll(s,keys,prev,role,fresh){const failed=[],refused={};const ok=keysFor(role);for(const k of (keys||ok)){if(!ok.includes(k))continue;try{const r=await db.setItem("rc:"+k,JSON.stringify(s[k]||[]),prev&&prev[k]!=null?JSON.stringify(prev[k]||[]):undefined,{fresh:!!(fresh&&fresh.has(k))});if(r&&r.refused&&r.refused.length)refused[k]=r.refused;}catch(e){failed.push(k);console.error("[rc save] "+k+" failed:",e&&e.message?e.message:e);}}return{failed,refused};}
 // Why the database put a change back, in plain words.
 function refusedMsg(refused,pp){
   if((refused.payPeriods||[]).some(x=>x.code==="23505"))return "That pay period was already approved, so nothing changed.";
@@ -721,7 +722,7 @@ function refusedMsg(refused,pp){
     return "Couldn't save "+ts.map(([,dt])=>Tsh.shortDate(dt)).join(", ")+": "+why+". It's back to what was saved. Ask the owner if something's wrong.";}
   return "Some changes weren't allowed, so they were put back to what's saved.";
 }
-async function loadAll(role){const d={};let m=null;const keys=keysFor(role);try{m=await db.getAll(keys.map(k=>"rc:"+k));}catch(e){console.error("[rc load] batch failed:",e&&e.message?e.message:e);}if(!m){STORE_KEYS.forEach(k=>{d[k]=EMPTY[k]||[];});d.__loadError=true;return d;}let err=false;for(const k of STORE_KEYS){if(!keys.includes(k)){d[k]=[];continue;}const r=m["rc:"+k];try{d[k]=(r!=null)?JSON.parse(r):(EMPTY[k]||[]);}catch(e){err=true;d[k]=EMPTY[k]||[];console.error("[rc load] "+k+" parse failed:",e&&e.message?e.message:e);}}if(err)d.__loadError=true;else if(role!=="employee")await seedResearch(d);return d;}
+async function loadAll(role){const d={};let m=null;const keys=keysFor(role);try{m=await db.getAll(keys.map(k=>"rc:"+k));}catch(e){console.error("[rc load] batch failed:",e&&e.message?e.message:e);}if(!m){STORE_KEYS.forEach(k=>{d[k]=EMPTY[k]||[];});d.__loadError=true;return d;}let err=false;const fresh=[];for(const k of STORE_KEYS){if(!keys.includes(k)){d[k]=[];continue;}const r=m["rc:"+k];if(r==null)fresh.push(k);try{d[k]=(r!=null)?JSON.parse(r):(EMPTY[k]||[]);}catch(e){err=true;d[k]=EMPTY[k]||[];console.error("[rc load] "+k+" parse failed:",e&&e.message?e.message:e);}}if(err)d.__loadError=true;else if(role!=="employee")fresh.push(...await seedResearch(d));d.__fresh=[...new Set(fresh)];return d;}
 async function clearAll(){for(const k of STORE_KEYS){try{await db.removeItem("rc:"+k);}catch(e){}}}
 
 // Claude AI
@@ -3246,6 +3247,8 @@ const THEMES=[["day","☀","Day"],["night","☾","Night"],["auto","◐","Auto"]]
 export default function App(){
   const[s,d]=useReducer(reducer,EMPTY);const[loading,setLoading]=useState(true);const[loadErr,setLoadErr]=useState(false);const[time,setTime]=useState(new Date());
   const lastSaved=useRef(null);const sRef=useRef(s);sRef.current=s;
+  // Lists this device loaded that were never stored (seeds): their first save sends the whole list too.
+  const fresh=useRef(new Set());const took=data=>{fresh.current=new Set(data.__fresh||[]);delete data.__fresh;lastSaved.current=data;d({type:"LOAD",d:data});};
   // Colour theme is a per-device preference (lib/prefs.js), never shop data: Day by default, Night, or Auto (follow the phone/computer).
   const[themePref,setThemePref]=useState(()=>getPref("rc:theme","day"));
   const[sysDark,setSysDark]=useState(()=>{try{return window.matchMedia("(prefers-color-scheme: dark)").matches;}catch(e){return false;}});
@@ -3272,7 +3275,7 @@ export default function App(){
   // SOLD splash: air horn (unless muted) + auto-dismiss
   useEffect(()=>{if(!s.soldSplash)return;if(getSet(s).soundOn!==false)horn();const t=setTimeout(()=>d({type:"SPLASH",d:null}),6500);return()=>clearTimeout(t);},[s.soldSplash]);
   // Load data once authenticated (immediately in localStorage mode). Never loads/saves while logged out.
-  useEffect(()=>{if(!authed||role==="none"){setLoading(false);return;}let off=false;setLoading(true);setLoadErr(false);(async()=>{try{const data=await loadAll(role);if(off)return;if(data.__loadError){setLoadErr(true);setLoading(false);return;}lastSaved.current=data;d({type:"LOAD",d:data});}catch(e){if(!off)setLoadErr(true);}if(!off)setLoading(false);})();return()=>{off=true;};},[authed,role]);
+  useEffect(()=>{if(!authed||role==="none"){setLoading(false);return;}let off=false;setLoading(true);setLoadErr(false);(async()=>{try{const data=await loadAll(role);if(off)return;if(data.__loadError){setLoadErr(true);setLoading(false);return;}took(data);}catch(e){if(!off)setLoadErr(true);}if(!off)setLoading(false);})();return()=>{off=true;};},[authed,role]);
   // Saving. One save runs at a time, in order, and each compares the lists with what was last saved, so an undo right
   // after a delete still goes through. A save that can't reach the server is retried (on a timer, when the connection
   // comes back, when the app comes back to the front) and the header says so until it lands. A row the database turns
@@ -3288,7 +3291,7 @@ export default function App(){
     lastSaved.current={...lastSaved.current,...snap};d({type:"LOAD",d:upd});d({type:"TOAST",d:{msg:refusedMsg(refused,upd.payPeriods||sRef.current.payPeriods),t:Date.now(),long:true}});};
   const saveRef=useRef(null);saveRef.current=()=>{const job=saveQ.current.then(async()=>{const{role:rl,authed:au,loadErr:le}=live.current;const prev=lastSaved.current;if(!prev||!au||le)return;
     const cur=sRef.current;const dirty=keysFor(rl).filter(k=>cur[k]!==prev[k]);if(!dirty.length){fails.current=0;setSaveBad(false);return;}
-    const r=await saveAll(cur,dirty,prev,rl);const snap={...(lastSaved.current||{})};dirty.forEach(k=>{if(!r.failed.includes(k))snap[k]=cur[k];});lastSaved.current=snap;
+    const r=await saveAll(cur,dirty,prev,rl,fresh.current);const snap={...(lastSaved.current||{})};dirty.forEach(k=>{if(!r.failed.includes(k)){snap[k]=cur[k];fresh.current.delete(k);}});lastSaved.current=snap;
     if(Object.keys(r.refused).length)await putBack(r.refused,cur);
     clearTimeout(retryT.current);
     if(r.failed.length){fails.current++;setSaveBad(true);if(fails.current===1)d({type:"TOAST",d:{msg:"⚠ Couldn't save. It keeps trying, and the top of the screen says so until it's saved.",t:Date.now(),long:true}});retryT.current=setTimeout(()=>saveRef.current(),Math.min(60000,4000*2**Math.min(fails.current-1,4)));}
@@ -3304,7 +3307,7 @@ export default function App(){
   // Live sync: quietly re-pull the shop's data on window focus and every 60s
   // (cloud only, never while a modal is open or local changes are unsaved),
   // so a tab left open overnight can't overwrite the crew's newer work.
-  useEffect(()=>{if(!usingCloud||!authed||loading)return;let busy=false;const refresh=async()=>{const before=sRef.current;const prev=lastSaved.current;if(busy||document.hidden||!prev||before.modal)return;if(keysFor(role).some(k=>before[k]!==prev[k]))return;busy=true;try{const data=await loadAll(role);const cur=sRef.current;if(!data.__loadError&&!cur.modal&&!keysFor(role).some(k=>cur[k]!==before[k])){lastSaved.current=data;d({type:"LOAD",d:data});}}catch(e){}finally{busy=false;}};const iv=setInterval(refresh,60000);window.addEventListener("focus",refresh);return()=>{clearInterval(iv);window.removeEventListener("focus",refresh);};},[authed,loading,role]);
+  useEffect(()=>{if(!usingCloud||!authed||loading)return;let busy=false;const refresh=async()=>{const before=sRef.current;const prev=lastSaved.current;if(busy||document.hidden||!prev||before.modal)return;if(keysFor(role).some(k=>before[k]!==prev[k]))return;busy=true;try{const data=await loadAll(role);const cur=sRef.current;if(!data.__loadError&&!cur.modal&&!keysFor(role).some(k=>cur[k]!==before[k]))took(data);}catch(e){}finally{busy=false;}};const iv=setInterval(refresh,60000);window.addEventListener("focus",refresh);return()=>{clearInterval(iv);window.removeEventListener("focus",refresh);};},[authed,loading,role]);
   useEffect(()=>{const t=setInterval(()=>setTime(new Date()),60000);return()=>clearInterval(t);},[]);
   useEffect(()=>{if(s.toast){const t=setTimeout(()=>d({type:"TOAST",d:null}),s.toast.undo?5000:s.toast.long?6500:2200);return()=>clearTimeout(t);}},[s.toast]);
   // A new view starts at the top of the page.
