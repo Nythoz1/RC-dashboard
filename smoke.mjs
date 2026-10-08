@@ -276,8 +276,8 @@ await p.click(".rc-ov",{position:{x:5,y:5}}).catch(()=>{});
 await p.click('.rc-ni:has-text("Shop 3D")');
 await p.waitForSelector(".s3-canvas",{timeout:60000});
 await p.waitForFunction(()=>!document.querySelector(".rc-s3-load"),null,{timeout:90000});
-const s3Tags=await p.locator(".s3-tag").count();const s3West=await p.locator(".rc-s3-pl",{hasText:"Take-out inventory · Back fence"}).locator("small").innerText();
-await p.click('.rc-s3-pl:has-text("Take-out inventory · Back fence")');
+const s3Tags=await p.locator(".s3-tag").count();const s3West=await p.locator(".rc-s3-pl",{hasText:"Take-out inventory · South fence"}).locator("small").innerText();
+await p.click('.rc-s3-pl:has-text("Take-out inventory · South fence")');
 const s3Row=p.locator(".rc-s3-erow").first();const s3Sku=(await s3Row.locator("b").innerText()).trim();
 await s3Row.click();
 await p.locator("#s3-loc").selectOption("reman");
@@ -289,7 +289,7 @@ const s3Eng=(await LS("inventory")).find(x=>x.sku===s3Sku)||{};
 await p.click('.rc-ni:has-text("Engines")');
 await p.fill(".rc-main input.rc-si",s3Sku);
 const s3Loc=(await p.locator(".rc-main table.rc-tbl tbody tr").first().locator(".rc-s3-loc").innerText()).trim();
-console.log("shop 3D: place labels",s3Tags,"| take-out back fence",s3West,"| "+s3Sku+" given a spot:",s3Eng.loc,"| Engines list says",s3Loc);
+console.log("shop 3D: place labels",s3Tags,"| take-out south fence",s3West,"| "+s3Sku+" given a spot:",s3Eng.loc,"| Engines list says",s3Loc);
 // Timesheets, localStorage mode. The owner adds Mike and opens his screen, which is exactly what his
 // login shows: the whole month, nothing to fill in on days that haven't happened, Full day fills today
 // in one tap, an earlier day takes overtime by hand. Approving last month locks it for Mike, the owner
