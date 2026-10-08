@@ -322,7 +322,7 @@ const engStatusLabel=st=>({core:"Core",["in-reman"]:"In Reman",available:"Availa
 // Shop 3D: where each engine is kept. The plan and the placement rule live in src/shop3d/areas.js;
 // an engine's own `loc` (a storage area id) wins over the rule. remanned = it went through reman here.
 const remanned=i=>(i.stageLog||[]).some(x=>x&&x.st==="in-reman")||/reman|rebuilt|overhaul/i.test(String(i.condition||""));
-const SIZE_HD=["MAXXFORCE13","MAXXFORCE11","60SERIES","SERIES60","ISX15","X15","ISX12","ISX","ISM","N14","DD13","DD15","DD16","A26","3406","C15","C13","MX13","MX11","MP7","MP8","VED12","D13","D11"];
+const SIZE_HD=["MAXXFORCE13","MAXXFORCE11","60SERIES","SERIES60","50SERIES","SERIES50","ISX15","X15","ISX12","ISX","ISM","N14","DD13","DD15","DD16","A26","3406","C15","C13","MX13","MX11","MP7","MP8","VED12","D13","D11"];
 const SIZE_SM=["C33","4JJ1","W04","M53","4034","YANMAR","DEUTZ","PERKINS","KUBOTA","GM65"];
 const sizeClass=i=>{const k=familyKey(i);return SIZE_HD.includes(k)?"hd":SIZE_SM.includes(k)?"sm":"mid";};
 const engLocs=s=>shopLocs((s.inventory||[]).filter(isEngine),{status:engStatus,remanned});
@@ -373,7 +373,7 @@ const DX_OUTCOMES=[["open","Open"],["monitoring","Monitoring"],["resolved","Reso
 const SEVERITIES=[["high","High"],["medium","Medium"],["low","Low"]];
 // Model family tokens (longest first so ISX15 wins over ISX). An engine's
 // family key is the first token found in its normalized name.
-const FAMILIES=["MAXXFORCE13","MAXXFORCE11","MAXXFORCEDT","60SERIES","SERIES60","ISX15","X15","ISX12","ISX","ISB","ISL","ISC","ISM","N14","DD13","DD15","DD16","DT466","T444E","A26","3116","3126","3406","C15","C13","C7","C33","PX8","PX6","PX7","MX13","MX11","MP7","MP8","VED12","D13","D11","OM906","OM926","OM9","FORD67","GM65","4JJ1","W04","6081","M53","4034","1212","YANMAR","DEUTZ","PERKINS","KUBOTA"];
+const FAMILIES=["MAXXFORCE13","MAXXFORCE11","MAXXFORCEDT","60SERIES","SERIES60","50SERIES","SERIES50","ISX15","X15","ISX12","ISX","ISB","ISL","ISC","ISM","N14","DD13","DD15","DD16","DT466","T444E","A26","3116","3126","3406","C15","C13","C7","C33","PX8","PX6","PX7","MX13","MX11","MP7","MP8","VED12","D13","D11","OM906","OM926","OM9","FORD67","GM65","4JJ1","W04","6081","M53","4034","1212","YANMAR","DEUTZ","PERKINS","KUBOTA"];
 const normM=t=>String(t||"").toUpperCase().replace(/[^A-Z0-9]/g,"");
 const familyKey=i=>{const n=normM(i&&i.name);return FAMILIES.find(f=>n.includes(f))||n.replace(/\d{4}$/,"")||"?";};
 const FAM_LABEL={"60SERIES":"Series 60",SERIES60:"Series 60",FORD67:"Ford 6.7",GM65:"GM 6.5",MAXXFORCEDT:"MaxxForce DT",MAXXFORCE13:"MaxxForce 13",MAXXFORCE11:"MaxxForce 11",YANMAR:"Yanmar",DEUTZ:"Deutz",PERKINS:"Perkins",KUBOTA:"Kubota"};
