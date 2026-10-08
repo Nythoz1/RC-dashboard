@@ -12,6 +12,7 @@
 export const BRAND_CODES = {
   Caterpillar: "CA", Cummins: "CU", "Detroit Diesel": "DE", International: "IN", Paccar: "PA", "Mercedes-Benz": "MB",
   Mack: "MA", Volvo: "VO", "John Deere": "JD", Ford: "FO", Duramax: "DM", Hino: "HI", Isuzu: "IS",
+  Deutz: "DZ", Yanmar: "YA", Perkins: "PE", Kubota: "KU",
 };
 const SPECIAL = { X15: "ISX", SERIES60: "S60", "60SERIES": "S60", MAXXFORCE13: "MF", MAXXFORCE11: "MF", MAXXFORCEDT: "MFDT", FORD67: "PS", GM65: "GM", VED12: "VED" };
 

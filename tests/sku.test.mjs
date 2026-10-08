@@ -13,6 +13,7 @@ test("the prefix: brand code, short family, four-digit year (0000 when missing)"
   assert.equal(shortFamily("C15"), "C");
   assert.equal(shortFamily("X15"), "ISX");
   assert.equal(brandCode("mercedes-benz"), "MB");
+  assert.equal(brandCode("Deutz"), "DZ");
 });
 
 test("numbers count per prefix, start after the highest number used, and skip what's taken", () => {
