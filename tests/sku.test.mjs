@@ -11,6 +11,7 @@ test("the prefix: brand code, short family, four-digit year (0000 when missing)"
   assert.equal(skuPrefix({ make: "", family: "", year: "97" }), "RC-XXENG0000");
   assert.equal(shortFamily("SERIES60"), "S60");
   assert.equal(shortFamily("C15"), "C");
+  assert.equal(shortFamily("X15"), "ISX");
   assert.equal(brandCode("mercedes-benz"), "MB");
 });
 

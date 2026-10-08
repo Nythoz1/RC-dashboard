@@ -1,7 +1,8 @@
 // Engine SKUs: RC-<brand><family><year>-<counter>, e.g. RC-CUISX2021-001.
 //   brand   two letters from the make (BRAND_CODES; XX when it's unknown)
 //   family  the engine family, short: the size digits come off (ISX15 → ISX, DD15 → DD, C15 → C),
-//           an all-number family stays (3406), a few get a short name (Series 60 → S60)
+//           an all-number family stays (3406), a few get a short name (Series 60 → S60; the
+//           2017+ X15 is the same family as the ISX15, so it reads ISX too)
 //   year    four digits, 0000 when there's no year on file
 //   counter three digits, counted per prefix and never reused: a new engine gets one more than the
 //           highest number that prefix has had, so an SKU on old paperwork never points at another engine.
@@ -12,7 +13,7 @@ export const BRAND_CODES = {
   Caterpillar: "CA", Cummins: "CU", "Detroit Diesel": "DE", International: "IN", Paccar: "PA", "Mercedes-Benz": "MB",
   Mack: "MA", Volvo: "VO", "John Deere": "JD", Ford: "FO", Duramax: "DM", Hino: "HI", Isuzu: "IS",
 };
-const SPECIAL = { SERIES60: "S60", "60SERIES": "S60", MAXXFORCE13: "MF", MAXXFORCE11: "MF", MAXXFORCEDT: "MFDT", FORD67: "PS", GM65: "GM", VED12: "VED" };
+const SPECIAL = { X15: "ISX", SERIES60: "S60", "60SERIES": "S60", MAXXFORCE13: "MF", MAXXFORCE11: "MF", MAXXFORCEDT: "MFDT", FORD67: "PS", GM65: "GM", VED12: "VED" };
 
 export const brandCode = (make) => {
   const m = String(make || "").trim().toLowerCase();
