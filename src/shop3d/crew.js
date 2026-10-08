@@ -1,7 +1,7 @@
 // The crew in the 3D shop: where each Team member works, the 8-to-4 day, and the wage each of
 // them earns every hour. No three.js in here, so the dashboard and tests/crew.test.mjs can use it
-// without the 3D chunk. Units are feet, like areas.js; ry turns a person (0 faces south, toward
-// the street; -π/2 faces west).
+// without the 3D chunk. Units are feet, like areas.js; ry turns a person (0 faces the street; -π/2
+// faces the south fence).
 import { FULL_DAY, SHOP_TZ, timeMin, isWeekday } from "../lib/timesheet.js";
 
 const P = Math.PI;
@@ -9,22 +9,22 @@ const P = Math.PI;
 // (sitting), counter, walk (back and forth to x2/z2). A spot with `stand` works on the engine on
 // that reman stand; while the stand is empty they turn to the end of the bench (`alt`).
 export const CREW_SPOTS = [
-  { id: "reman1", area: "reman1", label: "Reman 1 · engine stand", x: 81.5, z: 58.8, ry: -P / 2, act: "wrench", stand: "reman1", alt: { x: 82.6, z: 57.3, ry: P / 2, act: "bench" } },
-  { id: "reman2", area: "reman2", label: "Reman 2 · engine stand", x: 81.5, z: 69.3, ry: -P / 2, act: "wrench", stand: "reman2", alt: { x: 82.6, z: 67.8, ry: P / 2, act: "bench" } },
-  { id: "truck", area: "bay1", label: "Bay 1 · under the hood", x: 63, z: 66, ry: -P / 2, act: "wrench" },
-  { id: "bench1", area: "reman1", label: "Reman 1 · bench", x: 84.6, z: 59.4, ry: P, act: "bench" },
-  { id: "bench2", area: "reman2", label: "Reman 2 · bench", x: 84.6, z: 69.6, ry: P, act: "bench" },
-  { id: "front", area: "bay1", label: "Bay 1 · front of the truck", x: 57.5, z: 72.3, ry: P, act: "wrench" },
-  { id: "tools", area: "tools", label: "Tools", x: 99.3, z: 60.5, ry: P / 2, act: "fetch" },
-  { id: "washer", area: "cleaning", label: "Part cleaning · washer", x: 78, z: 43.8, ry: P, act: "wash" },
-  { id: "parts", area: "parts", label: "Parts inventory", x: 45, z: 54.5, ry: -P / 2, act: "shelf" },
-  { id: "desk1", area: "office", label: "Office · desk 1", x: 47.3, z: 88.2, ry: 0, act: "desk" },
-  { id: "desk2", area: "office", label: "Office · desk 2", x: 55.3, z: 88.2, ry: 0, act: "desk" },
-  { id: "counter", area: "lobby", label: "Lobby · counter", x: 75, z: 84.6, ry: 0, act: "counter" },
-  { id: "yard", area: "yard", label: "Truck yard", x: 72, z: 31.2, x2: 100, z2: 31.2, ry: P / 2, act: "walk" },
-  { id: "hotTank", area: "cleaning", label: "Part cleaning · hot tank", x: 86, z: 43.6, ry: P, act: "wash" },
-  { id: "floor1", area: "bay1", label: "Bay 1 · engine strip", x: 53.4, z: 44.5, ry: -P / 2, act: "wrench" },
-  { id: "floor2", area: "bay1", label: "Bay 1 · open floor", x: 65.5, z: 48, x2: 65.5, z2: 40, ry: P, act: "walk" },
+  { id: "reman1", area: "reman1", label: "Reman 1 · engine stand", x: 36.6, z: 81.5, ry: -P / 2, act: "wrench", stand: "reman1", alt: { x: 35.9, z: 80, ry: P / 2, act: "bench" } },
+  { id: "reman2", area: "reman2", label: "Reman 2 · engine stand", x: 36.6, z: 91, ry: -P / 2, act: "wrench", stand: "reman2", alt: { x: 35.9, z: 89.5, ry: P / 2, act: "bench" } },
+  { id: "truck", area: "bay1", label: "Bay 1 · under the hood", x: 26.5, z: 90, ry: -P / 2, act: "wrench" },
+  { id: "bench1", area: "reman1", label: "Reman 1 · bench", x: 40.2, z: 82.2, ry: P, act: "bench" },
+  { id: "bench2", area: "reman2", label: "Reman 2 · bench", x: 40.2, z: 91.7, ry: P, act: "bench" },
+  { id: "front", area: "bay1", label: "Bay 1 · front of the truck", x: 21, z: 96.3, ry: P, act: "wrench" },
+  { id: "tools", area: "tools", label: "Tools", x: 43, z: 86, ry: P / 2, act: "fetch" },
+  { id: "washer", area: "cleaning", label: "Part cleaning · washer", x: 33.5, z: 69.8, ry: P, act: "wash" },
+  { id: "parts", area: "parts", label: "Parts inventory", x: 9.2, z: 81.5, ry: -P / 2, act: "shelf" },
+  { id: "desk1", area: "office", label: "Office · desk 1", x: 9.3, z: 116.2, ry: 0, act: "desk" },
+  { id: "desk2", area: "office", label: "Office · desk 2", x: 15.8, z: 116.2, ry: 0, act: "desk" },
+  { id: "counter", area: "lobby", label: "Lobby · counter", x: 28.5, z: 112.6, ry: 0, act: "counter" },
+  { id: "yard", area: "yard", label: "Truck yard", x: 32, z: 45, x2: 56, z2: 45, ry: P / 2, act: "walk" },
+  { id: "hotTank", area: "cleaning", label: "Part cleaning · hot tank", x: 40.5, z: 69.6, ry: P, act: "wash" },
+  { id: "floor1", area: "bay1", label: "Bay 1 · engine strip", x: 16.9, z: 71, ry: -P / 2, act: "wrench" },
+  { id: "floor2", area: "bay1", label: "Bay 1 · open floor", x: 26.5, z: 73, x2: 26.5, z2: 66, ry: P, act: "walk" },
 ];
 export const SPOT_BY_ID = Object.fromEntries(CREW_SPOTS.map((p) => [p.id, p]));
 

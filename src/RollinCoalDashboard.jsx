@@ -963,7 +963,7 @@ function Inv({s,d}){
 // when empty) and the engines in them, coloured by status. Same spots as the 3D shop.
 function ShopMap2D({list,count,selA,selE,zoom,onArea,onEngine}){
   const byArea={};list.forEach(e=>{if(SLOTS[e.area])(byArea[e.area]=byArea[e.area]||[]).push(e);});
-  const bx=zoom==="shop"?BLDG:zoom&&AREA_BY_ID[zoom]?AREA_BY_ID[zoom]:{x0:0,x1:LOT.w,z0:0,z1:LOT.d};
+  const bx=zoom==="shop"?BLDG:zoom&&AREA_BY_ID[zoom]?AREA_BY_ID[zoom]:{x0:0,x1:LOT.w,z0:-1,z1:LOT.d+5};
   const pad=zoom?7:3,vx=bx.x0-pad,vz=bx.z0-pad,vw=bx.x1-bx.x0+pad*2,vh=bx.z1-bx.z0+pad*2;
   const R=AREA_BY_ID.reman;const key=f=>e=>{if(e.key==="Enter"||e.key===" "){e.preventDefault();f();}};
   return(<svg className="rc-map2d" viewBox={vx+" "+vz+" "+vw+" "+vh} preserveAspectRatio="xMidYMid meet" role="group" aria-label="The shop and lot from above, to scale">
@@ -982,12 +982,13 @@ function ShopMap2D({list,count,selA,selE,zoom,onArea,onEngine}){
       <line x1={R.x1+1.6} y1={R.z0} x2={R.x1+1.6} y2={R.z1}/><line x1={R.x1+0.9} y1={R.z0} x2={R.x1+2.3} y2={R.z0}/><line x1={R.x1+0.9} y1={R.z1} x2={R.x1+2.3} y2={R.z1}/><text transform={"translate("+(R.x1+3.4)+" "+R.cz+") rotate(90)"}>36 ft</text></g>
     <g className="m-labels" aria-hidden="true">{SHOP_AREAS.map(a=>{const tall=a.w<12&&a.d>a.w;const n=count[a.id]||0;const cnt=n+" engine"+(n===1?"":"s")+" · "+(SLOT_CAP[a.id]||0)+" spots";
       // the outside pads are full of spots right to their edge, so their label sits just above them
-      if(a.store&&a.kind==="Outside"&&a.id!=="yard")return(<g key={a.id}><text className="m-at" x={a.x0} y={a.z0-2.4}>{a.name}{a.sub?" · "+a.sub:""}</text><text className="m-ac" x={a.x0} y={a.z0-0.7}>{cnt}</text></g>);
+      if(a.store&&a.kind==="Outside"&&a.id!=="yard"&&!tall)return(<g key={a.id}><text className="m-at" x={a.x0} y={a.z0-2.4}>{a.name}{a.sub?" · "+a.sub:""}</text><text className="m-ac" x={a.x0} y={a.z0-0.7}>{cnt}</text></g>);
       return(<g key={a.id}>
       <text className="m-at" transform={tall?"translate("+(a.x0+2.1)+" "+(a.z1-1.2)+") rotate(-90)":"translate("+(a.x0+0.9)+" "+(a.z0+2.2)+")"}>{a.name}{a.sub&&!tall?" · "+a.sub:""}</text>
       {a.store&&!tall&&<text className="m-ac" x={a.x0+0.9} y={a.z0+4}>{cnt}</text>}</g>);})}</g>
     <g className="m-scale" aria-hidden="true" transform={"translate("+(vx+1.5)+" "+(vz+vh-1.4)+")"}><line x1={0} y1={0} x2={10} y2={0}/><line x1={0} y1={-0.6} x2={0} y2={0.6}/><line x1={10} y1={-0.6} x2={10} y2={0.6}/><text x={11} y={0.5}>10 ft</text></g>
-    <text className="m-north" x={vx+vw-1.5} y={vz+2.6}>N ↑</text>
+    <text className="m-street" x={20} y={LOT.d+3.6}>STREET</text>
+    <text className="m-north" x={vx+vw-1.5} y={vz+2.6}>N →</text>
   </svg>);
 }
 const S3_COARSE=typeof window!=="undefined"&&window.matchMedia?window.matchMedia("(pointer: coarse)").matches:false;
@@ -2898,7 +2899,7 @@ const CSS=`@import url('${FONTS}');
 .rc-map2d .m-eng{cursor:pointer;outline:none;}.rc-map2d .m-eng rect{stroke-width:.22px;}.rc-map2d .m-eng:hover rect{stroke-width:.45px;}.rc-map2d .m-eng.on rect,.rc-map2d .m-eng:focus-visible rect{stroke:var(--ac)!important;stroke-width:.6px;}
 .rc-map2d text{pointer-events:none;}.rc-map2d .m-et{font-size:1.05px;font-weight:700;fill:var(--tx);text-anchor:middle;}
 .rc-map2d .m-at{font-size:1.75px;font-weight:700;fill:var(--tx);paint-order:stroke;stroke:var(--sf);stroke-width:.4px;}.rc-map2d .m-ac{font-size:1.3px;fill:var(--tx2);paint-order:stroke;stroke:var(--sf);stroke-width:.35px;}
-.rc-map2d .m-dim line,.rc-map2d .m-scale line{stroke:var(--act);stroke-width:.18px;}.rc-map2d .m-dim text{font-size:1.5px;font-weight:700;fill:var(--act);text-anchor:middle;}.rc-map2d .m-scale text{font-size:1.3px;fill:var(--tx2);}.rc-map2d .m-north{font-size:1.6px;font-weight:700;fill:var(--tx2);text-anchor:end;}
+.rc-map2d .m-dim line,.rc-map2d .m-scale line{stroke:var(--act);stroke-width:.18px;}.rc-map2d .m-dim text{font-size:1.5px;font-weight:700;fill:var(--act);text-anchor:middle;}.rc-map2d .m-scale text{font-size:1.3px;fill:var(--tx2);}.rc-map2d .m-street{font-size:1.6px;font-weight:700;letter-spacing:.4px;fill:var(--mt);text-anchor:middle;}.rc-map2d .m-north{font-size:1.6px;font-weight:700;fill:var(--tx2);text-anchor:end;}
 .rc-s3-zoomed{font-size:13px;color:var(--tx2);align-self:center;}
 .rc-eparts{margin-bottom:12px;padding:12px;display:grid;gap:10px;}.rc-eparts-none,.rc-eparts-src{font-size:13px;color:var(--mt);line-height:1.5;}.rc-eparts-h{font-size:12px;font-weight:700;letter-spacing:.6px;text-transform:uppercase;color:var(--tx2);margin-bottom:4px;}
 .rc-eparts-r{display:flex;gap:8px;align-items:baseline;flex-wrap:wrap;font-size:14px;padding:3px 0;border-bottom:1px solid var(--ln2);}.rc-eparts-r small{font-size:12.5px;color:var(--mt);}

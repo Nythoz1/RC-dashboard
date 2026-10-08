@@ -201,66 +201,71 @@ export function createShop(host, opts) {
   }
   const attach = (W, obj, bottom) => W.att.push({ obj, bottom });
   function buildWalls() {
-    wall(B.x0, B.z0, 49.5, B.z0, EXT_H, "ext", 0, -1); wall(63.5, B.z0, B.x1, B.z0, EXT_H, "ext", 0, -1); const nh = wall(49.5, B.z0, 63.5, B.z0, EXT_H - 14, "ext", 0, -1, 14);
-    const s1 = wall(B.x0, B.z1, 72.75, B.z1, EXT_H, "ext", 0, 1), s2 = wall(78.75, B.z1, B.x1, B.z1, EXT_H, "ext", 0, 1);
-    wall(72.75, B.z1, 78.75, B.z1, 8, "ext", 0, 1, 0, mat("#7d97ad", { r: 0.08, m: 0.35, o: 0.75, e: "#ffd9a0", ek: 0.9 })); const sh = wall(72.75, B.z1, 78.75, B.z1, EXT_H - 8, "ext", 0, 1, 8);
+    // back wall (to the yard) with the 12 ft overhead door for Bay 1
+    wall(B.x0, B.z0, 14, B.z0, EXT_H, "ext", 0, -1); wall(26, B.z0, B.x1, B.z0, EXT_H, "ext", 0, -1); const nh = wall(14, B.z0, 26, B.z0, EXT_H - 14, "ext", 0, -1, 14);
+    // front wall on the street, the glass front door into the lobby
+    const s1 = wall(B.x0, B.z1, 25.5, B.z1, EXT_H, "ext", 0, 1), s2 = wall(31.5, B.z1, B.x1, B.z1, EXT_H, "ext", 0, 1);
+    wall(25.5, B.z1, 31.5, B.z1, 8, "ext", 0, 1, 0, mat("#7d97ad", { r: 0.08, m: 0.35, o: 0.75, e: "#ffd9a0", ek: 0.9 })); const sh = wall(25.5, B.z1, 31.5, B.z1, EXT_H - 8, "ext", 0, 1, 8);
     wall(B.x0, B.z0, B.x0, B.z1, EXT_H, "ext", -1, 0); wall(B.x1, B.z0, B.x1, B.z1, EXT_H, "ext", 1, 0);
-    wall(B.x0, 83.25, 82, 83.25, INT_H, "int", 0, 1); wall(85.5, 83.25, B.x1, 83.25, INT_H, "int", 0, 1); wall(82, 83.25, 85.5, 83.25, INT_H - 7.5, "int", 0, 1, 7.5);
-    [61.25, 87.5].forEach((x) => { wall(x, 83.25, x, 85.5, INT_H, "int", 1, 0); wall(x, 88.5, x, B.z1, INT_H, "int", 1, 0); wall(x, 85.5, x, 88.5, INT_H - 7.5, "int", 1, 0, 7.5); });
+    // the shop floor / front rooms wall, with a door to the lobby
+    wall(B.x0, 107.5, 29.5, 107.5, INT_H, "int", 0, 1); wall(33, 107.5, B.x1, 107.5, INT_H, "int", 0, 1); wall(29.5, 107.5, 33, 107.5, INT_H - 7.5, "int", 0, 1, 7.5);
+    [19, 36].forEach((x) => { wall(x, 107.5, x, 109.7, INT_H, "int", 1, 0); wall(x, 112.7, x, B.z1, INT_H, "int", 1, 0); wall(x, 109.7, x, 112.7, INT_H - 7.5, "int", 1, 0, 7.5); });
     const gw = (W, x0, x1, y0, y1) => { const o = new T.Mesh(BOX, glassM); o.scale.set(x1 - x0, y1 - y0, 0.25); o.position.set((x0 + x1) / 2, y0, B.z1 + 0.35); scene.add(o); attach(W, o, y0); };
-    gw(s1, 41, 56, 4, 8.5); gw(s1, 63, 71, 3, 8.5); gw(s2, 80.5, 86, 3, 8.5); gw(s2, 92, 96, 6, 8);
-    const aw = new T.Mesh(BOX, mat(C.orange, { r: 0.5 })); aw.scale.set(11.5, 0.5, 4); aw.position.set(75.75, 9.6, B.z1 + 2); aw.castShadow = true; scene.add(aw); attach(sh, aw, 9.6);
-    const sign = signBoard(26, 4.2, "ROLLIN COAL", "DIESEL ENGINE SPECIALISTS"); sign.position.set(74.25, 11, B.z1 + 0.45); scene.add(sign); attach(s1, sign, 11); attach(s2, sign, 11);
-    const bs = signBoard(10, 2.4, "BAY 1", null); bs.position.set(56.5, 14.8, B.z0 - 0.45); bs.rotation.y = Math.PI; scene.add(bs); attach(nh, bs, 14.8);
-    const rd = new T.Mesh(BOX, mat("#b7bcc2", { r: 0.5, m: 0.4 })); rd.scale.set(14, 1.2, 1.4); rd.position.set(56.5, 12.8, B.z0 + 0.8); rd.castShadow = true; scene.add(rd); attach(nh, rd, 12.8);
-    const dm = mat("#a07a52", { r: 0.7 }); [[61.25, 85.5, 1], [87.5, 85.5, -1]].forEach(([x, z, s]) => { const o = new T.Mesh(BOX, dm); o.scale.set(0.15, 7, 3); o.position.set(x + s * 1.1, 0, z + 1.1); o.rotation.y = s * 0.9; scene.add(o); });
-    const od = new T.Mesh(BOX, dm); od.scale.set(3.4, 7, 0.15); od.position.set(83.75, 0, 83.25 - 1.4); od.rotation.y = 0.9; scene.add(od);
-    const rf = new T.Mesh(BOX, mat("#8e949b", { r: 0.7, m: 0.3 })); rf.scale.set(B.x1 - B.x0 + 2, 0.8, B.z1 - B.z0 + 2); rf.position.set((B.x0 + B.x1) / 2, EXT_H, (B.z0 + B.z1) / 2); rf.castShadow = rf.receiveShadow = true; ROOF.push(rf); scene.add(rf);
-    [[50, 52, 8, 5], [88, 68, 6, 6]].forEach(([x, z, w, d]) => { const u = new T.Mesh(BOX, mat("#b9bec4", { r: 0.6, m: 0.3 })); u.scale.set(w, 3, d); u.position.set(x, EXT_H + 0.8, z); u.castShadow = true; ROOF.push(u); scene.add(u); });
+    gw(s1, 6.5, 16.5, 4, 8.5); gw(s1, 20.5, 24.5, 3, 8.5); gw(s2, 32.5, 35, 3, 8.5); gw(s2, 39.5, 43.5, 6, 8);
+    const aw = new T.Mesh(BOX, mat(C.orange, { r: 0.5 })); aw.scale.set(9, 0.5, 4); aw.position.set(28.5, 9.6, B.z1 + 2); aw.castShadow = true; scene.add(aw); attach(sh, aw, 9.6);
+    const sign = signBoard(24, 4.2, "ROLLIN COAL", "DIESEL ENGINE SPECIALISTS"); sign.position.set(25.5, 11, B.z1 + 0.45); scene.add(sign); attach(s1, sign, 11); attach(s2, sign, 11);
+    const bs = signBoard(10, 2.4, "BAY 1", null); bs.position.set(20, 14.8, B.z0 - 0.45); bs.rotation.y = Math.PI; scene.add(bs); attach(nh, bs, 14.8);
+    const rd = new T.Mesh(BOX, mat("#b7bcc2", { r: 0.5, m: 0.4 })); rd.scale.set(14, 1.2, 1.4); rd.position.set(20, 12.8, B.z0 + 0.8); rd.castShadow = true; scene.add(rd); attach(nh, rd, 12.8);
+    const dm = mat("#a07a52", { r: 0.7 }); [[19, 109.7, 1], [36, 109.7, -1]].forEach(([x, z, s]) => { const o = new T.Mesh(BOX, dm); o.scale.set(0.15, 7, 3); o.position.set(x + s * 1.1, 0, z + 1.1); o.rotation.y = s * 0.9; scene.add(o); });
+    const od = new T.Mesh(BOX, dm); od.scale.set(3.4, 7, 0.15); od.position.set(31.25, 0, 107.5 - 1.4); od.rotation.y = 0.9; scene.add(od);
+    const rf = new T.Mesh(BOX, mat("#e9ecef", { r: 0.7, m: 0.2 })); rf.scale.set(B.x1 - B.x0 + 2, 0.8, B.z1 - B.z0 + 2); rf.position.set((B.x0 + B.x1) / 2, EXT_H, (B.z0 + B.z1) / 2); rf.castShadow = rf.receiveShadow = true; ROOF.push(rf); scene.add(rf);
+    [[14, 75, 8, 5], [38, 96, 6, 6]].forEach(([x, z, w, d]) => { const u = new T.Mesh(BOX, mat("#b9bec4", { r: 0.6, m: 0.3 })); u.scale.set(w, 3, d); u.position.set(x, EXT_H + 0.8, z); u.castShadow = true; ROOF.push(u); scene.add(u); });
   }
 
   // ── The ground: grass, the lot (gravel take-out pads, concrete reman pad, parking stalls), the street
   function buildGround() {
     const grass = ctex(256, 256, (g, w, h) => { g.fillStyle = C.grass; g.fillRect(0, 0, w, h); speckle(g, 0, 0, w, h, 2600, ["#87b25f", "#729d4d", "#8fb866", "#6e9549"], 2.2); }, true);
     grass.repeat.set(30, 30);
-    const gm = new T.Mesh(new T.PlaneGeometry(1200, 1200), new T.MeshStandardMaterial({ map: grass, roughness: 1 })); gm.rotation.x = -Math.PI / 2; gm.position.set(75, -0.06, 50); gm.receiveShadow = true; scene.add(gm);
+    const gm = new T.Mesh(new T.PlaneGeometry(1200, 1200), new T.MeshStandardMaterial({ map: grass, roughness: 1 })); gm.rotation.x = -Math.PI / 2; gm.position.set(37, -0.06, 64); gm.receiveShadow = true; scene.add(gm);
     const S = 8, A = AREA_BY_ID;
+    // the lot: packed gravel and dirt like the photo, concrete under the carport and at the bay door
     const lotTex = ctex(LOT.w * S, LOT.d * S, (g, w, h) => {
-      g.fillStyle = C.asph; g.fillRect(0, 0, w, h); speckle(g, 0, 0, w, h, 26000, ["#55585e", "#43464b", "#5b5f65", "#3f4146"], 2);
+      g.fillStyle = "#9d968a"; g.fillRect(0, 0, w, h); speckle(g, 0, 0, w, h, 26000, ["#a9a194", "#8a8376", "#b3ab9c", "#7d766a", "#6f695e"], 2.4);
       const rect = (a, col, sp) => { g.fillStyle = col; g.fillRect(a.x0 * S, a.z0 * S, (a.x1 - a.x0) * S, (a.z1 - a.z0) * S); if (sp) speckle(g, a.x0 * S, a.z0 * S, (a.x1 - a.x0) * S, (a.z1 - a.z0) * S, sp[0], sp[1], sp[2]); };
       const grav = [9000, ["#a9a194", "#8a8376", "#b3ab9c", "#7d766a"], 2.6];
       rect(A.takeoutW, C.gravel, grav); rect(A.takeoutE, C.gravel, grav); rect(A.reman, C.conc, [6000, ["#ccc9c1", "#b6b3ab", "#d2cfc8"], 1.6]);
       g.strokeStyle = "rgba(90,88,82,.55)"; g.lineWidth = 2; for (let z = A.reman.z0 + 12; z < A.reman.z1; z += 12) { g.beginPath(); g.moveTo(A.reman.x0 * S, z * S); g.lineTo(A.reman.x1 * S, z * S); g.stroke(); }
-      rect({ x0: 46, x1: 67, z0: 24, z1: 36 }, C.conc, [1500, ["#ccc9c1", "#b6b3ab"], 1.6]);
-      g.strokeStyle = "#f2efe8"; g.lineWidth = 0.45 * S; for (let i = 0; i <= 6; i++) { const z = 40 + i * 9; g.beginPath(); g.moveTo(1 * S, z * S); g.lineTo(19 * S, z * S); g.stroke(); }
-      g.fillStyle = "#2f63b3"; g.fillRect(1.2 * S, 40.4 * S, 17.6 * S, 8.2 * S); g.fillStyle = "#f2efe8"; g.font = "bold " + 5 * S + "px Arial"; g.textAlign = "center"; g.textBaseline = "middle"; g.fillText("♿", 10 * S, 44.5 * S);
-      g.strokeStyle = C.yellow; g.lineWidth = 0.5 * S; g.setLineDash([3 * S, 2.5 * S]); g.beginPath(); g.moveTo(27 * S, 94 * S); g.lineTo(27 * S, 20 * S); g.lineTo(56.5 * S, 20 * S); g.lineTo(56.5 * S, 30 * S); g.stroke(); g.setLineDash([]);
-      g.fillStyle = "rgba(239,184,29,.95)"; g.font = "bold " + 3.6 * S + "px Arial"; g.fillText("BAY 1", 56.5 * S, 27 * S);
-      [[27, 80, 0], [27, 58, 0], [40, 20, 1]].forEach(([x, z, r]) => { g.save(); g.translate(x * S, z * S); g.rotate(r ? Math.PI / 2 : 0); g.beginPath(); g.moveTo(0, -3 * S); g.lineTo(2 * S, 0); g.lineTo(0.7 * S, 0); g.lineTo(0.7 * S, 3 * S); g.lineTo(-0.7 * S, 3 * S); g.lineTo(-0.7 * S, 0); g.lineTo(-2 * S, 0); g.closePath(); g.fill(); g.restore(); });
+      rect({ x0: 11, x1: 29, z0: 52, z1: 63 }, C.conc, [1500, ["#ccc9c1", "#b6b3ab"], 1.6]);
+      g.strokeStyle = C.yellow; g.lineWidth = 0.5 * S; g.setLineDash([3 * S, 2.5 * S]); g.beginPath(); g.moveTo(21 * S, 2 * S); g.lineTo(21 * S, 26 * S); g.stroke(); g.setLineDash([]);
+      g.fillStyle = "rgba(239,184,29,.95)"; g.font = "bold " + 3.6 * S + "px Arial"; g.textAlign = "center"; g.textBaseline = "middle"; g.fillText("BAY 1", 20 * S, 57.5 * S);
+      [[21, 9]].forEach(([x, z]) => { g.save(); g.translate(x * S, z * S); g.rotate(Math.PI); g.beginPath(); g.moveTo(0, -3 * S); g.lineTo(2 * S, 0); g.lineTo(0.7 * S, 0); g.lineTo(0.7 * S, 3 * S); g.lineTo(-0.7 * S, 3 * S); g.lineTo(-0.7 * S, 0); g.lineTo(-2 * S, 0); g.closePath(); g.fill(); g.restore(); });
     });
     const lot = new T.Mesh(new T.PlaneGeometry(LOT.w, LOT.d), new T.MeshStandardMaterial({ map: lotTex, roughness: 0.95 })); lot.rotation.x = -Math.PI / 2; lot.position.set(LOT.w / 2, 0, LOT.d / 2); lot.receiveShadow = true; scene.add(lot);
     const road = ctex(320, 240, (g, w, h) => { g.fillStyle = "#3f4246"; g.fillRect(0, 0, w, h); speckle(g, 0, 0, w, h, 4500, ["#474a4f", "#383a3e", "#4e5156"], 1.8);
       g.fillStyle = "#efc23a"; g.fillRect(0, h * 0.5 - 3, w * 0.55, 6); g.fillStyle = "#e9e7e2"; g.fillRect(0, 8, w, 4); g.fillRect(0, h - 12, w, 4); }, true);
-    road.repeat.set(560 / 40, 1); const rd = new T.Mesh(new T.PlaneGeometry(560, 24), new T.MeshStandardMaterial({ map: road, roughness: 0.95 })); rd.rotation.x = -Math.PI / 2; rd.position.set(75, 0.01, 113); rd.receiveShadow = true; scene.add(rd);
+    road.repeat.set(560 / 40, 1); const rd = new T.Mesh(new T.PlaneGeometry(560, 24), new T.MeshStandardMaterial({ map: road, roughness: 0.95 })); rd.rotation.x = -Math.PI / 2; rd.position.set(37, 0.01, 146); rd.receiveShadow = true; scene.add(rd);
     const walk = ctex(160, 40, (g, w, h) => { g.fillStyle = "#c9c6be"; g.fillRect(0, 0, w, h); speckle(g, 0, 0, w, h, 900, ["#d2cfc8", "#bbb8b0"], 1.5); g.fillStyle = "#a9a69e"; for (let x = 0; x < w; x += 40) g.fillRect(x, 0, 2, h); }, true);
-    walk.repeat.set(560 / 20, 1); const sw = new T.Mesh(new T.PlaneGeometry(560, 5), new T.MeshStandardMaterial({ map: walk, roughness: 0.95 })); sw.rotation.x = -Math.PI / 2; sw.position.set(75, 0.03, 98.5); sw.receiveShadow = true; scene.add(sw);
+    walk.repeat.set(560 / 20, 1); const sw = new T.Mesh(new T.PlaneGeometry(560, 5), new T.MeshStandardMaterial({ map: walk, roughness: 0.95 })); sw.rotation.x = -Math.PI / 2; sw.position.set(37, 0.03, 131.5); sw.receiveShadow = true; scene.add(sw);
+    // the gravel lane behind the back fence, where trucks come in
+    const lane = ctex(256, 64, (g, w, h) => { g.fillStyle = "#a39b8d"; g.fillRect(0, 0, w, h); speckle(g, 0, 0, w, h, 3000, ["#b0a899", "#8f887b", "#9a9284"], 1.8); }, true);
+    lane.repeat.set(12, 1); const ln = new T.Mesh(new T.PlaneGeometry(400, 16), new T.MeshStandardMaterial({ map: lane, roughness: 1 })); ln.rotation.x = -Math.PI / 2; ln.position.set(37, 0.01, -12); ln.receiveShadow = true; scene.add(ln);
     // Shop floor: concrete with the zones painted on, carpet in the office, tile in the lobby and bathroom
-    const F = 10, fw = B.x1 - B.x0, fd = B.z1 - B.z0;
+    const F = 10, fw = B.x1 - B.x0, fd = B.z1 - B.z0, FZ = 107.5;
     const floorTex = ctex(Math.round(fw * F), Math.round(fd * F), (g, w, h) => {
       const X = (x) => (x - B.x0) * F, Z = (z) => (z - B.z0) * F;
       g.fillStyle = "#c6c4bd"; g.fillRect(0, 0, w, h); speckle(g, 0, 0, w, h, 9000, ["#cfcdc6", "#bdbbb4", "#d4d2cb"], 1.6);
-      g.strokeStyle = "rgba(120,118,110,.35)"; g.lineWidth = 1.5; for (let x = B.x0 + 12; x < B.x1; x += 12) { g.beginPath(); g.moveTo(X(x), 0); g.lineTo(X(x), h); g.stroke(); } for (let z = B.z0 + 12; z < 83; z += 12) { g.beginPath(); g.moveTo(0, Z(z)); g.lineTo(w, Z(z)); g.stroke(); }
+      g.strokeStyle = "rgba(120,118,110,.35)"; g.lineWidth = 1.5; for (let x = B.x0 + 12; x < B.x1; x += 12) { g.beginPath(); g.moveTo(X(x), 0); g.lineTo(X(x), Z(FZ)); g.stroke(); } for (let z = B.z0 + 12; z < FZ; z += 12) { g.beginPath(); g.moveTo(0, Z(z)); g.lineTo(w, Z(z)); g.stroke(); }
       const zone = (a, col, dash, lw) => { g.strokeStyle = col; g.lineWidth = (lw || 0.35) * F; g.setLineDash(dash ? [1.6 * F, 1 * F] : []); g.strokeRect(X(a.x0) + 2, Z(a.z0) + 2, (a.x1 - a.x0) * F - 4, (a.z1 - a.z0) * F - 4); g.setLineDash([]); };
-      for (let i = 0; i < 14; i++) { g.fillStyle = "rgba(60,55,45," + (0.05 + rnd() * 0.08) + ")"; g.beginPath(); g.ellipse(X(52 + rnd() * 12), Z(48 + rnd() * 25), (1 + rnd() * 2.2) * F, (0.7 + rnd() * 1.4) * F, rnd() * 3, 0, 7); g.fill(); }
+      for (let i = 0; i < 14; i++) { g.fillStyle = "rgba(60,55,45," + (0.05 + rnd() * 0.08) + ")"; g.beginPath(); g.ellipse(X(15 + rnd() * 12), Z(70 + rnd() * 28), (1 + rnd() * 2.2) * F, (0.7 + rnd() * 1.4) * F, rnd() * 3, 0, 7); g.fill(); }
       zone(A.bay1, C.yellow, false, 0.45); zone(A.reman1, "#f4f2ec", true); zone(A.reman2, "#f4f2ec", true); zone(A.tools, "#f4f2ec", true); zone(A.parts, "#f4f2ec", true);
-      g.fillStyle = "rgba(70,90,110,.12)"; g.fillRect(X(73), Z(36), (103.3 - 73) * F, (52 - 36) * F); zone(A.cleaning, "#f4f2ec", true);
-      g.fillStyle = "rgba(239,184,29,.9)"; g.font = "bold " + 4.2 * F + "px Arial"; g.textAlign = "center"; g.textBaseline = "middle"; g.fillText("BAY 1", X(58), Z(42));
-      g.fillStyle = "#6c7380"; g.fillRect(X(B.x0), Z(83.25), (61.25 - B.x0) * F, (B.z1 - 83.25) * F); speckle(g, X(B.x0), Z(83.25), (61.25 - B.x0) * F, (B.z1 - 83.25) * F, 1800, ["#757c89", "#646a76"], 1.4);
-      g.fillStyle = "#d9d3c7"; g.fillRect(X(61.25), Z(83.25), (87.5 - 61.25) * F, (B.z1 - 83.25) * F); g.strokeStyle = "rgba(150,140,125,.5)"; g.lineWidth = 1;
-      for (let x = 61.25; x < 87.5; x += 2) { g.beginPath(); g.moveTo(X(x), Z(83.25)); g.lineTo(X(x), h); g.stroke(); } for (let z = 83.25; z < B.z1; z += 2) { g.beginPath(); g.moveTo(X(61.25), Z(z)); g.lineTo(X(87.5), Z(z)); g.stroke(); }
-      g.fillStyle = "#e4e9ec"; g.fillRect(X(87.5), Z(83.25), (B.x1 - 87.5) * F, (B.z1 - 83.25) * F); g.strokeStyle = "rgba(150,165,175,.6)";
-      for (let x = 87.5; x < B.x1; x += 1) { g.beginPath(); g.moveTo(X(x), Z(83.25)); g.lineTo(X(x), h); g.stroke(); } for (let z = 83.25; z < B.z1; z += 1) { g.beginPath(); g.moveTo(X(87.5), Z(z)); g.lineTo(w, Z(z)); g.stroke(); }
-      g.fillStyle = "rgba(239,184,29,.85)"; for (let i = 0; i < 5; i++) { g.save(); g.translate(X(81.5 + i * 1.2), Z(81.2)); g.rotate(0.6); g.fillRect(-0.25 * F, -1.4 * F, 0.5 * F, 2.8 * F); g.restore(); }
+      g.fillStyle = "rgba(70,90,110,.12)"; g.fillRect(X(A.cleaning.x0), Z(A.cleaning.z0), A.cleaning.w * F, A.cleaning.d * F); zone(A.cleaning, "#f4f2ec", true);
+      g.fillStyle = "rgba(239,184,29,.9)"; g.font = "bold " + 4.2 * F + "px Arial"; g.textAlign = "center"; g.textBaseline = "middle"; g.fillText("BAY 1", X(20), Z(68));
+      g.fillStyle = "#6c7380"; g.fillRect(X(B.x0), Z(FZ), (19 - B.x0) * F, (B.z1 - FZ) * F); speckle(g, X(B.x0), Z(FZ), (19 - B.x0) * F, (B.z1 - FZ) * F, 1800, ["#757c89", "#646a76"], 1.4);
+      g.fillStyle = "#d9d3c7"; g.fillRect(X(19), Z(FZ), (36 - 19) * F, (B.z1 - FZ) * F); g.strokeStyle = "rgba(150,140,125,.5)"; g.lineWidth = 1;
+      for (let x = 19; x < 36; x += 2) { g.beginPath(); g.moveTo(X(x), Z(FZ)); g.lineTo(X(x), h); g.stroke(); } for (let z = FZ; z < B.z1; z += 2) { g.beginPath(); g.moveTo(X(19), Z(z)); g.lineTo(X(36), Z(z)); g.stroke(); }
+      g.fillStyle = "#e4e9ec"; g.fillRect(X(36), Z(FZ), (B.x1 - 36) * F, (B.z1 - FZ) * F); g.strokeStyle = "rgba(150,165,175,.6)";
+      for (let x = 36; x < B.x1; x += 1) { g.beginPath(); g.moveTo(X(x), Z(FZ)); g.lineTo(X(x), h); g.stroke(); } for (let z = FZ; z < B.z1; z += 1) { g.beginPath(); g.moveTo(X(36), Z(z)); g.lineTo(w, Z(z)); g.stroke(); }
+      g.fillStyle = "rgba(239,184,29,.85)"; for (let i = 0; i < 5; i++) { g.save(); g.translate(X(29.3 + i * 1.2), Z(105.4)); g.rotate(0.6); g.fillRect(-0.25 * F, -1.4 * F, 0.5 * F, 2.8 * F); g.restore(); }
     });
     const fl = new T.Mesh(new T.PlaneGeometry(fw, fd), new T.MeshStandardMaterial({ map: floorTex, roughness: 0.55, metalness: 0.05 })); fl.rotation.x = -Math.PI / 2; fl.position.set((B.x0 + B.x1) / 2, 0.05, (B.z0 + B.z1) / 2); fl.receiveShadow = true; scene.add(fl);
   }
@@ -268,15 +273,15 @@ export function createShop(host, opts) {
   // ── Inside the shop (static props; engines are added separately from the real inventory)
   function buildInside() {
     const bay = new T.Group(), parts = new T.Group(), cl = new T.Group(), r1 = new T.Group(), r2 = new T.Group(), tools = new T.Group(), off = new T.Group(), lob = new T.Group(), bath = new T.Group();
-    semi(bay, 57.5, 58, -Math.PI / 2, "#1f4e79", { open: true, engine: MAKES[1][1] }); hoist(bay, 64.5, 74, Math.PI);
-    [41, 50, 59, 68].forEach((z) => shelf(parts, 42.3, z, Math.PI / 2, 8));
-    washer(cl, 78, 41, 0); hotTank(cl, 86, 40.5, 0); drum(cl, 92.5, 39.5); drum(cl, 95, 39.5, "#1d1e20"); drum(cl, 92.5, 42.2, "#2d6aa6");
-    bench(cl, 99, 46.5, Math.PI / 2, 7); box(cl, 6, 4.5, 1.2, mat("#7d8287", { r: 0.6, m: 0.3 }), 81, 0, 49.8); for (let i = 0; i < 3; i++) box(cl, 1.6, 0.5, 1.1, mat("#8a8f95", { r: 0.5, m: 0.4 }), 78.8 + i * 2.1, 4.5, 49.8);
-    [[r1, 58.8], [r2, 69.3]].forEach(([g, z]) => { standFrame(g, 77, z, 0); bench(g, 86.5, z - 1.5, 0, 6.5); });
-    [55.5, 60.5, 65.5].forEach((z) => chest(tools, 101.5, z, -Math.PI / 2)); chest(tools, 101.5, 70.5, -Math.PI / 2, "#2f5f9c");
-    desk(off, 47, 90, Math.PI); desk(off, 55, 90, Math.PI); box(off, 1.6, 4.4, 2, mat("#8d949b", { r: 0.5, m: 0.3 }), 39.2, 0, 86); box(off, 1.6, 4.4, 2, mat("#8d949b", { r: 0.5, m: 0.3 }), 39.2, 0, 88.2); plant(off, 59.5, 85, 0.8);
-    counter(lob, 74, 87); [[64, 93.2], [66.4, 93.2], [68.8, 93.2]].forEach(([x, z]) => chair(lob, x, z, Math.PI)); box(lob, 3, 1.4, 1.6, mat("#a87a4c", { r: 0.6 }), 66.4, 0, 90.4); plant(lob, 85.5, 93.5, 0.9); plant(lob, 62.5, 85, 0.7);
-    toilet(bath, 91, 85, 0); sink(bath, 98.5, 84.4, 0);
+    semi(bay, 21, 82, -Math.PI / 2, "#1f4e79", { open: true, engine: MAKES[1][1] }); hoist(bay, 26.5, 99, Math.PI);
+    [68, 77, 86, 95].forEach((z) => shelf(parts, 7.3, z, Math.PI / 2, 8));
+    washer(cl, 33.5, 67, 0); hotTank(cl, 40.5, 66.5, 0); drum(cl, 45.3, 65.2); drum(cl, 45.3, 67.6, "#1d1e20"); drum(cl, 45.3, 70, "#2d6aa6");
+    bench(cl, 42, 74.6, 0, 6); box(cl, 6, 4.5, 1.2, mat("#7d8287", { r: 0.6, m: 0.3 }), 34, 0, 74.8); for (let i = 0; i < 3; i++) box(cl, 1.6, 0.5, 1.1, mat("#8a8f95", { r: 0.5, m: 0.4 }), 31.8 + i * 2.1, 4.5, 74.8);
+    [[r1, 81.5], [r2, 91]].forEach(([g, z]) => { standFrame(g, 33.6, z, 0); bench(g, 39.7, z - 1.5, 0, 5.5); });
+    [81, 86, 91].forEach((z) => chest(tools, 45.3, z, -Math.PI / 2)); chest(tools, 45.3, 96, -Math.PI / 2, "#2f5f9c");
+    desk(off, 9, 118, Math.PI); desk(off, 15.5, 118, Math.PI); box(off, 1.6, 4.4, 2, mat("#8d949b", { r: 0.5, m: 0.3 }), 5.2, 0, 111); box(off, 1.6, 4.4, 2, mat("#8d949b", { r: 0.5, m: 0.3 }), 5.2, 0, 113.2); plant(off, 17.5, 109.5, 0.8);
+    counter(lob, 27.5, 115); [[22, 125.5], [24.4, 125.5], [26.8, 125.5]].forEach(([x, z]) => chair(lob, x, z, Math.PI)); box(lob, 3, 1.4, 1.6, mat("#a87a4c", { r: 0.6 }), 24.4, 0, 122.7); plant(lob, 34.5, 126, 0.9); plant(lob, 20.5, 109.5, 0.7);
+    toilet(bath, 39.5, 110.5, 0); sink(bath, 44.5, 109.9, 0);
     [[bay, "bay1"], [parts, "parts"], [cl, "cleaning"], [r1, "reman1"], [r2, "reman2"], [tools, "tools"], [off, "office"], [lob, "lobby"], [bath, "bathroom"]].forEach(([g, a]) => merged(g, a));
   }
   // ── Outside: canopy, trucks, cars, the forklift
@@ -288,11 +293,11 @@ export function createShop(host, opts) {
     const post = mat("#7c838a", { r: 0.5, m: 0.5 }); [px0, px1].forEach((x) => [0, 1, 2, 3, 4].forEach((k) => cylY(rm, 0.32, 12, post, x, 0, pz0 + (pz1 - pz0) * k / 4, CYL8)));
     box(rm, R.w, 0.7, 0.5, post, R.cx, 11.6, pz0); box(rm, R.w, 0.7, 0.5, post, R.cx, 11.6, pz1); box(rm, 0.5, 0.7, R.d, post, px0, 11.6, R.cz); box(rm, 0.5, 0.7, R.d, post, px1, 11.6, R.cz);
     for (let x = R.x0 + 2.5; x < R.x1 - 1; x += 5) box(rm, 0.25, 0.4, R.d - 0.4, post, x, 11.9, R.cz);
-    yardTruck = semi(yd, 56.5, 13, -Math.PI / 2, "#efece6", { sleeper: true, stripe: C.orange }); bollard(yd, 48.6, 34.6); bollard(yd, 64.4, 34.6);
-    pickup(pk, 10, 53, Math.PI, "#2b2d31"); car(pk, 10, 80, Math.PI, "#9b2f2a");
+    yardTruck = semi(yd, 20, 40, -Math.PI / 2, "#efece6", { sleeper: true, stripe: C.orange }); bollard(yd, 13.4, 62.2); bollard(yd, 26.6, 62.2);
+    pickup(pk, 7, 27, -Math.PI / 2, "#2b2d31"); car(pk, 7, 45, -Math.PI / 2, "#9b2f2a");
     [[rm, "reman"], [yd, "yard"], [pk, "parking"]].forEach(([g, a]) => merged(g, a));
     const cr = new T.Mesh(BOX, mat("#a3aab1", { r: 0.6, m: 0.4 })); cr.scale.set(R.w + 1.5, 0.4, R.d + 1.5); cr.position.set(R.cx, 12.3, R.cz); cr.castShadow = cr.receiveShadow = true; ROOF.push(cr); scene.add(cr);
-    forkObj = forklift(scene, 30, 40, Math.PI / 2); engine(forkObj, 4.6, 0, 0, "take", MAKES[2][1], 0.5);
+    forkObj = forklift(scene, 7, 56, Math.PI / 2); engine(forkObj, 4.6, 0, 0, "take", MAKES[2][1], 0.5);
     forkObj.traverse((o) => { if (o.isMesh) { o.userData.area = "parking"; PICK.push(o); } });
   }
   // ── Fence, trees, lights, the sign by the gate, traffic
@@ -302,15 +307,16 @@ export function createShop(host, opts) {
     const fenceRun = (x0, z0, x1, z1) => { const len = Math.hypot(x1 - x0, z1 - z0), n = Math.max(1, Math.round(len / 10)); for (let i = 0; i <= n; i++) { const t = i / n; cylY(sc, 0.18, 6.2, post, x0 + (x1 - x0) * t, 0, z0 + (z1 - z0) * t, CYL8); }
       box(sc, len, 0.16, 0.16, post, (x0 + x1) / 2, 6, (z0 + z1) / 2, -Math.atan2(z1 - z0, x1 - x0));
       const m = new T.Mesh(new T.PlaneGeometry(len, 6), fenceM); m.position.set((x0 + x1) / 2, 3, (z0 + z1) / 2); m.rotation.y = -Math.atan2(z1 - z0, x1 - x0); scene.add(m); };
-    fenceRun(0, 0, LOT.w, 0); fenceRun(0, 0, 0, 96); fenceRun(LOT.w, 0, LOT.w, 96); fenceRun(0, 96, 3, 96); fenceRun(33, 96, B.x0, 96); fenceRun(B.x1, 96, LOT.w, 96);
-    [[-14, -10, "spruce", 1.1], [8, -14, "poplar", 1], [30, -11, "spruce", 0.9], [62, -15, "poplar", 1.2], [92, -12, "spruce", 1], [122, -14, "poplar", 1], [150, -11, "spruce", 1.15], [166, 8, "poplar", 1], [164, 36, "spruce", 1], [168, 66, "poplar", 1.1], [163, 92, "spruce", 0.9],
-      [-16, 30, "poplar", 1], [-12, 62, "spruce", 1], [-18, 88, "poplar", 0.9], [-30, 140, "poplar", 1.1], [10, 142, "spruce", 1], [48, 138, "poplar", 1], [96, 141, "spruce", 1.1], [132, 139, "poplar", 1], [176, 142, "spruce", 1]].forEach(([x, z, k, s]) => tree(sc, x, z, k, s));
-    cylY(sc, 0.35, 14, post, 32.5, 0, 100.5, CYL8); cylY(sc, 0.35, 14, post, 41.5, 0, 100.5, CYL8);
+    // back fence with the gate to the lane, both sides, and the front by the carport (its gate open to the street)
+    fenceRun(0, 0, 14, 0); fenceRun(28, 0, LOT.w, 0); fenceRun(0, 0, 0, LOT.d); fenceRun(LOT.w, 0, LOT.w, LOT.d); fenceRun(0, LOT.d, B.x0, LOT.d); fenceRun(B.x1, LOT.d, 50, LOT.d); fenceRun(70, LOT.d, LOT.w, LOT.d);
+    [[-16, -30, "spruce", 1.1], [6, -33, "poplar", 1], [30, -30, "spruce", 0.9], [54, -34, "poplar", 1.2], [80, -31, "spruce", 1], [-18, 20, "poplar", 1], [-14, 60, "spruce", 1], [-19, 100, "poplar", 0.9],
+      [92, 14, "poplar", 1], [90, 52, "spruce", 1], [94, 92, "poplar", 1.1], [-30, 168, "poplar", 1.1], [10, 170, "spruce", 1], [48, 166, "poplar", 1], [86, 169, "spruce", 1.1]].forEach(([x, z, k, s]) => tree(sc, x, z, k, s));
+    cylY(sc, 0.35, 14, post, -9.5, 0, 131, CYL8); cylY(sc, 0.35, 14, post, -0.5, 0, 131, CYL8);
     merged(sc, null);
-    const ps = signBoard(11, 5, "ROLLIN COAL", "DIESEL ENGINES · 1-587-863-0505"); ps.position.set(37, 9, 100.5); scene.add(ps);
-    [[39, 33.5, 0], [104.5, 32.5, Math.PI], [3, 62, 0], [148.5, 58, Math.PI]].forEach(([x, z, r]) => { pole(scene, x, z, r); const l = new T.PointLight("#ffd79a", 0, 90, 1); l.userData.k = 60; l.position.set(x + (r ? -3.6 : 3.6), 20.5, z); scene.add(l); LAMPS.push(l); });
-    [[57, 15, 57], [86, 15, 62], [49, 9, 89], [74, 9, 89], [95, 8, 89]].forEach(([x, y, z]) => { const l = new T.PointLight("#ffdcae", 0, 62, 1); l.userData.k = 40; l.position.set(x, y, z); scene.add(l); LAMPS.push(l); });
-    if (!reduce) cars = [{ o: car(scene, -60, 108, 0, "#2f5f9c"), v: 34 }, { o: car(scene, 160, 118, Math.PI, "#d9d6cf"), v: -28 }, { o: car(scene, 40, 118, Math.PI, "#3a3c40"), v: -28 }];
+    const ps = signBoard(11, 5, "ROLLIN COAL", "DIESEL ENGINES · 1-587-863-0505"); ps.position.set(-5, 9, 131); scene.add(ps);
+    [[2, 2, 0], [72, 2, Math.PI], [2, 60, 0], [72, 60, Math.PI]].forEach(([x, z, r]) => { pole(scene, x, z, r); const l = new T.PointLight("#ffd79a", 0, 90, 1); l.userData.k = 60; l.position.set(x + (r ? -3.6 : 3.6), 20.5, z); scene.add(l); LAMPS.push(l); });
+    [[20, 15, 76], [20, 15, 96], [37, 9, 86], [12, 9, 117], [27.5, 9, 117], [41, 8, 117]].forEach(([x, y, z]) => { const l = new T.PointLight("#ffdcae", 0, 62, 1); l.userData.k = 40; l.position.set(x, y, z); scene.add(l); LAMPS.push(l); });
+    if (!reduce) cars = [{ o: car(scene, -60, 140, 0, "#2f5f9c"), v: 34 }, { o: car(scene, 160, 152, Math.PI, "#d9d6cf"), v: -28 }, { o: car(scene, 40, 152, Math.PI, "#3a3c40"), v: -28 }];
   }
   // Invisible pads over each place, so clicking bare floor still picks it
   function buildPickPads() { const inv = new T.MeshBasicMaterial({ visible: false }); SHOP_AREAS.forEach((a) => { const o = new T.Mesh(BOX, inv); o.scale.set(a.w, 0.4, a.d); o.position.set(a.cx, a.kind === "Outside" ? 0 : 0.06, a.cz); o.userData.area = a.id; scene.add(o); PICK.push(o); }); }
@@ -454,7 +460,7 @@ export function createShop(host, opts) {
   const hemi = new T.HemisphereLight("#dfeeff", "#6b7a52", 1.95); scene.add(hemi);
   const sun = new T.DirectionalLight("#fff3dd", 3); sun.castShadow = true; scene.add(sun); scene.add(sun.target);
   sun.shadow.mapSize.set(small ? 1024 : 2048, small ? 1024 : 2048); Object.assign(sun.shadow.camera, { left: -125, right: 125, top: 115, bottom: -115, near: 10, far: 520 }); sun.shadow.bias = -0.0006; sun.shadow.normalBias = 0.04;
-  sun.target.position.set(75, 0, 52);
+  sun.target.position.set(37, 0, 64);
   const PI = Math.PI;
   const TOD = {
     day: { sky: "#bfd8ee", fog: [420, 1100], hs: "#dfeeff", hg: "#6b7a52", hi: 0.62 * PI, sc: "#fff3dd", si: 0.95 * PI, sp: [-70, 170, 120], lamp: 0, glow: 0 },
@@ -470,16 +476,16 @@ export function createShop(host, opts) {
     const L = (a, b) => a + (b - a) * e; cur.hi = L(from.hi, P.hi); cur.si = L(from.si, P.si); cur.lamp = L(from.lamp, P.lamp); cur.glow = L(from.glow, P.glow); cur.f0 = L(from.f0 || P.fog[0], P.fog[0]); cur.f1 = L(from.f1 || P.fog[1], P.fog[1]);
     cur.sp.copy(from.sp).lerp(new T.Vector3(P.sp[0], P.sp[1], P.sp[2]), e);
     scene.background = cur.sky; if (!scene.fog) scene.fog = new T.Fog(cur.sky.clone(), cur.f0, cur.f1); scene.fog.color.copy(cur.sky); scene.fog.near = cur.f0; scene.fog.far = cur.f1;
-    hemi.color.copy(cur.hs); hemi.groundColor.copy(cur.hg); hemi.intensity = cur.hi; sun.color.copy(cur.sc); sun.intensity = cur.si; sun.position.set(75 + cur.sp.x, cur.sp.y, 52 + cur.sp.z);
+    hemi.color.copy(cur.hs); hemi.groundColor.copy(cur.hg); hemi.intensity = cur.hi; sun.color.copy(cur.sc); sun.intensity = cur.si; sun.position.set(37 + cur.sp.x, cur.sp.y, 64 + cur.sp.z);
     LAMPS.forEach((l) => { l.intensity = cur.lamp * l.userData.k; l.visible = l.intensity > 0.05; }); GLOWS.forEach((g) => (g.m.emissiveIntensity = cur.glow * g.k));
   }
 
   // ── Camera: orbit around a point on the ground, easing toward goals
   const RMIN = 22, RMAX = 430, PHMIN = 0.18, PHMAX = 1.36;
-  const HOME = { tx: 72, tz: 54, r: 215, th: 0.28, ph: 0.9 };
+  const HOME = { tx: 37, tz: 64, r: 200, th: 0.28, ph: 0.9 };
   const Cm = { ...HOME }, Gl = { ...HOME };
   const wrapTh = () => { while (Gl.th - Cm.th > Math.PI) Gl.th -= 2 * Math.PI; while (Gl.th - Cm.th < -Math.PI) Gl.th += 2 * Math.PI; };
-  const clampT = () => { Gl.tx = clamp(Gl.tx, -60, 210); Gl.tz = clamp(Gl.tz, -60, 160); };
+  const clampT = () => { Gl.tx = clamp(Gl.tx, -80, 150); Gl.tz = clamp(Gl.tz, -60, 190); };
   function camStep(dt) { const k = reduce ? 1 : 1 - Math.exp(-dt * 7.5); for (const key of ["tx", "tz", "r", "th", "ph"]) Cm[key] += (Gl[key] - Cm[key]) * k;
     const sp = Math.sin(Cm.ph); camera.position.set(Cm.tx + Cm.r * sp * Math.sin(Cm.th), Cm.r * Math.cos(Cm.ph), Cm.tz + Cm.r * sp * Math.cos(Cm.th)); camera.lookAt(Cm.tx, 0, Cm.tz); }
   function panBy(dx, dy) { const s = Gl.r * 0.0017; Gl.tx -= (Math.cos(Gl.th) * dx + Math.sin(Gl.th) * dy) * s; Gl.tz -= (-Math.sin(Gl.th) * dx + Math.cos(Gl.th) * dy) * s; clampT(); }
@@ -517,7 +523,7 @@ export function createShop(host, opts) {
       const i = document.createElement("i"), sp = document.createElement("span"), cnt = document.createElement("b"); sp.textContent = a.title; cnt.hidden = true; b.append(i, sp, cnt);
       b.setAttribute("aria-label", a.title); b.addEventListener("click", () => { selectArea(a.id); call("onSelectArea", a.id); }); b.addEventListener("mouseenter", () => setHover(a.id)); b.addEventListener("mouseleave", () => setHover(null));
       lay.appendChild(b); LBL.push({ id: a.id, el: b, cnt: a.store ? cnt : null, pos: new T.Vector3(a.cx, a.h, a.cz), last: "" }); });
-    [["Bay door", 56.5, 19, 33], ["Front door", 75.75, 11.5, 99.5], ["Street", 75, 2, 124]].forEach(([t, x, y, z]) => { const d = document.createElement("div"); d.className = "s3-mark"; d.textContent = t; lay.appendChild(d); LBL.push({ id: null, el: d, pos: new T.Vector3(x, y, z), last: "", mark: true }); });
+    [["Bay door", 20, 19, 61], ["Front door", 28.5, 11.5, 130], ["Street", 37, 2, 146], ["Back lane", 21, 2, -12]].forEach(([t, x, y, z]) => { const d = document.createElement("div"); d.className = "s3-mark"; d.textContent = t; lay.appendChild(d); LBL.push({ id: null, el: d, pos: new T.Vector3(x, y, z), last: "", mark: true }); });
   }
   const pv = new T.Vector3();
   // Labels never pile up: the selected one goes first, then the nearest. One that would overlap a
@@ -565,9 +571,9 @@ export function createShop(host, opts) {
     ROOF.forEach((o) => (o.visible = roofOn)); }
 
   // ── Forklift
-  let driving = false; const fk = { x: 30, z: 40, yaw: Math.PI / 2, v: 0 }; const keys = new Set();
-  function blocked(x, z) { const street = z > 97.6; if (z < 1.5 || z > 126 || x < (street ? -40 : 1.5) || x > (street ? 190 : LOT.w - 1.5)) return true;
-    if (z > 94.6 && z < 97.6 && !(x > 4.5 && x < 31.5)) return true;
+  let driving = false; const fk = { x: 7, z: 56, yaw: Math.PI / 2, v: 0 }; const keys = new Set();
+  function blocked(x, z) { const street = z > 129.5; if (z < 1.5 || z > 157 || x < (street ? -60 : 1.5) || x > (street ? 140 : LOT.w - 1.5)) return true;
+    if (z > 126.5 && z < 129.5 && !(x > 51 && x < 69)) return true; // out to the street only through the carport gate
     const r = 2.6; for (const W of WALLS) { if (W.base > 0) continue; const cx = clamp(x, W.x0, W.x1), cz = clamp(z, W.z0, W.z1); if ((x - cx) ** 2 + (z - cz) ** 2 < r * r) return true; } return false; }
   function driveStep(dt) { const f = keys.has("w") || keys.has("arrowup"), b = keys.has("s") || keys.has("arrowdown"), l = keys.has("a") || keys.has("arrowleft"), r = keys.has("d") || keys.has("arrowright");
     const target = f ? 18 : b ? -9 : 0; fk.v += (target - fk.v) * Math.min(1, dt * (target ? 2.2 : 4)); const turn = (l ? 1 : 0) - (r ? 1 : 0); fk.yaw += turn * dt * (1.1 + Math.min(Math.abs(fk.v), 12) * 0.07) * (fk.v < -0.5 ? -1 : 1);
