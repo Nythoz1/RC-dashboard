@@ -1,5 +1,5 @@
 import React, { useState, useReducer, useEffect, useRef, useMemo } from "react";
-import { db } from "./lib/storage";
+import { db, enginePicklist } from "./lib/storage";
 import { uploadPhoto, deletePhoto } from "./lib/photos";
 import { askClaude } from "./lib/ai";
 import { requestBriefNow } from "./lib/brief";
@@ -1630,8 +1630,9 @@ const fmtWhen=iso=>{const t=new Date(iso);if(!iso||isNaN(t))return "";const same
 const firstName=n=>String(n||"").trim().split(/\s+/)[0]||"";
 const tsRowsOf=(s,emp)=>(s.timesheets||[]).filter(r=>String(r.emp)===String(emp));
 const tsTech=(e,t)=>{const k=String(t||"").trim().toLowerCase();return !!k&&[e.nick,e.name].filter(Boolean).some(n=>String(n).trim().toLowerCase()===k);};
-// Hours on jobs by date for one person: work-order time, diagnoses and ECM jobs, by the date logged.
-function tsJobHours(s,e){const m={};const add=(dt,h)=>{if(dt&&+h>0)m[dt]=(m[dt]||0)+(+h);};(s.timeEntries||[]).forEach(t=>{if(tsTech(e,t.tech))add(t.date,t.hours);});(s.diagnoses||[]).forEach(x=>{if(tsTech(e,x.tech))add(x.date,x.hours);});(s.ecmJobs||[]).forEach(j=>{if(tsTech(e,j.tech))add(j.date,j.hours);});return m;}
+// Hours on jobs by date for one person: work-order time, diagnoses and ECM jobs, by the date logged,
+// or the engines on their timesheet that day when those add up to more (never both, so nothing counts twice).
+function tsJobHours(s,e){const m={};const add=(dt,h)=>{if(dt&&+h>0)m[dt]=(m[dt]||0)+(+h);};(s.timeEntries||[]).forEach(t=>{if(tsTech(e,t.tech))add(t.date,t.hours);});(s.diagnoses||[]).forEach(x=>{if(tsTech(e,x.tech))add(x.date,x.hours);});(s.ecmJobs||[]).forEach(j=>{if(tsTech(e,j.tech))add(j.date,j.hours);});tsRowsOf(s,e.id).forEach(r=>{const h=Tsh.workMin(r)/60;if(r.date&&h>0)m[r.date]=Math.max(m[r.date]||0,h);});return m;}
 const tsJobIn=(jh,a,b)=>Object.keys(jh).reduce((t,k)=>k>=a&&k<=b?t+jh[k]:t,0);
 // Pay: the person's Rate on the Team tab; overtime at the shop's OT rate (1.5× unless changed in Timesheet settings).
 const tsOtRate=s=>+getSet(s).otRate||1.5;
@@ -1673,9 +1674,24 @@ function tsSave(s,d,{emp,date,vals,label}){
   if(prev){d({type:"UPDATE",list:"timesheets",id:prev.id,d:rec});d({type:"TOAST",d:{msg:label,t:Date.now()}});}
   else d({type:"ADD",list:"timesheets",d:rec,keep:true,label});
 }
+// Engines on a timesheet day (Tsh.cleanWork lines). The pick list: every engine that isn't sold,
+// from the inventory when this login has it, otherwise from the database's engine_picklist (an
+// employee login can't read the inventory). Lines keep the stock # and name they were saved with.
+function useTsEngines(s,on){
+  const own=(s.inventory||[]).filter(i=>isEngine(i)&&engStatus(i)!=="sold").map(i=>({id:i.id,sku:i.sku||"",name:i.name||""}));
+  const[got,setGot]=useState(null);
+  useEffect(()=>{if(!on||own.length||got)return;let live=true;enginePicklist().then(v=>{if(live&&v)setGot(v);},()=>{});return()=>{live=false;};},[on,own.length,got]);
+  return own.length?own:(got||[]);}
+const tsWorkLabel=w=>[w.sku,w.engineId===""?(w.note||"Other work"):w.name].filter(Boolean).join(" · ")||"Engine";
+// The engines from the last day that had any, onto another day: one engine takes that day's hours;
+// what was done stays with the old day (other work keeps its note, since that's what it was).
+const tsSameWork=(lw,dayMin)=>lw.work.map(w=>({...w,note:w.engineId===""?w.note:"",hours:lw.work.length===1&&dayMin>0?Tsh.workHours(dayMin/60):w.hours}));
+function TsWork({s,d,r,link}){const w=Tsh.cleanWork(r&&r.work);if(!w.length)return null;
+  return(<div className="rc-ts-work">{w.map((x,k)=>{const eng=link&&x.engineId!==""?(s.inventory||[]).find(i=>sameId(i.id,x.engineId)):null;
+    return(<div key={k}>🔧 {eng?<button className="rc-lnk rc-ts-ln" title={"Open "+tsWorkLabel(x)} onClick={()=>d({type:"MODAL",v:"part-detail",d:eng})}>{x.sku||tsWorkLabel(x)}</button>:link&&x.sku?x.sku:tsWorkLabel(x)} · <b>{x.hours} h</b>{x.note&&x.engineId!==""?<span className="rc-ts-dim"> · {x.note}</span>:null}</div>);})}</div>);}
 // A day filled in late or changed afterwards: every version, oldest first, for the owner.
-function TsHistory({r}){if(!r||!Tsh.wasEdited(r))return null;const vs=[...(r.history||[]),{at:r.updatedAt,by:r.by,start:r.start,finish:r.finish,notes:r.notes,now:true}];
-  return(<div className="rc-ts-hist"><div className="rc-fl">{Tsh.enteredLate(r)&&!(r.history||[]).length?"Filled in after the day":"Changed after it was filled in"}</div>{vs.map((x,k)=>(<div key={k} className={x.now?"now":""}><span>{fmtWhen(x.at)}{x.by?" · "+x.by:""}</span><b>{[x.start?x.start+" to "+x.finish:"",x.notes].filter(Boolean).join(" · ")||"cleared"}{x.now?" (now)":""}</b></div>))}</div>);}
+function TsHistory({r}){if(!r||!Tsh.wasEdited(r))return null;const vs=[...(r.history||[]),{at:r.updatedAt,by:r.by,start:r.start,finish:r.finish,notes:r.notes,work:r.work,now:true}];
+  return(<div className="rc-ts-hist"><div className="rc-fl">{Tsh.enteredLate(r)&&!(r.history||[]).length?"Filled in after the day":"Changed after it was filled in"}</div>{vs.map((x,k)=>(<div key={k} className={x.now?"now":""}><span>{fmtWhen(x.at)}{x.by?" · "+x.by:""}</span><b>{[x.start?x.start+" to "+x.finish:"",x.notes,...Tsh.cleanWork(x.work).map(w=>tsWorkLabel(w)+" "+w.hours+" h")].filter(Boolean).join(" · ")||"cleared"}{x.now?" (now)":""}</b></div>))}</div>);}
 
 // The pay-period summary for printing: black and white, one Letter page for a month.
 const TS_PRINT='@page{size:letter portrait;margin:10mm 11mm;}body{padding:0;font-size:11px;line-height:1.35;}.head{border-bottom-color:#000;padding-bottom:5px;margin-bottom:7px;}.logo{background:#000;width:34px;height:34px;font-size:16px;}h1{font-size:20px;}.meta{font-size:10px;line-height:1.45;}.sub{color:#000;}h2{border-left-color:#000;font-size:12.5px;margin:7px 0 2px;}.en{font-size:20px;}.esn{font-size:10.5px;margin-top:1px;}.st{margin-top:4px;font-size:9.5px;padding:1px 8px;border-color:#000;}.tt{align-items:flex-end;margin-bottom:5px;}table.pay td{padding:1.5px 6px;font-size:11px;line-height:1.3;}.sm{display:grid;grid-template-columns:repeat(4,auto);gap:4px 16px;text-align:right;}.sm div{font-family:"Barlow Condensed",sans-serif;font-weight:800;font-size:17px;}.sm span{display:block;font-family:"IBM Plex Mono",monospace;font-weight:400;font-size:9.5px;letter-spacing:1px;text-transform:uppercase;color:#555;}'+
@@ -1686,7 +1702,7 @@ function printTimesheet(s,e,P,owner){
   const T=tsPeriod(s,e,P),lab=Tsh.periodLabel(P);let rows="";
   T.weeks.forEach(w=>{
     w.days.forEach(x=>{const r=T.by.get(x),c=T.calc.days[x],fl=T.flags[x]||[];
-      rows+='<tr'+(c&&c.min?'':' class="off"')+'><td>'+esc(Tsh.shortDate(x))+'</td><td>'+esc(Tsh.dow(x))+'</td><td>'+esc(r?r.start:"")+'</td><td>'+esc(r?r.finish:"")+'</td><td class="num">'+(c&&c.min?fH(c.min):"")+'</td><td class="num">'+(c&&c.min?fH(c.regMin):"")+'</td><td class="num">'+(c&&c.otMin?fH(c.otMin):"")+'</td><td class="nt">'+esc(r?r.notes:"")+(fl.length?' <b>&#9873; '+esc(fl.map(f=>f.msg).join(" "))+'</b>':'')+(r&&Tsh.wasEdited(r)?' <b>[changed after the day]</b>':'')+'</td></tr>';});
+      rows+='<tr'+(c&&c.min?'':' class="off"')+'><td>'+esc(Tsh.shortDate(x))+'</td><td>'+esc(Tsh.dow(x))+'</td><td>'+esc(r?r.start:"")+'</td><td>'+esc(r?r.finish:"")+'</td><td class="num">'+(c&&c.min?fH(c.min):"")+'</td><td class="num">'+(c&&c.min?fH(c.regMin):"")+'</td><td class="num">'+(c&&c.otMin?fH(c.otMin):"")+'</td><td class="nt">'+esc(r?r.notes:"")+(r?Tsh.cleanWork(r.work).map(w=>'<div>'+esc(tsWorkLabel(w))+' &middot; '+w.hours+' h'+(w.note&&w.engineId!==""?' &middot; '+esc(w.note):'')+'</div>').join(""):"")+(fl.length?' <b>&#9873; '+esc(fl.map(f=>f.msg).join(" "))+'</b>':'')+(r&&Tsh.wasEdited(r)?' <b>[changed after the day]</b>':'')+'</td></tr>';});
     rows+='<tr class="wk"><td colspan="4">Week of '+esc(Tsh.shortDate(w.start))+' &middot; '+(w.rule==="weekly"?"44-hour rule":w.rule==="daily"?"daily rule":"no OT")+'</td><td class="num">'+fH(w.min)+'</td><td class="num">'+fH(w.regMin)+'</td><td class="num">'+fH(w.otMin)+'</td><td class="nt">over 8 a day '+fH(w.dailyMin)+' &middot; over 44 a week '+fH(w.weeklyMin)+(w.outside.length?' &middot; counts '+w.outside.length+' day'+(w.outside.length===1?'':'s')+' outside this period':'')+'</td></tr>';});
   rows+='<tr class="tot"><td colspan="4">Total &middot; '+esc(lab)+'</td><td class="num">'+fH(T.tot.min)+'</td><td class="num">'+fH(T.tot.reg)+'</td><td class="num">'+fH(T.tot.ot)+'</td><td></td></tr>';
   const ot=tsOtRate(s),rate=+e.rate||0;
@@ -1695,7 +1711,7 @@ function printTimesheet(s,e,P,owner){
   const html='<!doctype html><html><head><meta charset="utf-8"><title>Timesheet · '+esc(e.name)+' · '+esc(lab)+'</title>'+SHEET_STYLE+'<style>'+TS_PRINT+'</style></head><body>'+
     '<div class="head"><div class="brand"><div class="logo">RC</div><div><h1>Rollin Coal</h1><div class="sub">Pay period summary</div></div></div><div class="meta"><strong>Timesheet</strong><br>Printed '+new Date().toLocaleDateString("en-US",{year:"numeric",month:"long",day:"numeric"})+'<br>2040 11th Ave NW, Medicine Hat, AB</div></div>'+
     '<div class="tt"><div><div class="en">'+esc(e.name)+'</div><div class="esn">'+(e.role?esc(e.role)+' &middot; ':'')+esc(lab)+' ('+esc(Tsh.shortDate(P.start))+' to '+esc(Tsh.shortDate(P.end))+')</div><span class="st">'+st+'</span></div><div class="sm"><div><span>Hours</span>'+fH(T.tot.min)+'</div><div><span>Regular</span>'+fH(T.tot.reg)+'</div><div><span>Overtime</span>'+fH(T.tot.ot)+'</div><div><span>Unallocated</span>'+T.unalloc.toFixed(2)+'</div></div></div>'+
-    '<table class="ts"><thead><tr><th>Date</th><th>Day</th><th>Start</th><th>Finish</th><th class="num">Hours</th><th class="num">Regular</th><th class="num">OT</th><th>Notes</th></tr></thead><tbody>'+rows+'</tbody></table>'+pay+
+    '<table class="ts"><thead><tr><th>Date</th><th>Day</th><th>Start</th><th>Finish</th><th class="num">Hours</th><th class="num">Regular</th><th class="num">OT</th><th>Notes and engines</th></tr></thead><tbody>'+rows+'</tbody></table>'+pay+
     '<div class="sig"><div>Employee signature</div><div>Date</div><div>Approved by</div><div>Date</div></div>'+
     '<div class="foot"><span>Hours from Start and Finish; lunch is paid. Overtime by Alberta&#39;s rule: over 8 h a day or 44 h a week, whichever is more.</span><span>Rollin Coal &middot; confidential</span></div>'+
     '<scr'+'ipt>window.onload=function(){setTimeout(function(){window.print();},300);};</scr'+'ipt></body></html>';
@@ -1752,7 +1768,7 @@ function Timesheets({s,d,role,owner,preview,setPreview}){
             return(<React.Fragment key={x}><tr className={(x>today?"fut":c&&c.min?"":"off")+(x===today?" today":"")} data-date={x}>
               <td className="rc-tn">{Tsh.shortDate(x)}</td><td>{Tsh.dow(x)}</td><td>{r?r.start:""}</td><td>{r?r.finish:""}</td>
               <td className="n">{c&&c.min?fH(c.min):x>today?"":miss?<span className="rc-ts-miss">not filled in</span>:"—"}</td><td className="n">{c&&c.min?fH(c.regMin):""}</td><td className="n">{c&&c.otMin?fH(c.otMin):""}</td><td className="n">{jh?jh.toFixed(2):""}</td>
-              <td className="nt">{r?<TsNote s={s} d={d} txt={r.notes}/>:null}</td>
+              <td className="nt">{r?<TsNote s={s} d={d} txt={r.notes}/>:null}<TsWork s={s} d={d} r={r} link/></td>
               <td style={{whiteSpace:"nowrap"}}>{lv&&<button className={"rc-ts-flag "+lv} aria-expanded={open===x} title={fl.map(f=>f.msg).join(" ")} onClick={()=>setOpen(open===x?null:x)}>⚠ {fl.length}</button>}{ed&&<button className="rc-ts-flag info" aria-expanded={open===x} title="Filled in or changed after the day" onClick={()=>setOpen(open===x?null:x)}>edited</button>}{lk&&<span className="rc-ts-lock" title="In an approved pay period">🔒</span>}{acc.can&&<button className="rc-bs rc-ts-ed" aria-label={"Edit "+Tsh.shortDate(x)} onClick={()=>openDay(x)}>✎</button>}</td>
             </tr>{open===x&&<tr className="why"><td colSpan={10}>{fl.map((f,k)=>(<div key={k} className={"rc-ts-whyl "+f.lv}>{f.msg}</div>))}<TsHistory r={r}/></td></tr>}</React.Fragment>);})}
           <tr className="wk"><td colSpan={4}>Week of {Tsh.shortDate(w.start)} · {tsRule(w)}{w.outside.length?" · counts "+w.outside.length+" day"+(w.outside.length===1?"":"s")+" outside this period":""}<div className="rc-ts-dim">Over 8 a day: {fH(w.dailyMin)} · over 44 a week: {fH(w.weeklyMin)}</div></td><td className="n">{fH(w.min)}</td><td className="n">{fH(w.regMin)}</td><td className="n">{fH(w.otMin)}</td><td className="n">{w.job.toFixed(2)}</td><td colSpan={2}>Unallocated {w.unalloc.toFixed(2)} h</td></tr>
@@ -1764,7 +1780,7 @@ function Timesheets({s,d,role,owner,preview,setPreview}){
         <div className="rc-ts-dim">Regular {fH(T.pay.regMin)} h × {$$(+e.rate||0)} = {$$(T.pay.regPay)} · Overtime {fH(T.pay.otMin)} h × {$$((+e.rate||0)*ot)} ({ot}×) = {$$(T.pay.otPay)}</div>
         {!(+e.rate>0)&&<div className="rc-ts-errl">No pay rate for {e.name}. Add it on the Team tab.</div>}
       </div>}
-      <div className="rc-ts-util">Paid {fH(T.tot.min)} h · on jobs {T.job.toFixed(2)} h · <b>unallocated {T.unalloc.toFixed(2)} h</b>{T.tot.min>0?" ("+Math.round(T.unalloc/(T.tot.min/60)*100)+"%)":""}. On jobs counts work-order time, diagnoses and ECM jobs logged under {e.nick||e.name}.{T.over.length>0&&<> More time on jobs than on the timesheet on {T.over.map(Tsh.shortDate).join(", ")}.</>}</div>
+      <div className="rc-ts-util">Paid {fH(T.tot.min)} h · on jobs {T.job.toFixed(2)} h · <b>unallocated {T.unalloc.toFixed(2)} h</b>{T.tot.min>0?" ("+Math.round(T.unalloc/(T.tot.min/60)*100)+"%)":""}. On jobs counts work-order time, diagnoses and ECM jobs logged under {e.nick||e.name}, or the engines on the timesheet when those add up to more.{T.over.length>0&&<> More time on jobs than on the timesheet on {T.over.map(Tsh.shortDate).join(", ")}.</>}</div>
     </>)}
     {crew.length>1&&<><SH title={"Everyone · "+Tsh.periodLabel(P)}/><Tbl headers={["Employee","Hours","Regular","OT",...(owner?["Gross pay"]:[]),"Unallocated","Not filled in","Status"]}>{crew.map(({x,t})=>(<tr key={x.id}><td className="rc-tn"><button className="rc-lnk" onClick={()=>{setEmp(String(x.id));setOpen(null);}}>{x.name}</button></td><td>{fH(t.tot.min)}</td><td>{fH(t.tot.reg)}</td><td>{fH(t.tot.ot)}</td>{owner&&<td>{$$(t.pay.gross)}</td>}<td>{t.unalloc.toFixed(2)}</td><td style={{color:t.missing.length?"var(--w)":"var(--ft)"}}>{t.missing.length||"—"}</td><td>{t.appr?<span style={{color:"var(--g)",fontWeight:600}}>Approved</span>:<span style={{color:"var(--mt)"}}>Open</span>}</td></tr>))}</Tbl></>}
   </div>);
@@ -1783,12 +1799,17 @@ function MyTimesheet({s,d,me,role="employee"}){
   const full=x=>{const r=by.get(x);tsSave(s,d,{emp:me.id,date:x,vals:{...Tsh.FULL_DAY,notes:r?r.notes||"":""},label:"Saved "+Tsh.shortDate(x)+": full day, 8.00 h"});};
   const edit=x=>d({type:"MODAL",v:"ts-day",d:{emp:me.id,date:x}});
   const tr=by.get(today),tc=calc.days[today],ta=acc(today),isFull=tr&&tr.start===Tsh.FULL_DAY.start&&tr.finish===Tsh.FULL_DAY.finish;
+  // Same engine as the last day: today's engines become that day's, and an empty weekday becomes a full day too.
+  const lw=Tsh.lastWork(rows,today),hasW=Tsh.cleanWork(tr&&tr.work).length>0,lwTxt=lw?lw.work.map(x=>x.sku||(x.engineId===""?"other work":x.name)).join(", "):"";
+  const sameEng=()=>{if(!lw)return;const fill=!(tr&&tr.start)&&Tsh.isWeekday(today);const vals=fill?{...Tsh.FULL_DAY,notes:tr?tr.notes||"":""}:{start:tr?tr.start:"",finish:tr?tr.finish:"",notes:tr?tr.notes||"":""};const dm=fill?Tsh.DAY_MIN:(tc?tc.min:0);
+    tsSave(s,d,{emp:me.id,date:today,vals:{...vals,work:tsSameWork(lw,dm)},label:"Saved today"+(fill?": full day":"")+" on "+lwTxt});};
   const weeks=[...new Set(dates.map(Tsh.weekStart))];
   return(<div className="rc-my">
     {ym===cur&&<div className="rc-card rc-my-today">
       <div className="rc-my-th">Today</div><div className="rc-my-td">{Tsh.longDate(today)}</div>
       <div className="rc-my-tv">{tr&&tr.start?<><b>{tr.start} to {tr.finish}</b> · {fH(tc.min)} h{tc.otMin?" · "+fH(tc.otMin)+" overtime":""}</>:tr&&tr.notes?<b>{tr.notes}</b>:<span>Not filled in yet</span>}</div>
-      {ta.can?<div className="rc-my-acts">{Tsh.isWeekday(today)&&!isFull&&<button className="rc-ba rc-my-full" onClick={()=>full(today)}>✓ Full day · 8:00 AM to 4:00 PM</button>}<button className="rc-bs" onClick={()=>edit(today)}>{Tsh.isFilled(tr)?"Change today":"Other times"}</button></div>:ta.why==="locked"?<div className="rc-ts-note">This pay period is approved, so today is locked.</div>:null}
+      <TsWork s={s} d={d} r={tr}/>
+      {ta.can?<div className="rc-my-acts">{Tsh.isWeekday(today)&&!isFull&&<button className="rc-ba rc-my-full" onClick={()=>full(today)}>✓ Full day · 8:00 AM to 4:00 PM</button>}{lw&&!hasW&&<button className="rc-ba rc-my-same" onClick={sameEng}>↻ {!(tr&&tr.start)&&Tsh.isWeekday(today)?"Full day · ":""}Same engine as {Tsh.dow(lw.date)}<small>{lwTxt}</small></button>}<button className="rc-bs" onClick={()=>edit(today)}>{Tsh.isFilled(tr)?"Change today":hasW?"Other times":"Other times or engines"}</button></div>:ta.why==="locked"?<div className="rc-ts-note">This pay period is approved, so today is locked.</div>:null}
       {!Tsh.isWeekday(today)&&!Tsh.isFilled(tr)&&ta.can&&<div className="rc-ts-dim">It's the weekend. If you worked today, tap Other times.</div>}
     </div>}
     <div className="rc-my-month">
@@ -1800,7 +1821,7 @@ function MyTimesheet({s,d,me,role="employee"}){
       {weeks.map(w=>{const W=calc.weeks[w];return(<React.Fragment key={w}>
         {dates.filter(x=>Tsh.weekStart(x)===w).map(x=>{const r=by.get(x),c=calc.days[x],a=acc(x),lk=lockOf(x);return(<tr key={x} className={(x>today?"fut":"")+(x===today?" today":"")} data-date={x}>
           <td className="d"><b>{Tsh.dow(x)}</b> {Tsh.shortDate(x)}</td>
-          <td>{r&&r.start?r.start+" to "+r.finish:x>today?"":<span className="rc-ts-dim">—</span>}{r&&r.notes?<div className="rc-my-note">{r.notes}</div>:null}</td>
+          <td>{r&&r.start?r.start+" to "+r.finish:x>today?"":<span className="rc-ts-dim">—</span>}{r&&r.notes?<div className="rc-my-note">{r.notes}</div>:null}<TsWork s={s} d={d} r={r}/></td>
           <td className="n">{c&&c.min?fH(c.min):""}{c&&c.otMin?<div className="rc-my-ot">{fH(c.otMin)} OT</div>:null}</td>
           <td className="act">{a.can?(<>{!Tsh.isFilled(r)&&Tsh.isWeekday(x)&&<button className="rc-bs rc-my-fd" onClick={()=>full(x)}>Full day</button>}<button className="rc-bs" onClick={()=>edit(x)}>{Tsh.isFilled(r)?"Edit":"Times"}</button></>):lk?<span className="rc-ts-lock" title="Approved: locked">🔒</span>:null}</td>
         </tr>);})}
@@ -1974,6 +1995,7 @@ function Modals({s,d,owner=true,who={role:"owner"}}){
   const logins=useLogins(owner);
   const[f,sf]=useState({});const[lines,setLines]=useState([{d:"",q:1,r:0}]);const[ptab,setPtab]=useState("overview");const[qrPrev,setQrPrev]=useState("");
   useEffect(()=>{const one=s.modal==="qr-tags"&&s.md&&s.md.ids&&s.md.ids.length===1?s.md.ids[0]:null;if(one==null){setQrPrev("");return;}let on=true;qrSvg(engineUrl(one)).then(v=>{if(on)setQrPrev(v);},()=>{});return()=>{on=false;};},[s.modal,s.md]);
+  const tsEngs=useTsEngines(s,s.modal==="ts-day");
   const lastEng=useRef(null);const[etab,setEtab]=useState("intake");const lastEcm=useRef(null);const[uploading,setUploading]=useState(false);
   const set=(k,v)=>sf(p=>({...p,[k]:v}));
   useEffect(()=>{if(!s.modal){lastEng.current=null;lastEcm.current=null;}
@@ -2247,6 +2269,14 @@ const FM=(t,flds,onSave,need)=>W(<div><div className="rc-mt">{t}</div>{flds.map(
             <button className="rc-bs" style={{marginTop:4}} onClick={()=>{const nj={id:Date.now(),kind:"reman",engineId:i.id,custId:0,vehicle:i.sku||"",service:"Reman — "+(i.name||i.sku||"engine"),type:"Reman",tech:"Unassigned",due:"",priority:"medium",status:"in-progress",notes:""};d({type:"ADD",list:"jobs",d:nj,label:"Reman job opened"});d({type:"MODAL",v:"job-detail",d:nj});}}>🔧 + Reman Job</button>
           </>);})()}
       </div>
+      {(()=>{const tw=(s.timesheets||[]).flatMap(r=>Tsh.cleanWork(r.work).filter(w=>w.engineId!==""&&sameId(w.engineId,i.id)).map(w=>({...w,date:r.date,emp:r.emp}))).sort((a,b)=>a.date<b.date?1:-1);if(!tw.length)return null;
+        const nm=e=>{const x=(s.employees||[]).find(p=>sameId(p.id,e));return x?x.name:"Employee "+e;};const per={};tw.forEach(w=>{const k=String(w.emp);per[k]=(per[k]||0)+w.hours;});const tot=tw.reduce((a,w)=>a+w.hours,0);
+        return(<><div className="rc-fl" style={{marginBottom:6}}>Hours from timesheets <span style={{color:"var(--ft)",textTransform:"none",letterSpacing:0}}>— what the crew wrote down for this engine (paid through payroll, so not added to the cost basis)</span></div>
+        <div className="rc-card rc-ts-eng" style={{marginBottom:12,padding:12}}>
+          <div className="rc-ts-engsum"><b>{tot.toFixed(2)} h</b> on {new Set(tw.map(w=>w.date)).size} day{new Set(tw.map(w=>w.date)).size===1?"":"s"} · {Object.entries(per).map(([k,h])=>nm(k)+" "+h.toFixed(2)+" h").join(" · ")}</div>
+          {tw.slice(0,12).map((w,k)=>(<div key={k} className="rc-ts-engrow"><span className="rc-tn">{Tsh.shortDate(w.date)}</span><span>{nm(w.emp)}</span><b>{w.hours} h</b><span className="rc-ts-dim">{w.note}</span></div>))}
+          {tw.length>12&&<div className="rc-ts-dim">and {tw.length-12} earlier</div>}
+        </div></>);})()}
       </>)}
       {ptab==="diagnosis"&&(<>
       <div className="rc-fl" style={{marginBottom:6}}>Diagnosis history <span style={{color:"var(--ft)",textTransform:"none",letterSpacing:0}}>— what's been found on this unit</span></div>
@@ -2792,11 +2822,24 @@ const FM=(t,flds,onSave,need)=>W(<div><div className="rc-mt">{t}</div>{flds.map(
   if(s.modal==="ts-day"&&s.md){const{emp,date,name}=s.md;const today=Tsh.shopToday();const prev=(s.timesheets||[]).find(r=>r.id===Tsh.entryId(emp,date));const lk=Tsh.lockedBy(s.payPeriods,emp,date);const role=(who&&who.role)||"staff";const acc=Tsh.dayAccess({date,today,locked:!!lk,role});
     const val=(k,p)=>f[k]!==undefined?f[k]:p;
     const st=val("tsS",prev?Tsh.toTimeInput(prev.start):""),fi=val("tsF",prev?Tsh.toTimeInput(prev.finish):""),no=val("tsN",prev?prev.notes||"":"");
-    const chk=Tsh.checkTimes(Tsh.fromTimeInput(st),Tsh.fromTimeInput(fi));const empty=!st&&!fi&&!String(no).trim();
+    const chk=Tsh.checkTimes(Tsh.fromTimeInput(st),Tsh.fromTimeInput(fi));
+    // Engines worked on: form lines {engineId: "" (not picked yet) / "other" / the engine's id, hours, note, sku, name}.
+    const toLine=w=>({engineId:w.engineId===""?"other":String(w.engineId),hours:w.hours?String(w.hours):"",note:w.note||"",sku:w.sku||"",name:w.name||""});
+    const wl=f.tsW!==undefined?f.tsW:Tsh.cleanWork(prev&&prev.work).map(toLine);
+    const setW=v=>set("tsW",v);
+    const optOf=id=>tsEngs.find(e=>String(e.id)===String(id));
+    const used=wl.filter(w=>w.engineId!==""||String(w.note).trim()||String(w.hours).trim());
+    const wWhy=used.some(w=>w.engineId==="")?"Pick the engine for each line.":used.some(w=>w.engineId==="other"&&!String(w.note).trim())?"Say what the other work was in its note.":used.some(w=>!Tsh.workHours(w.hours))?"Add how many hours for each engine.":"";
+    const wMin=Math.round(used.reduce((a,w)=>a+Tsh.workHours(w.hours),0)*60);
+    const left=Math.max(0,(chk.min||0)-wMin);
+    const lw=Tsh.lastWork(tsRowsOf(s,emp),date);
+    const work=used.map(w=>{if(w.engineId==="other")return{engineId:"",sku:"",name:"",hours:w.hours,note:w.note};const o=optOf(w.engineId);const id=/^\d+$/.test(w.engineId)?+w.engineId:w.engineId;return{engineId:id,sku:o?o.sku:w.sku,name:o?o.name:w.name,hours:w.hours,note:w.note};});
+    const engOpts=[...tsEngs.map(e=>({id:String(e.id),label:[e.sku,e.name].filter(Boolean).join(" · ")})),...wl.filter(w=>w.engineId!==""&&w.engineId!=="other"&&!optOf(w.engineId)).map(w=>({id:w.engineId,label:[w.sku,w.name].filter(Boolean).join(" · ")||"Engine"}))];
+    const empty=!st&&!fi&&!String(no).trim()&&!used.length;
     // The owner clearing today's fresh entry just removes it (undo from the toast). Everything else, and anything an employee
     // clears, is saved empty, so the history stays and the owner still sees what it said (employees can't delete, 0013).
-    const clear=()=>{if(!acc.can||!prev)return;if(role!=="employee"&&date===today&&!Tsh.wasEdited(prev))d({type:"DELETE",list:"timesheets",id:prev.id});else tsSave(s,d,{emp,date,vals:{start:"",finish:"",notes:""},label:"Cleared "+Tsh.shortDate(date)+". The old times stay in the day's history."});d({type:"CLOSE"});};
-    const save=()=>{if(!acc.can||!chk.ok||empty)return;tsSave(s,d,{emp,date,vals:{start:Tsh.fromTimeInput(st),finish:Tsh.fromTimeInput(fi),notes:String(no).trim()},label:"Saved "+Tsh.shortDate(date)+(chk.min?": "+fH(chk.min)+" h":"")});d({type:"CLOSE"});};
+    const clear=()=>{if(!acc.can||!prev)return;if(role!=="employee"&&date===today&&!Tsh.wasEdited(prev))d({type:"DELETE",list:"timesheets",id:prev.id});else tsSave(s,d,{emp,date,vals:{start:"",finish:"",notes:"",work:[]},label:"Cleared "+Tsh.shortDate(date)+". The old times stay in the day's history."});d({type:"CLOSE"});};
+    const save=()=>{if(!acc.can||!chk.ok||empty||wWhy)return;tsSave(s,d,{emp,date,vals:{start:Tsh.fromTimeInput(st),finish:Tsh.fromTimeInput(fi),notes:String(no).trim(),work},label:"Saved "+Tsh.shortDate(date)+(chk.min?": "+fH(chk.min)+" h":"")});d({type:"CLOSE"});};
     return W(<div>
       <div className="rc-mt">{Tsh.longDate(date)}</div>
       {name&&role!=="employee"&&<div className="rc-ts-dim" style={{marginTop:-8,marginBottom:12}}>{name}</div>}
@@ -2806,7 +2849,22 @@ const FM=(t,flds,onSave,need)=>W(<div><div className="rc-mt">{t}</div>{flds.map(
         <div className="rc-ts-times"><div className="rc-fg"><label className="rc-fl" htmlFor="ts-start">Start</label><input id="ts-start" className="rc-fi" type="time" step="300" value={st} onChange={ev=>set("tsS",ev.target.value)}/></div><div className="rc-fg"><label className="rc-fl" htmlFor="ts-finish">Finish</label><input id="ts-finish" className="rc-fi" type="time" step="300" value={fi} onChange={ev=>set("tsF",ev.target.value)}/></div></div>
         <div className="rc-ts-live" aria-live="polite">{!chk.ok?<span className="rc-ts-errl">{chk.msg}</span>:chk.min?<b>{fH(chk.min)} h{chk.min>Tsh.DAY_MIN?" · "+fH(chk.min-Tsh.DAY_MIN)+" over 8":""}</b>:null}{chk.warn&&<div className="rc-ts-warnl">{chk.warn}</div>}</div>
         <div className="rc-fg"><label className="rc-fl" htmlFor="ts-notes">Notes</label><input id="ts-notes" className="rc-fi" value={no} onChange={ev=>set("tsN",ev.target.value)} placeholder="Job or unit worked on, or sick / stat / vacation"/><div className="rc-ts-chips">{["Sick","Vacation","Stat holiday","Day off"].map(c=>(<button key={c} type="button" className="rc-fb" onClick={()=>set("tsN",c)}>{c}</button>))}</div></div>
-        <div className="rc-fa">{Tsh.isFilled(prev)&&<button className="rc-bs rc-bsr" onClick={clear}>Clear day</button>}{X}<button className="rc-ba" disabled={!chk.ok||empty} onClick={save}>Save</button></div>
+        <div className="rc-fg rc-ts-wbox"><span className="rc-fl" id="ts-wl">Engines worked on</span>
+          {wl.map((w,k)=>(<div key={k} className="rc-ts-wl" role="group" aria-labelledby="ts-wl">
+            <select className="rc-fi" aria-label={"Engine, line "+(k+1)} value={w.engineId} onChange={ev=>setW(wl.map((x,j)=>j===k?{...x,engineId:ev.target.value}:x))} style={{appearance:"none"}}>
+              <option value="">Pick an engine…</option>{engOpts.map(o=>(<option key={o.id} value={o.id}>{o.label}</option>))}<option value="other">Other work (say what in the note)</option></select>
+            <input className="rc-fi rc-ts-wh" aria-label={"Hours, line "+(k+1)} type="number" inputMode="decimal" min="0" step="0.25" placeholder="Hours" value={w.hours} onChange={ev=>setW(wl.map((x,j)=>j===k?{...x,hours:ev.target.value}:x))}/>
+            <input className="rc-fi rc-ts-wn" aria-label={"What was done, line "+(k+1)} placeholder={w.engineId==="other"?"What was the work?":"What you did (optional)"} value={w.note} onChange={ev=>setW(wl.map((x,j)=>j===k?{...x,note:ev.target.value}:x))}/>
+            <button type="button" className="rc-bs rc-ts-wx" aria-label={"Remove line "+(k+1)} onClick={()=>setW(wl.filter((x,j)=>j!==k))}>×</button>
+          </div>))}
+          <div className="rc-ts-chips">
+            <button type="button" className="rc-fb" onClick={()=>setW([...wl,{engineId:"",hours:left?String(Tsh.workHours(left/60)):"",note:"",sku:"",name:""}])}>+ Add engine</button>
+            {lw&&<button type="button" className="rc-fb rc-ts-same" onClick={()=>setW(tsSameWork(lw,chk.min||0).map(toLine))}>↻ Same engine as {Tsh.dow(lw.date)} {Tsh.shortDate(lw.date)}: {lw.work.map(x=>x.sku||(x.engineId===""?"other work":x.name)).join(", ")}</button>}
+          </div>
+          {used.length>0&&<div className={"rc-ts-dim"+(chk.min&&wMin>chk.min?" rc-ts-warnl":"")}>{fH(wMin)} h on engines{chk.min?" of "+fH(chk.min)+" h worked"+(wMin>chk.min?": more than the day's hours":left?" · "+fH(left)+" h not on an engine":""):""}</div>}
+        </div>
+        {WHY(wWhy)}
+        <div className="rc-fa">{Tsh.isFilled(prev)&&<button className="rc-bs rc-bsr" onClick={clear}>Clear day</button>}{X}<button className="rc-ba" disabled={!chk.ok||empty||!!wWhy} onClick={save}>Save</button></div>
       </>)}
       {role!=="employee"&&<TsHistory r={prev}/>}
       {!acc.can&&<div className="rc-fa">{C}</div>}
@@ -3128,6 +3186,18 @@ const CSS=`@import url('${FONTS}');
 .rc-ts-times .rc-fi{font-size:16px;}
 .rc-ts-live{min-height:22px;margin:-4px 0 12px;font-size:14px;}
 .rc-ts-chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px;}
+.rc-ts-wbox{border-top:1px solid var(--ln);padding-top:12px;}
+.rc-ts-wl{display:grid;grid-template-columns:minmax(0,1.6fr) 84px minmax(0,1.2fr) auto;gap:8px;margin-top:8px;align-items:center;}
+.rc-ts-wx{padding:8px 12px;}
+.rc-ts-same{border-color:var(--act);color:var(--act);}
+.rc-ts-work{margin-top:3px;font-size:13px;line-height:1.5;color:var(--tx2);}
+.rc-ts-work b{font-weight:600;color:var(--tx);}
+.rc-ts-engsum{font-size:14px;margin-bottom:6px;}
+.rc-ts-engrow{display:grid;grid-template-columns:70px minmax(0,1fr) 60px minmax(0,1.4fr);gap:8px;font-size:13.5px;padding:4px 0;border-top:1px solid var(--ln);}
+@media(max-width:600px){.rc-ts-engrow{grid-template-columns:60px minmax(0,1fr) 54px;}.rc-ts-engrow .rc-ts-dim{grid-column:1/-1;}}
+.rc-my-same{display:inline-flex;flex-direction:column;align-items:flex-start;gap:1px;}
+.rc-my-same small{font-size:12.5px;font-weight:500;opacity:.9;}
+@media(max-width:600px){.rc-ts-wl{grid-template-columns:1fr 84px auto;}.rc-ts-wl .rc-ts-wn{grid-column:1/-1;grid-row:2;}}
 .rc-ts-loose{align-items:center;margin:-4px 0 12px;}
 .rc-ts-radio{display:grid;gap:8px;font-size:14px;color:var(--tx2);}
 .rc-ts-radio label{display:flex;gap:8px;align-items:center;cursor:pointer;}

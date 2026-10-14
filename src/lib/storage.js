@@ -239,3 +239,13 @@ export const db = {
     if (error) throw error;
   },
 };
+
+// The engines a timesheet can name: id, stock #, name and stage of every engine that isn't sold
+// (migration 0015). Employee logins can't read the inventory, so their day editor asks for this.
+// Locally (no Supabase) returns null and the dashboard uses its own inventory.
+export async function enginePicklist() {
+  if (!supabase) return null;
+  const { data, error } = await supabase.rpc("engine_picklist");
+  if (error) throw error;
+  return (data || []).map((r) => ({ id: r.id, sku: r.sku || "", name: r.name || "", status: r.status || "" }));
+}

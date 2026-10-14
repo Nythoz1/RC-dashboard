@@ -186,13 +186,42 @@ export function dayAccess({ date, today, locked, role }) {
   return { can: true, why: locked ? "locked" : "" };
 }
 
+// ── engines worked on ──
+// A day can list the engines the person worked on and for how long: work:[{engineId, sku, name,
+// hours, note}]. The stock # and name are copied onto the line when it's saved, so the employee's
+// own screen and the printout can show them without reading the inventory. engineId "" is other
+// work (written in the note). Hours are a number, rounded to the quarter hour.
+export const workHours = (v) => { const n = +String(v == null ? "" : v).replace(",", "."); return isFinite(n) && n > 0 ? Math.round(n * 4) / 4 : 0; };
+export function cleanWork(list) {
+  return (Array.isArray(list) ? list : []).map((w) => ({
+    engineId: w && w.engineId != null && w.engineId !== "" ? w.engineId : "",
+    sku: str(w && w.sku), name: str(w && w.name), hours: workHours(w && w.hours), note: str(w && w.note),
+  })).filter((w) => w.engineId !== "" || w.note || w.hours > 0);
+}
+// Minutes on engines that day.
+export const workMin = (e) => Math.round(cleanWork(e && e.work).reduce((a, w) => a + w.hours, 0) * 60);
+// A line the editor can't save yet, and why: an engine with no hours, hours with no engine.
+export function workWhy(list) {
+  const w = (Array.isArray(list) ? list : []).filter((x) => x && (x.engineId !== "" && x.engineId != null || str(x.note) || str(x.hours)));
+  if (w.some((x) => (x.engineId === "" || x.engineId == null) && !str(x.note))) return "Pick the engine for each line, or write what the work was in its note.";
+  if (w.some((x) => !workHours(x.hours))) return "Add how many hours for each engine.";
+  return "";
+}
+// The engines from the last day before `date` that lists any, for "Same engine as …".
+export function lastWork(rows, date) {
+  const r = (rows || []).filter((x) => x && x.date < date && cleanWork(x.work).length).sort((a, b) => (a.date < b.date ? 1 : -1))[0];
+  return r ? { date: r.date, work: cleanWork(r.work) } : null;
+}
+const sameWork = (a, b) => JSON.stringify(cleanWork(a)) === JSON.stringify(cleanWork(b));
+
 // ── saving a day ──
 // The record the editor saves. In the cloud the database stamps the times and
-// keeps the history itself (a trigger in 0011), so history is kept here only for
-// the local, no-backend mode.
+// keeps the history itself (a trigger in 0011, engines added in 0015), so history
+// is kept here only for the local, no-backend mode. vals.work left out keeps the
+// day's engines as they are (the Full day button).
 export function nextEntry(prev, vals, { emp, date, by = "", now = new Date().toISOString(), keepHistory = false } = {}) {
-  const v = { start: str(vals.start), finish: str(vals.finish), notes: str(vals.notes) };
-  const changed = !prev || prev.start !== v.start || prev.finish !== v.finish || (prev.notes || "") !== v.notes;
+  const v = { start: str(vals.start), finish: str(vals.finish), notes: str(vals.notes), work: cleanWork(vals.work === undefined ? prev && prev.work : vals.work) };
+  const changed = !prev || prev.start !== v.start || prev.finish !== v.finish || (prev.notes || "") !== v.notes || !sameWork(prev.work, v.work);
   const history = (prev && prev.history) || [];
   return {
     ...(prev || {}),
@@ -200,11 +229,10 @@ export function nextEntry(prev, vals, { emp, date, by = "", now = new Date().toI
     createdAt: (prev && prev.createdAt) || now,
     updatedAt: changed ? now : (prev && prev.updatedAt) || now,
     by: changed ? by : (prev && prev.by) || by,
-    history: keepHistory && prev && changed ? [...history, { at: prev.updatedAt || prev.createdAt || "", by: prev.by || "", start: prev.start || "", finish: prev.finish || "", notes: prev.notes || "" }] : history,
+    history: keepHistory && prev && changed ? [...history, { at: prev.updatedAt || prev.createdAt || "", by: prev.by || "", start: prev.start || "", finish: prev.finish || "", notes: prev.notes || "", ...(cleanWork(prev.work).length ? { work: cleanWork(prev.work) } : {}) }] : history,
   };
 }
-// A day with times or a note. A cleared day stays as an empty row so its history is kept.
-export const isFilled = (e) => !!(e && (str(e.start) || str(e.finish) || str(e.notes)));
-// Filled in after the day, or changed since: the owner sees a marker and the old versions.
+// A day with times, a note or an engine. A cleared day stays as an empty row so its history is kept.
+export const isFilled = (e) => !!(e && (str(e.start) || str(e.finish) || str(e.notes) || cleanWork(e.work).length));
 export const enteredLate = (e) => !!(e && e.createdAt && e.date && shopToday(new Date(e.createdAt)) > e.date);
 export const wasEdited = (e) => !!(e && ((e.history || []).length > 0 || enteredLate(e)));

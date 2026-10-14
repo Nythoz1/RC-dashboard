@@ -136,3 +136,25 @@ test("pay periods: monthly, twice a month, every two weeks", () => {
   assert.deepEqual(T.periodOf("2026-10-17", "biweekly", "2026-01-05"), { start: "2026-10-12", end: "2026-10-25", kind: "biweekly" });
   assert.equal(T.monthDays("2026-02").length, 28); assert.equal(T.addMonths("2026-12", 1), "2027-01");
 });
+
+test("engines worked on: cleaned, totalled, kept in the history, copied from the last day", () => {
+  const work = [{ engineId: 17, sku: "RC-CUX152021-001", name: "Cummins X15", hours: "5.1" }, { engineId: "", note: "Shop cleanup", hours: 3 }, { engineId: "", hours: "" }];
+  assert.deepEqual(T.cleanWork(work).map((w) => [w.engineId, w.hours]), [[17, 5], ["", 3]]);
+  assert.equal(T.workMin({ work }), 480);
+  assert.equal(T.workWhy([{ engineId: 17, hours: "" }]), "Add how many hours for each engine.");
+  assert.equal(T.workWhy([{ engineId: "", hours: 2 }]), "Pick the engine for each line, or write what the work was in its note.");
+  assert.equal(T.workWhy([{ engineId: 17, hours: 2 }, { engineId: "", hours: "" }]), "");
+  const a = T.nextEntry(null, { ...T.FULL_DAY, work }, { emp: 7, date: "2026-10-05", now: "2026-10-05T22:00:00Z", keepHistory: true });
+  assert.equal(a.work.length, 2);
+  // the Full day button leaves the engines alone; changing them alone is a change with history
+  const kept = T.nextEntry(a, { ...T.FULL_DAY }, { emp: 7, date: "2026-10-05", now: "2026-10-06T15:00:00Z", keepHistory: true });
+  assert.equal(kept.work.length, 2); assert.equal(kept.history.length, 0);
+  const b = T.nextEntry(a, { ...T.FULL_DAY, work: [work[0]] }, { emp: 7, date: "2026-10-05", now: "2026-10-06T15:00:00Z", keepHistory: true });
+  assert.equal(b.history.length, 1); assert.equal(b.history[0].work.length, 2);
+  // a day with only an engine on it counts as filled in; clearing empties it
+  assert.equal(T.isFilled({ work: [work[0]] }), true);
+  assert.equal(T.isFilled(T.nextEntry(b, { start: "", finish: "", notes: "", work: [] }, { emp: 7, date: "2026-10-05" })), false);
+  const rows = [b, { date: "2026-10-06", work: [] }, { date: "2026-10-01", work: [{ engineId: 9, hours: 8 }] }];
+  assert.deepEqual(T.lastWork(rows, "2026-10-07"), { date: "2026-10-05", work: T.cleanWork([work[0]]) });
+  assert.equal(T.lastWork(rows, "2026-10-01"), null);
+});
