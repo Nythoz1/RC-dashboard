@@ -79,3 +79,12 @@ test("when the crew is off: back at 8, tomorrow, or Monday", () => {
   assert.equal(C.backAt("2026-10-10", 600), "back Monday at 8:00 AM");
   assert.equal(C.backAt("2026-10-11", 600), "back tomorrow at 8:00 AM");
 });
+
+test("Friday is a half day: the crew goes home at 1:00 PM and the hours stop there", () => {
+  const fri = "2026-10-16";
+  assert.equal(C.shiftEnd(fri), 780);
+  assert.equal(C.onShift(fri, 779), true);
+  assert.equal(C.onShift(fri, 780), false);
+  assert.equal(C.workedMin(fri, 900), 300);
+  assert.deepEqual(C.hoursDone(0, 2000, C.shiftEnd(fri)), [540, 600, 660, 720, 780]);
+});

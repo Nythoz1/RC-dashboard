@@ -15,6 +15,9 @@ export const DAY_MIN = 480;    // 8 h a day
 export const WEEK_MIN = 2640;  // 44 h a week
 export const LONG_SHIFT_H = 14;
 export const FULL_DAY = { start: "8:00 AM", finish: "4:00 PM" };
+// Fridays are a half day: 8:00 AM to 1:00 PM. fullDay(date) is the full day for that date
+// (the Full day button, the automatic fill-in at the end of the day, the 3D crew's clock).
+export const FRIDAY_DAY = { start: "8:00 AM", finish: "1:00 PM" };
 export const SHOP_TZ = "America/Edmonton";
 const MONTH_NAMES = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 const DOW = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -58,6 +61,8 @@ export function shopToday(now = new Date()) {
 const utc = (iso) => new Date(iso + "T12:00:00Z");
 export const dow = (iso) => DOW[utc(iso).getUTCDay()];
 export const isWeekday = (iso) => { const d = utc(iso).getUTCDay(); return d >= 1 && d <= 5; };
+export const fullDay = (iso) => (utc(iso).getUTCDay() === 5 ? FRIDAY_DAY : FULL_DAY);
+export const fullDayMin = (iso) => timeMin(fullDay(iso).finish) - timeMin(fullDay(iso).start);
 export function addDaysISO(iso, n) { const d = utc(iso); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); }
 // The Monday on or before the date.
 export function weekStart(iso) { const d = utc(iso); d.setUTCDate(d.getUTCDate() - ((d.getUTCDay() + 6) % 7)); return d.toISOString().slice(0, 10); }

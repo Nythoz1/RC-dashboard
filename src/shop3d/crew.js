@@ -2,7 +2,7 @@
 // them earns every hour. No three.js in here, so the dashboard and tests/crew.test.mjs can use it
 // without the 3D chunk. Units are feet, like areas.js; ry turns a person (0 faces the street; -π/2
 // faces the south fence).
-import { FULL_DAY, SHOP_TZ, timeMin, isWeekday } from "../lib/timesheet.js";
+import { FULL_DAY, SHOP_TZ, timeMin, isWeekday, fullDay } from "../lib/timesheet.js";
 
 const P = Math.PI;
 // act is what they do there (scene.js animates it): wrench, bench, wash, fetch, shelf, desk
@@ -55,7 +55,8 @@ export function crewList(employees) {
   return active.map((e) => ({ id: e.id, name: e.name || "", short: e.nick || String(e.name || "").split(" ")[0] || "Crew", role: e.role || "", rate: +e.rate || 0, station: e.station || "", ...out.get(e.id) }));
 }
 
-// ── the day: 8:00 AM to 4:00 PM, Monday to Friday, in Medicine Hat ──
+// ── the day: 8:00 AM to 4:00 PM Monday to Thursday, 8:00 AM to 1:00 PM Friday, in Medicine Hat ──
+// SHIFT is the long day (Play the day replays one); shiftEnd(date) is when that date's day ends.
 export const SHIFT = { start: timeMin(FULL_DAY.start), end: timeMin(FULL_DAY.finish) };
 export const SHIFT_MIN = SHIFT.end - SHIFT.start;
 // The date and the minute of the day in Medicine Hat, whatever the device's time zone.
@@ -63,14 +64,15 @@ export function shopClock(now = new Date()) {
   const p = Object.fromEntries(new Intl.DateTimeFormat("en-CA", { timeZone: SHOP_TZ, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23" }).formatToParts(now).map((x) => [x.type, x.value]));
   return { date: p.year + "-" + p.month + "-" + p.day, min: (+p.hour % 24) * 60 + +p.minute + +p.second / 60 };
 }
-export const onShift = (date, min) => isWeekday(date) && min >= SHIFT.start && min < SHIFT.end;
-// Minutes worked so far that day: 0 before 8:00, the whole 480 after 4:00, nothing on a weekend.
-export const workedMin = (date, min) => (isWeekday(date) ? Math.max(0, Math.min(SHIFT_MIN, min - SHIFT.start)) : 0);
+export const shiftEnd = (date) => (isWeekday(date) ? timeMin(fullDay(date).finish) : SHIFT.start);
+export const onShift = (date, min) => isWeekday(date) && min >= SHIFT.start && min < shiftEnd(date);
+// Minutes worked so far that day: 0 before 8:00, the whole day once it ends (480, or 300 on a Friday), nothing on a weekend.
+export const workedMin = (date, min) => (isWeekday(date) ? Math.max(0, Math.min(shiftEnd(date) - SHIFT.start, min - SHIFT.start)) : 0);
 // The hours that finished after `from` and up to `to` (9:00 AM is the first, 4:00 PM the last):
 // each one is an hour's wage paid out.
-export function hoursDone(from, to) {
+export function hoursDone(from, to, end = SHIFT.end) {
   const out = [];
-  for (let h = SHIFT.start + 60; h <= SHIFT.end; h += 60) if (h > from && h <= to) out.push(h);
+  for (let h = SHIFT.start + 60; h <= end; h += 60) if (h > from && h <= to) out.push(h);
   return out;
 }
 // What the crew has earned so far today: each person's rate × the hours worked.
