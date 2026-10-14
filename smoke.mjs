@@ -409,8 +409,15 @@ const signOut=async()=>{await q.click('.rc-link:has-text("Sign out")');await q.w
 const toTimesheets=async()=>{await q.click('.rc-ni:has-text("Team")');await q.click('.rc-ts-seg button:has-text("Timesheets")');await q.waitForSelector(".rc-ts-bar");await pickMike(q);await q.locator('select[aria-label="Pay period"]').selectOption(PREV+"-01");};
 const dbDay=async date=>((await sb.sql("select data from timesheet_entries where employee_id = 101 and work_date = $1::date",[date]))[0]||{}).data||null;
 const MIKE="mike@rollincoal.test";
-await q.goto("http://localhost:4174/");
+// A scanned QR tag, opened signed out: sign in and that engine's record opens (it used to look for it before the shop data had loaded).
+await sb.sql("insert into inventory (id, sku, name, cat, status, data) values (777001, 'RC-CUX152021-901', 'Cummins X15 tag test', 'Complete Engine', 'available', $1::jsonb)",[JSON.stringify({id:777001,sku:"RC-CUX152021-901",name:"Cummins X15 tag test",cat:"Complete Engine",status:"available",qty:1})]);
+await q.goto("http://localhost:4174/?engine=777001");
 await signIn(users[0].email,users[0].password);
+await q.waitForTimeout(1500);
+const tagOpened=await q.locator('.rc-mod:has-text("RC-CUX152021-901")').count()>0;const tagMiss=await q.locator('.rc-toast:has-text("isn\'t in the inventory")').count();const tagUrl=new URL(q.url()).search;
+console.log("scanned tag after signing in: record opened "+tagOpened+" | 'not in the inventory' toast "+tagMiss+" | address left "+JSON.stringify(tagUrl));
+if(tagOpened)await q.keyboard.press("Escape");
+await sb.sql("delete from inventory where id = 777001");
 const resetLinks=await q.locator('.rc-sfoot .rc-link:has-text("Reset")').count();
 await q.click('.rc-ni:has-text("Team")');
 await q.click(".rc-main table.rc-tbl tbody tr:has-text('Mike Test') button:has-text('Give a login')");

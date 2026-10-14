@@ -3458,7 +3458,10 @@ export default function App(){
   const[s,d]=useReducer(reducer,EMPTY);const[loading,setLoading]=useState(true);const[loadErr,setLoadErr]=useState(false);const[time,setTime]=useState(new Date());
   const lastSaved=useRef(null);const sRef=useRef(s);sRef.current=s;
   // Lists this device loaded that were never stored (seeds): their first save sends the whole list too.
-  const fresh=useRef(new Set());const took=data=>{fresh.current=new Set(data.__fresh||[]);delete data.__fresh;lastSaved.current=data;d({type:"LOAD",d:data});};
+  const fresh=useRef(new Set());
+  // Which login's data is on screen: a scanned tag waits for it (right after signing in, `loading` is
+  // still false for one render before the load starts, with no shop data yet).
+  const loadedFor=useRef(null);const took=data=>{fresh.current=new Set(data.__fresh||[]);delete data.__fresh;lastSaved.current=data;loadedFor.current=live.current.role;d({type:"LOAD",d:data});};
   // Colour theme is a per-device preference (lib/prefs.js), never shop data: Day by default, Night, or Auto (follow the phone/computer).
   const[themePref,setThemePref]=useState(()=>getPref("rc:theme","day"));
   const[sysDark,setSysDark]=useState(()=>{try{return window.matchMedia("(prefers-color-scheme: dark)").matches;}catch(e){return false;}});
@@ -3485,9 +3488,9 @@ export default function App(){
   // SOLD splash: air horn (unless muted) + auto-dismiss
   useEffect(()=>{if(!s.soldSplash)return;if(getSet(s).soundOn!==false)horn();const t=setTimeout(()=>d({type:"SPLASH",d:null}),6500);return()=>clearTimeout(t);},[s.soldSplash]);
   // Load data once authenticated (immediately in localStorage mode). Never loads/saves while logged out.
-  useEffect(()=>{if(!authed||role==="none"){setLoading(false);return;}let off=false;setLoading(true);setLoadErr(false);(async()=>{try{const data=await loadAll(role);if(off)return;if(data.__loadError){setLoadErr(true);setLoading(false);return;}took(data);}catch(e){if(!off)setLoadErr(true);}if(!off)setLoading(false);})();return()=>{off=true;};},[authed,role]);
+  useEffect(()=>{if(!authed||role==="none"){setLoading(false);return;}let off=false;loadedFor.current=null;setLoading(true);setLoadErr(false);(async()=>{try{const data=await loadAll(role);if(off)return;if(data.__loadError){setLoadErr(true);setLoading(false);return;}took(data);}catch(e){if(!off)setLoadErr(true);}if(!off)setLoading(false);})();return()=>{off=true;};},[authed,role]);
   // A scanned QR tag (?engine=<id>) opens that engine's record once the shop's data is in (after signing in).
-  useEffect(()=>{if(loading||!authed||loadErr)return;const id=takeEngineParam();if(!id)return;
+  useEffect(()=>{if(loading||!authed||loadErr)return;if(role!=='employee'&&role!=='none'&&loadedFor.current!==role)return;const id=takeEngineParam();if(!id)return;
     if(role==="employee"||role==="none"){d({type:"TOAST",d:{msg:"That tag opens an engine's record, and this login doesn't have access to the inventory.",t:Date.now(),long:true}});return;}
     const eng=(sRef.current.inventory||[]).find(x=>sameId(x.id,id));
     if(eng){d({type:"TAB",v:"inventory"});d({type:"MODAL",v:"part-detail",d:{...eng,ptab:"overview"}});}else d({type:"TOAST",d:{msg:"That engine isn't in the inventory any more.",t:Date.now(),long:true}});},[loading,authed,loadErr,role]);
