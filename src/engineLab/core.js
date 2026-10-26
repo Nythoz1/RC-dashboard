@@ -229,7 +229,7 @@ function buildShop(){
   for(const[x,z]of[[34,-36],[37.5,-31],[30,-31.5]]){const d=new THREE.Group();d.add(latheX([[0.001,0],[2.9,0],[2.95,.15],[2.95,8.6],[2.9,8.8],[0.001,8.8]],blue,0,0,0,48));d.rotation.z=Math.PI/2;
     for(const y of[3,5.8])d.add(torus(2.98,.08,'x',blue,y,0,0,48));d.add(cyl(.35,.35,.15,'x',MAT.steel(),8.85,1.5,0,6));P(d,x,0,z);}
   // engine stands (front cradle under the mount pads, rear cradle bolted to the block skirt)
-  standG=new THREE.Group();floorG.add(standG);const yel=new THREE.MeshPhysicalMaterial({color:0xd9a215,roughness:.45,metalness:.3,clearcoat:.5,bumpMap:TX.peel,bumpScale:.3});
+  standG=new THREE.Group();floorG.add(standG);const yel=new THREE.MeshPhysicalMaterial({color:meta.stand||0xd9a215,roughness:.45,metalness:.3,clearcoat:.5,bumpMap:TX.peel,bumpScale:.3});
   const top=-FLOOR_Y;
   for(const[x,yTop]of[[3.9,top+0.38],[-4.6,top-0.2]]){
     standG.add(box(1.2,.6,7.5,yel,x,.6,0));for(const dz of[-3.4,3.4]){standG.add(box(2.6,.4,1,yel,x,.4,dz));for(const dx of[-1,1])standG.add(cyl(.45,.45,.4,'z',MAT.rubber(),x+dx,.45,dz,16));}
@@ -467,7 +467,7 @@ const tmpV=new THREE.Vector3();
 function updateMechanism(dt){
   const th=st.theta*D2R;
   for(const k of['crank','rodBrg','fly','damper'])if(A[k])A[k].rotation.x=th;
-  E.spin(A,th,st.theta);
+  E.spin(A,th,st.theta);   // th: crank angle in radians; st.theta: the same in degrees (0–720 per cycle repeats)
   for(let i=0;i<6;i++){const ph=PH[i];const phi=th-ph*D2R;const yc=R*Math.cos(phi),zc=R*Math.sin(phi);const yp=yc+Math.sqrt(L*L-zc*zc);
     A.rod[i].position.set(X(i+1),yc,zc);A.rod[i].rotation.x=Math.atan2(-zc,yp-yc);
     A.pist[i].position.y=yp;A.ring[i].position.y=yp;A.pin[i].position.y=yp;
@@ -521,7 +521,7 @@ function tick(){const dt=Math.min(clock.getDelta(),0.05);
 addEventListener('resize',()=>{camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();renderer.setSize(innerWidth,innerHeight);labelR.setSize(innerWidth,innerHeight);if(composer)composer.setSize(innerWidth,innerHeight);});
 
 /* ================= START ================= */
-document.title=meta.name+' · Engine Lab · Rollin Coal';$('mark').textContent=meta.mark;$('engSub').textContent=meta.sub;$('rRailL').textContent=meta.hud.rail;
+document.title=meta.name+' · Engine Lab · Rollin Coal';$('mark').textContent=meta.mark;$('engSub').textContent=meta.sub;$('rRailL').textContent=meta.hud.rail;if(meta.hud.boost)$('rBoostL').textContent=meta.hud.boost;
 $('q').placeholder=`Search ${P.length} parts`;
 const chk0=opts.parts&&opts.parts.length?opts.parts.filter(id=>parts[id]):[];
 if(opts.parts&&opts.parts.length){st.check={ids:[...new Set(chk0)],why:opts.why||'',only:true};}
