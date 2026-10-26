@@ -532,4 +532,12 @@ updRun();
 $('loading').remove();
 renderer.setAnimationLoop(tick);
 if(opts.part&&parts[opts.part])setTimeout(()=>select(opts.part,true),300);else if(st.check&&st.check.ids.length)setTimeout(frameCheck,300);
+/* The dashboard's Diagnose panel drives the checklist from outside, without reloading the engine:
+   {type:'rc-lab-check', ids, why} shows those parts (none: clears it), {type:'rc-lab-part', id} opens one.
+   Same origin only. The lab says {type:'rc-lab-ready', engine, parts:[[id,name]…]} once it's up. */
+addEventListener('message',e=>{if(e.origin!==location.origin)return;const m=e.data||{};
+  if(m.type==='rc-lab-check'){const ids=[...new Set((m.ids||[]).filter(id=>parts[id]))];st.check=ids.length?{ids,why:m.why||'',only:true}:null;st.sel=null;st.isolate=false;
+    if(st.building)showTab('parts');if(st.buildStep<STEPS.length-1)setBuildStep(STEPS.length-1,false);applyMats();refreshLabels();renderParts();renderInfo();if(ids.length)frameCheck();}
+  else if(m.type==='rc-lab-part'&&parts[m.id])select(m.id,true);});
+if(parent!==window)parent.postMessage({type:'rc-lab-ready',engine:meta.id,parts:P.map(p=>[p.id,p.n])},location.origin);
 }

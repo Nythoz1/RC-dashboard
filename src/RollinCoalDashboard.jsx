@@ -406,7 +406,7 @@ const SYMPTOM_PARTS={
 };
 const labParts=sym=>[...new Set((sym||[]).flatMap(t=>SYMPTOM_PARTS[t]||[]))];
 const labUrl=({engine,parts,why,part})=>{const q=new URLSearchParams({engine});if(parts&&parts.length){q.set("parts",parts.join(","));if(why)q.set("why",why);}if(part)q.set("part",part);return "/engine-lab.html?"+q.toString();};
-const labFocus=(eng,sym)=>{const L=labFor(eng);return L?{lab:1,engine:L.id,parts:labParts(sym),why:(sym||[]).join(", "),title:eng.sku||eng.name||""}:null;};
+const labFocus=(eng,sym)=>{const L=labFor(eng);return L?{lab:1,engine:L.id,engId:eng.id,sym:sym||[],parts:labParts(sym),why:(sym||[]).join(", "),title:eng.sku||eng.name||""}:null;};
 const labOpen=(d,eng,sym)=>{const f=labFocus(eng,sym);if(!f)return;d({type:"CLOSE"});d({type:"TAB",v:"lab",focus:f});};
 const FAM_LABEL={"60SERIES":"Series 60",SERIES60:"Series 60",FORD67:"Ford 6.7",GM65:"GM 6.5",MAXXFORCEDT:"MaxxForce DT",MAXXFORCE13:"MaxxForce 13",MAXXFORCE11:"MaxxForce 11",YANMAR:"Yanmar",DEUTZ:"Deutz",PERKINS:"Perkins",KUBOTA:"Kubota"};
 const famLabel=k=>FAM_LABEL[k]||k;
@@ -1751,15 +1751,98 @@ function printTimesheet(s,e,P,owner){
   w.document.open();w.document.write(html);w.document.close();
 }
 
-// Shop → Engine Lab: the lab in a frame. Opened from a diagnosis (s.focus = labFocus(…)) it shows that
-// engine with the parts to check for the symptoms; otherwise the lab's own engine picker is used.
+// Words in a cause or a known issue → the lab's part ids, longest phrases first (each phrase is used up once
+// matched, so "EGR cooler" doesn't also count as a cooler). Only ids the engine has are kept.
+const PART_WORDS=[["turbo compound","turboCompound"],["egr cooler","egrCooler"],["egr valve","egrValve"],["egr tube","egrTube"],["egr crossover","egrTube"],["egr mixer","intakeConnection"],["egr","egrValve,egrCooler"],["variable geometry","vgt"],["vgt","vgt"],["wastegate","wastegate"],["turbo speed","turboSensor"],["turbocharger","turbine,compressor,chra"],["turbo","turbine,compressor,chra"],["charge air","chargePipes"],["boost leak","chargePipes"],["cac","chargePipes"],["intake manifold pressure","imap"],["boost sensor","imap"],["imap","imap"],["intake manifold","intakeManifold"],["exhaust manifold","exhaustManifold"],["head gasket","headGasket"],["cylinder head","head"],["injector cup","injectors,head"],["injector rocker","injRockers"],["injector","injectors"],["rail pressure sensor","railSensor"],["rail pressure","fuelRail,railSensor,fuelPump"],["common rail","fuelRail"],["fuel rail","fuelRail"],["high pressure line","hpLines"],["high-pressure line","hpLines"],["fuel connector","connectors"],["transfer pump","transferPump"],["lift pump","transferPump,fuelFilter"],["fuel pump","fuelPump,transferPump"],["fuel filter","fuelFilter"],["water separator","fuelFilter"],["fuel pressure sensor","fuelSensor"],["water pump","waterPump"],["thermostat","thermostat"],["fan clutch","fan"],["radiator","fan"],["oil cooler","oilCooler"],["oil pump","oilPump"],["oil filter","oilFilter"],["oil pressure sensor","oilSensor"],["coolant temperature sensor","coolantSensor"],["coolant temp sensor","coolantSensor"],["liner","liners"],["piston ring","rings"],["ring","rings"],["piston","pistons"],["wrist pin","wristPins"],["connecting rod","rods"],["rod bearing","bearings"],["main bearing","bearings"],["bearing","bearings"],["crankshaft position","crankSensor"],["crank position","crankSensor"],["crank sensor","crankSensor"],["crankshaft","crankshaft"],["camshaft position","camSensor"],["cam position","camSensor"],["cam sensor","camSensor"],["camshaft","camshaft,camshaftEx"],["rocker","rockers"],["lash","rockers,crossheads"],["crosshead","crossheads"],["valve bridge","crossheads"],["valve spring","springs"],["valve","valves"],["engine brake","brake"],["jake","brake"],["compression brake","brake"],["gear train","gearTrain"],["timing gear","gearTrain"],["damper","damper"],["flywheel","flywheel"],["air compressor","airCompressor"],["alternator","alternator"],["starter","starter"],["belt","belt"],["ecm","ecm"],["mcm","ecm"],["adem","ecm"],["harness","ecm"],["dpf","exhaustOutlet"],["doc","exhaustOutlet"],["scr","exhaustOutlet"],["aftertreatment","exhaustOutlet"],["oil pan","oilPan"],["block","block"]];
+const partsInText=(txt,have)=>{let t=" "+String(txt||"").toLowerCase()+" ";const out=[];
+  PART_WORDS.forEach(([w,ids])=>{const re=new RegExp("(^|[^a-z])"+w.replace(/[ -]/g,"[ -]?")+"s?(?![a-z])","g");if(re.test(t)){ids.split(",").forEach(id=>{if((!have||have.has(id))&&!out.includes(id))out.push(id);});t=t.replace(re," ");}});return out;};
+// What Claude may and may not say here. Repeated in the message, since a function deployed before system prompts ignores them.
+const LAB_AI_RULES="You are a senior heavy-duty diesel technician at Rollin Coal, a diesel engine shop in Medicine Hat, Alberta. Diagnose from the symptoms given: rank the likely causes, most likely first; for each, say why it fits, how to confirm it (quickest and cheapest checks first: readings, fault codes, pressure tests, inspections) and the repair. Only use the part ids you're given. Never recommend removing, disabling, bypassing or tuning out EGR, DPF, SCR, DEF or any other emissions equipment: a faulty emissions part is diagnosed and repaired or replaced. Don't invent torque values, clearances or calibration numbers: say to take them from the service literature for the engine serial number. Answer with JSON only.";
+// The JSON in Claude's answer, or null.
+const labJson=t=>{const a=String(t||"").indexOf("{"),b=String(t||"").lastIndexOf("}");if(a<0||b<=a)return null;try{const j=JSON.parse(t.slice(a,b+1));return j&&Array.isArray(j.causes)?j:null;}catch(e){return null;}};
+
+// Shop → Engine Lab: the lab in a frame, with the Diagnose panel beside it. Pick one of our engines (or a
+// model), tick the symptoms, add codes or notes, Diagnose: Claude's ranked causes (each with how to confirm
+// and fix, and 🧊 Show to light its parts on the engine), the matching known issues and what this shop has
+// found before. Opened from a diagnosis (s.focus = labFocus(…)) it starts on that engine and its symptoms.
 function EngineLab({s,d}){
   const f=s.focus&&typeof s.focus==="object"&&s.focus.lab?s.focus:null;
-  const src=labUrl(f||{engine:LAB_ENGINES[0].id});const L=f?LAB_ENGINES.find(e=>e.id===f.engine):null;
+  const ours=(s.inventory||[]).filter(i=>isEngine(i)&&labFor(i)&&engStatus(i)!=="sold");
+  const[engId,setEngId]=useState(()=>f&&f.engId?String(f.engId):"");
+  const eng=ours.find(i=>sameId(i.id,engId))||null;
+  const[labId,setLabId]=useState(()=>f?f.engine:LAB_ENGINES[0].id);
+  const L=LAB_ENGINES.find(e=>e.id===(eng?labFor(eng).id:labId))||LAB_ENGINES[0];
+  const[sym,setSym]=useState(()=>f&&f.sym?f.sym:[]);const[codes,setCodes]=useState("");const[notes,setNotes]=useState("");
+  const[res,setRes]=useState(null);const[busy,setBusy]=useState(false);const[shown,setShown]=useState(null);
+  const[labParts0,setLabParts0]=useState(null);   // [[id,name]…] of the engine on screen, from the lab
+  const frame=useRef(null);const pending=useRef(f&&f.parts&&f.parts.length?{ids:f.parts,why:f.why}:null);
+  const src=labUrl({engine:L.id,...(pending.current&&f&&f.engine===L.id?{parts:pending.current.ids,why:pending.current.why}:{})});
+  useEffect(()=>{const on=e=>{if(e.origin!==location.origin||!e.data||e.data.type!=="rc-lab-ready")return;setLabParts0(e.data.parts||[]);if(pending.current&&frame.current)frame.current.contentWindow.postMessage({type:"rc-lab-check",...pending.current},location.origin);};addEventListener("message",on);return()=>removeEventListener("message",on);},[]);
+  useEffect(()=>{setLabParts0(null);setRes(null);setShown(null);},[L.id]);
+  const show=(ids,why,key)=>{pending.current={ids,why};setShown(key);if(frame.current&&frame.current.contentWindow)frame.current.contentWindow.postMessage({type:"rc-lab-check",ids,why},location.origin);};
+  const have=labParts0?new Set(labParts0.map(x=>x[0])):null;const nameOf=id=>{const x=(labParts0||[]).find(y=>y[0]===id);return x?x[1]:id;};
+  // The engine the knowledge base is matched against. The 2017+ X15 is the ISX15's family, filed under ISX15.
+  const target=eng?{...eng,name:eng.name+(familyKey(eng)==="X15"?" ISX15":"")}:{name:L.label};
+  const tog=t=>setSym(sym.includes(t)?sym.filter(x=>x!==t):[...sym,t]);
+  const codeList=String(codes).split(/[,;\n]+/).map(x=>x.trim().replace(/\s+/g," ").toUpperCase()).filter(x=>x.length>=2);
+  const known=()=>issuesFor(s,target).map(is=>{const ov=(is.symptoms||[]).filter(y=>sym.includes(y)).length;const txt=[is.title,is.causes,is.confirm,is.fix,is.notes].join(" ").toUpperCase();const hit=codeList.filter(c=>txt.includes(c)).length;return{is,score:ov*2+hit*3+({high:1,medium:0.5}[is.severity]||0),ov,hit};}).filter(x=>x.ov||x.hit).sort((a,b)=>b.score-a.score).slice(0,6);
+  const issueParts=is=>{const fromText=partsInText([is.title,is.causes,is.fix,is.parts].join(". "),have);return fromText.length?fromText:labParts(is.symptoms).filter(id=>!have||have.has(id));};
+  const run=async()=>{if(!sym.length&&!codeList.length&&!String(notes).trim())return;setBusy(true);
+    const kn=known(),prior=dxMatches(s,eng||target,sym).slice(0,6);setRes({kn,prior,ai:null,aiText:"",at:Date.now()});
+    const fallback=labParts(sym).filter(id=>!have||have.has(id));if(fallback.length)show(fallback,sym.join(", "),"sym");
+    const ids=(labParts0||[]).map(([id,n])=>id+": "+n).join("\n");
+    const about=eng?[eng.name,eng.year,hpTxt(eng),eng.serial||eng.esn?"ESN "+(eng.serial||eng.esn):"",eng.condition].filter(Boolean).join(", "):L.label;
+    const prompt=LAB_AI_RULES+"\n\nEngine: "+about+" ("+L.label+")\nSymptoms: "+(sym.join(", ")||"none ticked")+(codeList.length?"\nFault codes: "+codeList.join(", "):"")+(String(notes).trim()?"\nNotes from the tech: "+String(notes).trim():"")+
+      (kn.length?"\n\nKnown issues on this family from the shop's knowledge base:\n"+kn.map(x=>"- "+x.is.title+": "+(x.is.causes||"")+(x.is.fix?" Fix: "+x.is.fix:"")).join("\n"):"")+
+      (prior.length?"\n\nWhat this shop found before on the same symptoms:\n"+prior.map(x=>"- "+(x.symptoms||[]).join("/")+": "+(x.findings||"")+(x.fix?" → "+x.fix:"")).join("\n"):"")+
+      "\n\nPart ids you may use (id: name):\n"+(ids||"(not loaded)")+
+      '\n\nReply with JSON only, no other text: {"summary":"one or two sentences","causes":[{"title":"","likelihood":"high|medium|low","why":"","confirm":["check 1","check 2"],"fix":"","parts":["partId"]}],"safety":"anything to watch out for, or empty"}. Up to 5 causes, most likely first.';
+    const t=await askClaude(prompt,{system:LAB_AI_RULES});const j=labJson(t);
+    setRes(r=>r?{...r,ai:j,aiText:j?"":t}:r);setBusy(false);
+    if(j&&j.causes.length){const top=(j.causes[0].parts||[]).filter(id=>!have||have.has(id));if(top.length)show(top,j.causes[0].title,"ai0");}};
+  const logIt=()=>{if(!eng)return;const top=res&&res.ai&&res.ai.causes[0];d({type:"MODAL",v:"add-dx",d:{prefill:{date:isoToday(),engineId:eng.id,symptoms:sym,codes:codeList.join(", "),findings:[String(notes).trim(),top?"Likely: "+top.title+(top.why?" ("+top.why+")":""):""].filter(Boolean).join("\n")}}});};
+  const lk={high:"var(--r)",medium:"var(--w)",low:"var(--mt)"};
+  const Show=({ids,why,k})=>ids.length?<button className={"rc-fb rc-lab-show"+(shown===k?" on":"")} onClick={()=>show(ids,why,k)} title={ids.map(nameOf).join(", ")}>🧊 Show</button>:null;
   return(<div className="rc-lab">
-    <div className="rc-lab-bar">{f?<span className="rc-lab-why">🧊 {L?L.label:"Engine"}{f.title?" · "+f.title:""}{f.why?<> · parts to check for <b>{f.why}</b></>:null}</span>:<span className="rc-ts-dim">Each engine built part by part and running: pick one in the lab, click any part to see what it does, or follow the build. Diagnoses open it on the parts to check.</span>}
-      <span className="rc-lab-acts">{f&&<button className="rc-bs" onClick={()=>d({type:"TAB",v:"lab"})}>Clear</button>}<a className="rc-bs" href={src} target="_blank" rel="noopener">Open full screen ↗</a></span></div>
-    <iframe key={src} title="Engine Lab" src={src} className="rc-lab-frame" allow="fullscreen"/>
+    <div className="rc-labx">
+      <div className="rc-card rc-lab-dx">
+        <div className="rc-lab-h">Diagnose</div>
+        <div className="rc-fg"><label className="rc-fl" htmlFor="lab-eng">Engine</label>
+          <select id="lab-eng" className="rc-fi" value={eng?"e"+eng.id:"m"+L.id} onChange={e=>{const v=e.target.value;if(v[0]==="e"){setEngId(v.slice(1));}else{setEngId("");setLabId(v.slice(1));}}} style={{appearance:"none"}}>
+            <optgroup label="Models">{LAB_ENGINES.map(x=>(<option key={x.id} value={"m"+x.id}>{x.label}</option>))}</optgroup>
+            {ours.length>0&&<optgroup label="Our engines">{ours.map(i=>(<option key={i.id} value={"e"+i.id}>{(i.sku?i.sku+" · ":"")+i.name}</option>))}</optgroup>}
+          </select></div>
+        <div className="rc-fg"><span className="rc-fl">Symptoms</span><div className="rc-ts-chips">{SYMPTOMS.map(t=>(<button key={t} type="button" className={"rc-fb"+(sym.includes(t)?" on":"")} aria-pressed={sym.includes(t)} onClick={()=>tog(t)}>{t}</button>))}</div></div>
+        <div className="rc-fg"><label className="rc-fl" htmlFor="lab-codes">Fault codes</label><input id="lab-codes" className="rc-fi" value={codes} onChange={e=>setCodes(e.target.value)} placeholder="e.g. SPN 3251 FMI 0, P0299"/></div>
+        <div className="rc-fg"><label className="rc-fl" htmlFor="lab-notes">What you're seeing</label><textarea id="lab-notes" className="rc-fi" rows={3} value={notes} onChange={e=>setNotes(e.target.value)} placeholder="When it happens, readings, what's been tried"/></div>
+        {!sym.length&&!codeList.length&&!String(notes).trim()?<div className="rc-why" role="status">Tick a symptom, or add a code or what you're seeing.</div>:null}
+        <div className="rc-fa" style={{justifyContent:"flex-start"}}><button className="rc-ba" disabled={busy||(!sym.length&&!codeList.length&&!String(notes).trim())} onClick={run}>{busy?"⏳ Diagnosing…":"🔎 Diagnose"}</button>{res&&<button className="rc-bs" onClick={()=>{setRes(null);show([],"",null);}}>Clear</button>}{res&&eng&&<button className="rc-bs" onClick={logIt}>Log as a diagnosis</button>}</div>
+        {res&&<div className="rc-lab-res" aria-live="polite">
+          {res.ai?(<>
+            {res.ai.summary&&<p className="rc-lab-sum">{res.ai.summary}</p>}
+            {res.ai.causes.map((c,k)=>{const ids=(c.parts||[]).filter(id=>!have||have.has(id));return(<div key={k} className={"rc-lab-cause"+(shown==="ai"+k?" on":"")}>
+              <div className="rc-lab-ct"><b>{k+1}. {c.title}</b>{c.likelihood&&<span style={{color:lk[c.likelihood]||"var(--mt)"}}>{c.likelihood}</span>}<Show ids={ids} why={c.title} k={"ai"+k}/></div>
+              {c.why&&<p>{c.why}</p>}
+              {(c.confirm||[]).length>0&&<><div className="rc-fl">Confirm</div><ol>{c.confirm.map((x,j)=>(<li key={j}>{x}</li>))}</ol></>}
+              {c.fix&&<><div className="rc-fl">Fix</div><p>{c.fix}</p></>}
+              {ids.length>0&&<div className="rc-lab-pp2">{ids.map(id=>(<button key={id} className="rc-lnk" onClick={()=>{show(ids,c.title,"ai"+k);if(frame.current)frame.current.contentWindow.postMessage({type:"rc-lab-part",id},location.origin);}}>{nameOf(id)}</button>))}</div>}
+            </div>);})}
+            {res.ai.safety&&<div className="rc-ts-warnl">⚠ {res.ai.safety}</div>}
+            <div className="rc-ts-dim">Claude's read of the symptoms, to point you where to look first. Confirm with readings and the service literature before replacing parts.</div>
+          </>):busy?<div className="rc-ts-dim">Claude is working through it…</div>:res.aiText?<div className="rc-ts-note">{res.aiText}</div>:null}
+          {res.kn.length>0&&<><div className="rc-lab-h2">Known issues on {famLabel(familyKey(target))}</div>{res.kn.map(({is})=>{const ids=issueParts(is);return(<div key={is.id} className={"rc-lab-cause"+(shown==="is"+is.id?" on":"")}>
+            <div className="rc-lab-ct"><b>{is.title}</b>{is.severity&&<span style={{color:lk[is.severity]||"var(--mt)"}}>{is.severity}</span>}<Show ids={ids} why={is.title} k={"is"+is.id}/></div>
+            {is.causes&&<p>{is.causes}</p>}{is.confirm&&<><div className="rc-fl">Confirm</div><p>{is.confirm}</p></>}{is.fix&&<><div className="rc-fl">Fix</div><p>{is.fix}</p></>}
+            <button className="rc-lnk" onClick={()=>d({type:"MODAL",v:"issue-detail",d:is})}>Open in Issues</button></div>);})}</>}
+          {res.prior.length>0&&<><div className="rc-lab-h2">Seen in this shop</div>{res.prior.map(x=>(<button key={x.id} className="rc-lab-prior" onClick={()=>d({type:"MODAL",v:"dx-detail",d:x})}><span className="rc-tn">{x.date}</span> {(x.symptoms||[]).join(", ")}<b>{x.findings||"—"}{x.fix?" → "+x.fix:""}</b></button>))}</>}
+          {!res.kn.length&&!res.prior.length&&!busy&&!res.ai&&!res.aiText&&<div className="rc-ts-dim">Nothing in the shop's knowledge base matches these symptoms on this engine yet.</div>}
+        </div>}
+      </div>
+      <div className="rc-lab-right">
+        <div className="rc-lab-bar"><span className="rc-ts-dim">{L.label}{eng?" · "+(eng.sku||eng.name):""} · click any part to see what it does, or follow the build.</span><span className="rc-lab-acts"><a className="rc-bs" href={src} target="_blank" rel="noopener">Open full screen ↗</a></span></div>
+        <iframe ref={frame} key={L.id} title="Engine Lab" src={src} className="rc-lab-frame" allow="fullscreen"/>
+      </div>
+    </div>
   </div>);}
 
 // Team → Timesheets: the owner's and office staff's view of everyone's hours.
@@ -3244,8 +3327,27 @@ const CSS=`@import url('${FONTS}');
 .rc-lab-bar{display:flex;gap:10px;align-items:center;justify-content:space-between;flex-wrap:wrap;font-size:14px;}
 .rc-lab-acts{display:flex;gap:8px;}
 .rc-lab-acts a{text-decoration:none;}
-.rc-lab-frame{width:100%;height:calc(100dvh - 170px);min-height:520px;border:1px solid var(--ln);border-radius:12px;background:#0e1013;display:block;}
+.rc-lab-frame{width:100%;height:calc(100dvh - 160px);min-height:520px;border:1px solid var(--ln);border-radius:12px;background:#0e1013;display:block;}
 .rc-lab-pp{margin:-2px 0 10px;}
+.rc-labx{display:grid;grid-template-columns:minmax(300px,390px) minmax(0,1fr);gap:12px;align-items:start;}
+.rc-lab-right{display:flex;flex-direction:column;gap:8px;min-width:0;}
+.rc-lab-dx{max-height:calc(100dvh - 130px);overflow:auto;padding:14px;}
+.rc-lab-h{font:800 20px/1.1 var(--fd);letter-spacing:.3px;margin-bottom:10px;}
+.rc-lab-h2{font:800 16px/1.2 var(--fd);margin:14px 0 6px;letter-spacing:.3px;}
+.rc-lab-res{border-top:1px solid var(--ln);margin-top:12px;padding-top:10px;display:flex;flex-direction:column;gap:8px;}
+.rc-lab-sum{margin:0;font-size:14.5px;line-height:1.5;}
+.rc-lab-cause{border:1px solid var(--ln);border-radius:10px;padding:10px 12px;background:var(--sf);font-size:13.5px;line-height:1.5;}
+.rc-lab-cause.on{border-color:var(--act);box-shadow:0 0 0 1px var(--act);}
+.rc-lab-cause p{margin:2px 0 6px;color:var(--tx2);}
+.rc-lab-cause ol{margin:2px 0 6px;padding-left:20px;color:var(--tx2);}
+.rc-lab-ct{display:flex;gap:8px;align-items:baseline;flex-wrap:wrap;}
+.rc-lab-ct b{flex:1;min-width:0;font-size:14.5px;}
+.rc-lab-ct span{font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;}
+.rc-lab-show{padding:3px 9px;}
+.rc-lab-pp2{display:flex;gap:4px 10px;flex-wrap:wrap;font-size:13px;}
+.rc-lab-prior{display:block;width:100%;text-align:left;background:none;border:1px solid var(--ln);border-radius:8px;padding:7px 10px;color:var(--tx2);font-size:13px;cursor:pointer;}
+.rc-lab-prior b{display:block;color:var(--tx);font-weight:600;}
+@media(max-width:1000px){.rc-labx{grid-template-columns:1fr;}.rc-lab-dx{max-height:none;}}
 @media(max-width:600px){.rc-lab-frame{height:calc(100dvh - 150px);min-height:460px;}}
 .rc-ts-flag.auto{background:var(--gs);color:var(--g);border-color:transparent;margin-left:6px;cursor:default;}
 .rc-ts-autonote{margin:-2px 0 8px;}
