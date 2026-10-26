@@ -67,7 +67,7 @@ console.log("diagnosis parts row present:",dxParts>0);
 await p.screenshot({path:"shot-passport2.png"});
 // open diagnosis detail → add to common issues
 await p.click(".rc-mod button.rc-fb:has-text('Diagnosis')");
-await p.click("text=Hard start, Low power");
+await p.locator(".rc-mod").getByText("Hard start, Low power",{exact:true}).first().click();
 await p.waitForSelector("text=Add to common issues");
 await p.click(".rc-mod button:has-text('Add to common issues')");
 await p.waitForSelector("text=Add Common Issue");
@@ -387,13 +387,14 @@ await p.click('.rc-ts-seg button:has-text("Team")');
 // diagnosis checklist with its parts highlighted (parts it doesn't have are left out).
 await p.click('.rc-ni:has-text("Engine Lab")');await p.waitForSelector("iframe.rc-lab-frame");
 const labF=p.frameLocator("iframe.rc-lab-frame");await labF.locator("#mark").filter({hasText:/./}).waitFor({timeout:30000});
-const labIds=await labF.locator("#engSel option").evaluateAll(o=>o.map(x=>x.value));const labRes=[];
+const labIds=await labF.locator("#engSel option").evaluateAll(o=>o.map(x=>x.value));const labRes=[];const labMark=await labF.locator("#mark").innerText();
+await p.click('.rc-ni:has-text("Overview")');   // leave the view so its frame stops rendering (software WebGL here is slow)
 const lp=await b.newPage({viewport:{width:1280,height:900}});lp.on("pageerror",e=>errs.push("lab pageerror: "+e.message));
 for(const id of labIds){await lp.goto("http://localhost:4173/engine-lab.html?engine="+id+"&parts=turbine,injectors,waterPump,egrValve&why=Smoke+test");
-  await lp.waitForSelector("#loading",{state:"detached",timeout:30000});await lp.waitForTimeout(1500);
+  await lp.waitForSelector("#loading",{state:"detached",timeout:120000});await lp.waitForTimeout(1500);
   labRes.push(id+": "+(await lp.locator("#mark").innerText())+", "+(await lp.locator(".pi").count())+" parts, "+(await lp.locator(".chklist li").count())+" to check, "+(await lp.locator("#state").innerText()).toLowerCase());}
 await lp.close();
-console.log("engine lab: in the dashboard "+(await labF.locator("#mark").innerText())+" | "+labRes.join(" | "));
+console.log("engine lab: in the dashboard "+labMark+" | "+labRes.join(" | "));
 
 // Timesheets in the cloud, against the mock Supabase (tests/fixtures/mock-supabase.mjs): a real Postgres
 // (PGlite) with the repo's migrations answers every request as the caller's login, so it's the actual
