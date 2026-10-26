@@ -1,5 +1,6 @@
 import React, { useState, useReducer, useEffect, useRef, useMemo } from "react";
 import { db, enginePicklist } from "./lib/storage";
+import { ENGINES as LAB_ENGINES } from "./engineLab/engines/index.js";
 import { uploadPhoto, deletePhoto } from "./lib/photos";
 import { askClaude } from "./lib/ai";
 import { requestBriefNow } from "./lib/brief";
@@ -376,6 +377,37 @@ const SEVERITIES=[["high","High"],["medium","Medium"],["low","Low"]];
 const FAMILIES=["MAXXFORCE13","MAXXFORCE11","MAXXFORCEDT","60SERIES","SERIES60","50SERIES","SERIES50","ISX15","X15","ISX12","ISX","ISB","ISL","ISC","ISM","N14","DD13","DD15","DD16","DT466","T444E","A26","3116","3126","3406","C15","C13","C7","C33","PX8","PX6","PX7","MX13","MX11","MP7","MP8","VED12","D13","D11","OM906","OM926","OM9","FORD67","GM65","4JJ1","W04","6081","M53","4034","1212","YANMAR","DEUTZ","PERKINS","KUBOTA"];
 const normM=t=>String(t||"").toUpperCase().replace(/[^A-Z0-9]/g,"");
 const familyKey=i=>{const n=normM(i&&i.name);return FAMILIES.find(f=>n.includes(f))||n.replace(/\d{4}$/,"")||"?";};
+// The Engine Lab (engine-lab.html, src/engineLab/): an engine in 3D, built part by part and running. labFor
+// picks the lab engine for one of ours by family (no model for that family: null). SYMPTOM_PARTS maps the
+// diagnosis symptom tags to the lab's part ids; an id that engine doesn't have is skipped there. labOpen
+// opens the Engine Lab view on the parts to check for those symptoms.
+const labFor=i=>{const f=familyKey(i);return LAB_ENGINES.find(e=>e.families.includes(f))||null;};
+const SYMPTOM_PARTS={
+  "Hard start":["fuelFilter","transferPump","fuelPump","railSensor","injectors","starter","crankSensor","camSensor"],
+  "No start":["fuelFilter","transferPump","fuelPump","fuelRail","railSensor","fuelSensor","injectors","crankSensor","camSensor","ecm","starter"],
+  "Low power":["turbine","compressor","chargePipes","vgt","wastegate","egrValve","fuelFilter","fuelPump","transferPump","injectors","imap","exhaustOutlet"],
+  "Rough idle":["injectors","connectors","injRockers","valves","rockers","crankSensor","camSensor"],
+  "Misfire":["injectors","connectors","hpLines","injRockers","valves","crossheads","rockers","headGasket"],
+  "White smoke":["injectors","headGasket","egrCooler","liners","head","thermostat"],
+  "Black smoke":["turbine","compressor","chargePipes","vgt","wastegate","egrValve","injectors","imap"],
+  "Blue smoke":["rings","liners","pistons","chra","valves"],
+  "Overheating":["waterPump","thermostat","fan","belt","egrCooler","headGasket","coolantSensor"],
+  "Coolant loss":["headGasket","egrCooler","waterPump","oilCooler","liners","thermostat"],
+  "Coolant in oil":["oilCooler","headGasket","liners","egrCooler","head"],
+  "Fuel in oil":["injectors","connectors","fuelPump","transferPump","fuelGallery","head"],
+  "Oil consumption":["rings","liners","chra","valves","airCompressor"],
+  "Low oil pressure":["oilPump","bearings","oilFilter","oilCooler","oilSensor","oilPan"],
+  "Knock / noise":["bearings","rods","pistons","wristPins","injectors","gearTrain","damper"],
+  "Excessive blowby":["rings","liners","pistons","chra","airCompressor"],
+  "Turbo / boost":["turbine","chra","compressor","vgt","wastegate","turboCompound","chargePipes","turboSensor","imap"],
+  "EGR / aftertreatment":["egrValve","egrCooler","egrTube","intakeConnection","exhaustOutlet","vgt"],
+  "Derate / fault codes":["ecm","imap","railSensor","fuelSensor","crankSensor","camSensor","coolantSensor","oilSensor","turboSensor"],
+  "Electrical":["ecm","alternator","starter","crankSensor","camSensor"],
+};
+const labParts=sym=>[...new Set((sym||[]).flatMap(t=>SYMPTOM_PARTS[t]||[]))];
+const labUrl=({engine,parts,why,part})=>{const q=new URLSearchParams({engine});if(parts&&parts.length){q.set("parts",parts.join(","));if(why)q.set("why",why);}if(part)q.set("part",part);return "/engine-lab.html?"+q.toString();};
+const labFocus=(eng,sym)=>{const L=labFor(eng);return L?{lab:1,engine:L.id,parts:labParts(sym),why:(sym||[]).join(", "),title:eng.sku||eng.name||""}:null;};
+const labOpen=(d,eng,sym)=>{const f=labFocus(eng,sym);if(!f)return;d({type:"CLOSE"});d({type:"TAB",v:"lab",focus:f});};
 const FAM_LABEL={"60SERIES":"Series 60",SERIES60:"Series 60",FORD67:"Ford 6.7",GM65:"GM 6.5",MAXXFORCEDT:"MaxxForce DT",MAXXFORCE13:"MaxxForce 13",MAXXFORCE11:"MaxxForce 11",YANMAR:"Yanmar",DEUTZ:"Deutz",PERKINS:"Perkins",KUBOTA:"Kubota"};
 const famLabel=k=>FAM_LABEL[k]||k;
 const familyLabel=i=>{const k=familyKey(i);return k==="?"?(i.name||""):famLabel(k);};
@@ -1719,6 +1751,17 @@ function printTimesheet(s,e,P,owner){
   w.document.open();w.document.write(html);w.document.close();
 }
 
+// Shop → Engine Lab: the lab in a frame. Opened from a diagnosis (s.focus = labFocus(…)) it shows that
+// engine with the parts to check for the symptoms; otherwise the lab's own engine picker is used.
+function EngineLab({s,d}){
+  const f=s.focus&&typeof s.focus==="object"&&s.focus.lab?s.focus:null;
+  const src=labUrl(f||{engine:LAB_ENGINES[0].id});const L=f?LAB_ENGINES.find(e=>e.id===f.engine):null;
+  return(<div className="rc-lab">
+    <div className="rc-lab-bar">{f?<span className="rc-lab-why">🧊 {L?L.label:"Engine"}{f.title?" · "+f.title:""}{f.why?<> · parts to check for <b>{f.why}</b></>:null}</span>:<span className="rc-ts-dim">Each engine built part by part and running: pick one in the lab, click any part to see what it does, or follow the build. Diagnoses open it on the parts to check.</span>}
+      <span className="rc-lab-acts">{f&&<button className="rc-bs" onClick={()=>d({type:"TAB",v:"lab"})}>Clear</button>}<a className="rc-bs" href={src} target="_blank" rel="noopener">Open full screen ↗</a></span></div>
+    <iframe key={src} title="Engine Lab" src={src} className="rc-lab-frame" allow="fullscreen"/>
+  </div>);}
+
 // Team → Timesheets: the owner's and office staff's view of everyone's hours.
 // role: the login's role ("owner" / "staff"); owner: the owner, not previewing as staff.
 function Timesheets({s,d,role,owner,preview,setPreview}){
@@ -2284,6 +2327,7 @@ function Modals({s,d,owner=true,who={role:"owner"}}){
       </>)}
       {ptab==="diagnosis"&&(<>
       <div className="rc-fl" style={{marginBottom:6}}>Diagnosis history <span style={{color:"var(--ft)",textTransform:"none",letterSpacing:0}}>— what's been found on this unit</span></div>
+      {labFor(i)&&(()=>{const sym=[...new Set(dxFor(s,i.id).filter(x=>(x.outcome||"open")!=="resolved").flatMap(x=>x.symptoms||[]))];return(<div className="rc-lab-pp"><button className="rc-bs" onClick={()=>labOpen(d,i,sym)}>🧊 {labFor(i).label} in 3D{sym.length?": parts to check for "+sym.join(", "):""}</button></div>);})()}
       <div className="rc-card" style={{marginBottom:12,padding:12}}>
         {(()=>{const dxs=dxFor(s,i.id);const kn=issuesFor(s,i);return(<>
           {dxs.length===0?(<div style={{fontSize:13,color:"var(--mt)",marginBottom:4}}>Nothing logged yet. Every symptom, finding and fix on this unit lives here — and feeds the shop's common-issues database.</div>):dxs.map(x=>(<div key={x.id} onClick={()=>d({type:"MODAL",v:"dx-detail",d:x})} style={{display:"flex",gap:8,alignItems:"center",padding:"5px 0",borderBottom:"1px solid var(--ln2)",fontSize:13,cursor:"pointer"}}><span style={{color:"var(--mt)",fontSize:11,width:66,flexShrink:0}}>{x.date||""}</span><span style={{flex:1,minWidth:0}}><span style={{color:"var(--tx)"}}>{(x.symptoms||[]).join(", ")||"—"}</span>{x.codes&&<span style={{color:"var(--tx2)"}}> · {x.codes}</span>}{x.findings&&<div style={{color:"var(--tx2)",fontSize:12,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{x.findings}</div>}</span>{x.tech&&<span style={{color:"var(--act)",fontSize:12}}>{x.tech}</span>}<Badge s={x.outcome||"open"}/></div>))}
@@ -2781,7 +2825,7 @@ function Modals({s,d,owner=true,who={role:"owner"}}){
       <div className="rc-fg"><label className="rc-fl">Parts used</label>{parts.map((p,x)=>(<div key={x} style={{display:"grid",gridTemplateColumns:"1fr 80px 28px",gap:6,marginBottom:6}}><input className="rc-fi" placeholder="Part" value={p.d||""} onChange={e=>{const np=[...parts];np[x]={...np[x],d:e.target.value};set("parts",np);}}/><input className="rc-fi" type="number" placeholder="$" value={p.v===0?"":(p.v||"")} onChange={e=>{const np=[...parts];np[x]={...np[x],v:e.target.value};set("parts",np);}}/><button className="rc-bs" style={{padding:"8px 0"}} onClick={()=>set("parts",parts.filter((_,y)=>y!==x))}>×</button></div>))}<button className="rc-bs" onClick={()=>set("parts",[...parts,{d:"",v:""}])}>+ Part</button></div>
       {F("notes","Notes")}
       {f.ai&&<div className="rc-card" style={{padding:12,borderColor:"var(--p)",marginBottom:10}}><div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}><span style={{fontFamily:"var(--fd)",fontWeight:700,color:"var(--p)",letterSpacing:2,textTransform:"uppercase",fontSize:13}}>✨ Likely causes</span><button className="rc-bs" onClick={()=>set("ai","")} style={{fontSize:12,padding:"2px 7px"}}>✕</button></div><div style={{fontSize:13,lineHeight:1.7,whiteSpace:"pre-wrap",color:"var(--tx)"}}>{f.ai}</div></div>}
-      <div className="rc-fa">{X}{eng&&<button className="rc-bs" disabled={!!f.aiBusy} onClick={suggest} style={{color:"var(--p)",borderColor:"var(--p)"}}>{f.aiBusy?"⏳ Thinking…":"✨ Suggest causes"}</button>}<button className="rc-ba" onClick={()=>{if(!eng||!(sy.length||(f.findings||"").trim()))return;const rec={engineId:eng.id,engineName:eng.name,date:f.date||isoToday(),tech:f.tech||"",symptoms:sy,codes:f.codes||"",findings:f.findings||"",fix:f.fix||"",outcome:f.outcome||"open",hours:+f.hours||0,rate:+f.rate||0,parts:parts.filter(p=>(p.d||"").trim()).map(p=>({d:p.d.trim(),v:+p.v||0})),jobId:f.jobId?+f.jobId:null,issueId:f.issueId?+f.issueId:null,notes:f.notes||""};if(editing){d({type:"UPDATE",list:"diagnoses",id:s.md.id,d:rec});d({type:"MODAL",v:"dx-detail",d:{...s.md,...rec}});}else{d({type:"ADD",list:"diagnoses",d:rec,label:"🩺 Diagnosis logged"});if(s.md&&s.md.back)d({type:"MODAL",v:"part-detail",d:{...eng,ptab:"diagnosis"}});}}}>Save</button></div></div>);}
+      <div className="rc-fa">{X}{eng&&labFor(eng)&&<button className="rc-bs" title="Opens the 3D engine in a new tab, so this form stays as it is" onClick={()=>window.open(labUrl(labFocus(eng,sy)),"_blank","noopener")}>🧊 Parts to check in 3D</button>}{eng&&<button className="rc-bs" disabled={!!f.aiBusy} onClick={suggest} style={{color:"var(--p)",borderColor:"var(--p)"}}>{f.aiBusy?"⏳ Thinking…":"✨ Suggest causes"}</button>}<button className="rc-ba" onClick={()=>{if(!eng||!(sy.length||(f.findings||"").trim()))return;const rec={engineId:eng.id,engineName:eng.name,date:f.date||isoToday(),tech:f.tech||"",symptoms:sy,codes:f.codes||"",findings:f.findings||"",fix:f.fix||"",outcome:f.outcome||"open",hours:+f.hours||0,rate:+f.rate||0,parts:parts.filter(p=>(p.d||"").trim()).map(p=>({d:p.d.trim(),v:+p.v||0})),jobId:f.jobId?+f.jobId:null,issueId:f.issueId?+f.issueId:null,notes:f.notes||""};if(editing){d({type:"UPDATE",list:"diagnoses",id:s.md.id,d:rec});d({type:"MODAL",v:"dx-detail",d:{...s.md,...rec}});}else{d({type:"ADD",list:"diagnoses",d:rec,label:"🩺 Diagnosis logged"});if(s.md&&s.md.back)d({type:"MODAL",v:"part-detail",d:{...eng,ptab:"diagnosis"}});}}}>Save</button></div></div>);}
   if(s.modal==="dx-detail"){const x=(s.diagnoses||[]).find(y=>y.id===s.md.id)||s.md;const eng=engById(s,x.engineId);const is=x.issueId?(s.issues||[]).find(y=>y.id===+x.issueId):null;const job=x.jobId?(s.jobs||[]).find(j=>j.id===+x.jobId):null;const pv=(x.parts||[]).reduce((a,p)=>a+(+p.v||0),0);
     return W(<div><div className="rc-mt" style={{marginBottom:4}}>Diagnosis</div><div style={{fontSize:12,color:"var(--mt)",letterSpacing:1,marginBottom:10}}>{x.date}{x.tech?" · "+x.tech:""}</div>
       {eng&&<div onClick={()=>d({type:"MODAL",v:"part-detail",d:{...eng,ptab:"diagnosis"}})} style={{cursor:"pointer",fontFamily:"var(--fd)",fontWeight:800,fontSize:19,lineHeight:1.05,marginBottom:2}}>{eng.name} <span style={{fontSize:13,color:"var(--mt)",fontWeight:400}}>→ passport</span></div>}{eng&&<div style={{fontSize:13,color:"var(--tx2)",marginBottom:10}}>{eng.sku}{eng.serial||eng.esn?" · ESN "+(eng.serial||eng.esn):""}</div>}
@@ -2790,7 +2834,7 @@ function Modals({s,d,owner=true,who={role:"owner"}}){
       <div className="rc-3c" style={{marginBottom:12}}><div><div className="rc-ml">Hours</div><div className="rc-mv">{+x.hours||0}h{+x.rate>0&&+x.hours>0?<span style={{fontSize:13,color:"var(--tx2)"}}> · {$$((+x.hours||0)*(+x.rate||0))}</span>:null}</div></div><div><div className="rc-ml">Parts</div><div className="rc-mv">{$$(pv)}</div></div><div><div className="rc-ml">Work order</div><div className="rc-mv" style={{fontSize:14}}>{job?<span style={{cursor:"pointer",color:"var(--act)"}} onClick={()=>d({type:"MODAL",v:"job-detail",d:job})}>{job.service}</span>:"—"}</div></div></div>
       {(x.parts||[]).length>0&&<div style={{background:"var(--sf2)",borderRadius:6,padding:8,marginBottom:10}}>{x.parts.map((p,y)=>(<div key={y} style={{display:"flex",justifyContent:"space-between",fontSize:13,padding:"2px 0"}}><span>{p.d}</span><span style={{fontWeight:600}}>{$$(+p.v||0)}</span></div>))}</div>}
       {is?<div className="rc-card" style={{padding:10,marginBottom:10,cursor:"pointer"}} onClick={()=>d({type:"MODAL",v:"issue-detail",d:is})}><div className="rc-ml">Linked common issue</div><div style={{fontSize:14,color:"var(--act)"}}>{is.title}</div></div>:null}
-      <div className="rc-fa">{C}{!is&&<button className="rc-bs" onClick={()=>d({type:"MODAL",v:"add-issue",d:{prefill:{fromDx:x,models:eng?familyKey(eng):"",symptoms:x.symptoms||[],title:((x.findings||"").split(/[.\n]/)[0]||"").trim().slice(0,90)||(x.symptoms||[]).join(" / "),causes:x.findings||"",fix:x.fix||"",parts:(x.parts||[]).map(p=>p.d).join(", "),severity:"medium"}}})}>📚 Add to common issues</button>}<button className="rc-bs" onClick={()=>d({type:"MODAL",v:"edit-dx",d:x})}>✎ Edit</button><button className="rc-bs rc-bsr" onClick={()=>{d({type:"DELETE",list:"diagnoses",id:x.id});d({type:"BACK"});}}>×</button></div></div>);}
+      <div className="rc-fa">{C}{eng&&labFor(eng)&&<button className="rc-bs" onClick={()=>labOpen(d,eng,x.symptoms)}>🧊 See it in 3D</button>}{!is&&<button className="rc-bs" onClick={()=>d({type:"MODAL",v:"add-issue",d:{prefill:{fromDx:x,models:eng?familyKey(eng):"",symptoms:x.symptoms||[],title:((x.findings||"").split(/[.\n]/)[0]||"").trim().slice(0,90)||(x.symptoms||[]).join(" / "),causes:x.findings||"",fix:x.fix||"",parts:(x.parts||[]).map(p=>p.d).join(", "),severity:"medium"}}})}>📚 Add to common issues</button>}<button className="rc-bs" onClick={()=>d({type:"MODAL",v:"edit-dx",d:x})}>✎ Edit</button><button className="rc-bs rc-bsr" onClick={()=>{d({type:"DELETE",list:"diagnoses",id:x.id});d({type:"BACK"});}}>×</button></div></div>);}
   // ── Common issues knowledge base ──
   if(s.modal==="add-issue"||s.modal==="edit-issue"){const editing=s.modal==="edit-issue";const sy=f.symptoms||[];const tog=t=>set("symptoms",sy.includes(t)?sy.filter(x=>x!==t):[...sy,t]);
     return W(<div><div className="rc-mt">{editing?"Edit Common Issue":"Add Common Issue"}</div>
@@ -3196,6 +3240,13 @@ const CSS=`@import url('${FONTS}');
 .rc-ts-same{border-color:var(--act);color:var(--act);}
 .rc-ts-work{margin-top:3px;font-size:13px;line-height:1.5;color:var(--tx2);}
 .rc-ts-work b{font-weight:600;color:var(--tx);}
+.rc-lab{display:flex;flex-direction:column;gap:10px;}
+.rc-lab-bar{display:flex;gap:10px;align-items:center;justify-content:space-between;flex-wrap:wrap;font-size:14px;}
+.rc-lab-acts{display:flex;gap:8px;}
+.rc-lab-acts a{text-decoration:none;}
+.rc-lab-frame{width:100%;height:calc(100dvh - 170px);min-height:520px;border:1px solid var(--ln);border-radius:12px;background:#0e1013;display:block;}
+.rc-lab-pp{margin:-2px 0 10px;}
+@media(max-width:600px){.rc-lab-frame{height:calc(100dvh - 150px);min-height:460px;}}
 .rc-ts-flag.auto{background:var(--gs);color:var(--g);border-color:transparent;margin-left:6px;cursor:default;}
 .rc-ts-autonote{margin:-2px 0 8px;}
 .rc-ts-engsum{font-size:14px;margin-bottom:6px;}
@@ -3456,6 +3507,7 @@ const ICO={
   tag:<><path d="M3 12V4a1 1 0 0 1 1-1h8l9 9-9 9z"/><circle cx="7.5" cy="7.5" r="1.5"/></>,
   shop:<><path d="M3 21V9l9-6 9 6v12"/><path d="M7 21v-8h10v8M3 21h18M7 16h10"/></>,
   menu:<path d="M4 7h16M4 12h16M4 17h16"/>,
+  cube:<><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M4 7.5l8 4.5 8-4.5M12 12v9"/></>,
 };
 const Ico=({n})=>(<svg className="rc-ico" viewBox="0 0 24 24" aria-hidden="true">{ICO[n]}</svg>);
 const THEMES=[["day","☀","Day"],["night","☾","Night"],["auto","◐","Auto"]];
@@ -3546,8 +3598,8 @@ export default function App(){
   useEffect(()=>{const onKey=e=>{const cur=sRef.current;if(e.key!=="Escape"||!cur.modal||e.defaultPrevented)return;e.preventDefault();d({type:(cur.mstack||[]).length?"BACK":"CLOSE"});};
     const onIn=e=>{if(!sRef.current.modal)return;const m=document.querySelector(".rc-mod");if(m&&!m.contains(e.target)&&!(e.target.closest&&e.target.closest(".rc-toast")))m.focus({preventScroll:true});};
     document.addEventListener("keydown",onKey);document.addEventListener("focusin",onIn);return()=>{document.removeEventListener("keydown",onKey);document.removeEventListener("focusin",onIn);};},[]);
-  const TABL={overview:"Overview",inventory:"Engines",shop3d:"Shop 3D",parts:"Parts",boms:"BOM",social:"Marketing",services:"Services",prospects:"Prospects",competitors:"Competitors",issues:"Issues",ecm:"ECM",customers:"Customers & Jobs",operations:"Operations",schedule:"Schedule",quotes:"Quotes",invoices:"Invoicing",employees:"Team",reports:"Reports"};
-  const NAV=[{t:"overview",i:"home"},{h:"Shop"},{t:"inventory",i:"eng"},{t:"shop3d",i:"shop"},{t:"boms",i:"clip"},{t:"parts",i:"box"},{t:"issues",i:"wrench"},{t:"ecm",i:"chip"},{h:"Sales"},{t:"social",i:"mega"},{t:"prospects",i:"target"},{t:"competitors",i:"flag"},{t:"services",i:"tag"},{t:"quotes",i:"doc"},{t:"invoices",i:"cash"},{h:"Operations"},{t:"customers",i:"users"},{t:"operations",i:"truck"},{t:"schedule",i:"cal"},{h:"Business"},{t:"employees",i:"team"},{t:"reports",i:"chart"}];
+  const TABL={overview:"Overview",inventory:"Engines",shop3d:"Shop 3D",lab:"Engine Lab",parts:"Parts",boms:"BOM",social:"Marketing",services:"Services",prospects:"Prospects",competitors:"Competitors",issues:"Issues",ecm:"ECM",customers:"Customers & Jobs",operations:"Operations",schedule:"Schedule",quotes:"Quotes",invoices:"Invoicing",employees:"Team",reports:"Reports"};
+  const NAV=[{t:"overview",i:"home"},{h:"Shop"},{t:"inventory",i:"eng"},{t:"shop3d",i:"shop"},{t:"lab",i:"cube"},{t:"boms",i:"clip"},{t:"parts",i:"box"},{t:"issues",i:"wrench"},{t:"ecm",i:"chip"},{h:"Sales"},{t:"social",i:"mega"},{t:"prospects",i:"target"},{t:"competitors",i:"flag"},{t:"services",i:"tag"},{t:"quotes",i:"doc"},{t:"invoices",i:"cash"},{h:"Operations"},{t:"customers",i:"users"},{t:"operations",i:"truck"},{t:"schedule",i:"cal"},{h:"Business"},{t:"employees",i:"team"},{t:"reports",i:"chart"}];
   const splash=(<div className="rc-root" data-theme={theme} style={{display:"flex",alignItems:"center",justifyContent:"center",minHeight:"100vh"}}><style>{CSS}</style><div style={{textAlign:"center"}}><div className="rc-hi" style={{width:50,height:50,fontSize:24,margin:"0 auto 12px"}}>RC</div><div style={{fontFamily:"var(--fd)",fontSize:17.5,letterSpacing:2,textTransform:"uppercase",color:"var(--tx2)"}}>Loading...</div></div></div>);
   const toastEl=s.toast&&(<div role="status" className="rc-toast" style={{position:"fixed",bottom:20,left:"50%",transform:"translateX(-50%)",background:"var(--tx)",border:"none",borderLeft:"3px solid var(--ac)",borderRadius:10,padding:"11px 16px",display:"flex",alignItems:"center",gap:14,zIndex:9999,boxShadow:"var(--sh2)",fontFamily:"var(--fb)",fontSize:14,color:"var(--bg)",maxWidth:"calc(100vw - 32px)"}}><span>{s.toast.msg}</span>{s.toast.undo&&<button className="rc-bs" onClick={()=>d({type:"UNDO"})} style={{fontSize:13,color:"var(--act)",borderColor:"var(--ac)",background:"transparent"}}>↩ Undo</button>}</div>);
   if(usingCloud&&!authReady)return splash;
@@ -3588,7 +3640,7 @@ export default function App(){
       {s.tab==="services"&&<Services s={s} d={d}/>}
       {s.tab==="quotes"&&<Quotes s={s} d={d}/>}
       {s.tab==="inventory"&&<Inv s={s} d={d}/>}
-      {s.tab==="shop3d"&&<Shop3D s={s} d={d} theme={theme} owner={ownerView}/>}
+      {s.tab==="shop3d"&&<Shop3D s={s} d={d} theme={theme} owner={ownerView}/>}{s.tab==="lab"&&<EngineLab s={s} d={d}/>}
       {s.tab==="parts"&&<Parts s={s} d={d}/>}
       {s.tab==="boms"&&<Boms s={s} d={d}/>}
       {s.tab==="issues"&&<Issues s={s} d={d}/>}

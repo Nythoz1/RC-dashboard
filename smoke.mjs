@@ -383,6 +383,18 @@ console.log("crew in Shop 3D: owner "+crewOwner.slice(0,150)+" | replay: "+chipO
 await p.click('.rc-ni:has-text("Team")');
 await p.click('.rc-ts-seg button:has-text("Team")');
 
+// The Engine Lab: the view frames engine-lab.html; every engine in its picker loads, runs, and opens a
+// diagnosis checklist with its parts highlighted (parts it doesn't have are left out).
+await p.click('.rc-ni:has-text("Engine Lab")');await p.waitForSelector("iframe.rc-lab-frame");
+const labF=p.frameLocator("iframe.rc-lab-frame");await labF.locator("#mark").filter({hasText:/./}).waitFor({timeout:30000});
+const labIds=await labF.locator("#engSel option").evaluateAll(o=>o.map(x=>x.value));const labRes=[];
+const lp=await b.newPage({viewport:{width:1280,height:900}});lp.on("pageerror",e=>errs.push("lab pageerror: "+e.message));
+for(const id of labIds){await lp.goto("http://localhost:4173/engine-lab.html?engine="+id+"&parts=turbine,injectors,waterPump,egrValve&why=Smoke+test");
+  await lp.waitForSelector("#loading",{state:"detached",timeout:30000});await lp.waitForTimeout(1500);
+  labRes.push(id+": "+(await lp.locator("#mark").innerText())+", "+(await lp.locator(".pi").count())+" parts, "+(await lp.locator(".chklist li").count())+" to check, "+(await lp.locator("#state").innerText()).toLowerCase());}
+await lp.close();
+console.log("engine lab: in the dashboard "+(await labF.locator("#mark").innerText())+" | "+labRes.join(" | "));
+
 // Timesheets in the cloud, against the mock Supabase (tests/fixtures/mock-supabase.mjs): a real Postgres
 // (PGlite) with the repo's migrations answers every request as the caller's login, so it's the actual
 // policies and history trigger at work; the team-logins Edge Function runs bundled. The owner gives Mike

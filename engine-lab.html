@@ -1,0 +1,248 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Engine Lab · Rollin Coal</title>
+<link rel="icon" href="data:,">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+html,body{margin:0;padding:0}img{max-width:100%}[hidden]{display:none!important}
+/* Rollin Coal Engine Lab. Layout: full-bleed 3D shop stage; parts + build rail left, part dossier right, run dock along the bottom. One committed dark shop-floor look. */
+:root{
+  --bg:#0e1013; --panel:rgba(22,25,30,.9); --panel-solid:#16191e; --raise:#1f242b; --line:#2c323a; --ink:#ece6dc; --mute:#9aa1aa; --faint:#6b727c;
+  --accent:#e2702c; --accent-ink:#1b0e05; --label-bg:rgba(13,15,18,.84);
+  --s-power:#ff6a3d; --s-exhaust:#a58cff; --s-intake:#5aa9ff; --s-comp:#f2cc4a;
+  --display:"Barlow Condensed","Arial Narrow",sans-serif; --body:"IBM Plex Sans",system-ui,sans-serif; --mono:"IBM Plex Mono",ui-monospace,Consolas,monospace;
+  color-scheme:dark;
+}
+html,body{height:100%}
+body{background:var(--bg);color:var(--ink);font-family:var(--body);overflow:hidden;font-size:14px}
+button,input,select{font:inherit;color:inherit}
+#stage{position:fixed;inset:0}
+#stage canvas{display:block;touch-action:none}
+.labels{position:absolute;inset:0;pointer-events:none;overflow:hidden}
+.lbl{width:8px;height:8px;border-radius:50%;background:var(--c);box-shadow:0 0 0 2px rgba(0,0,0,.6);pointer-events:auto;cursor:pointer;position:relative}
+.lbl span{position:absolute;bottom:13px;left:50%;transform:translateX(-50%);white-space:nowrap;font:500 11px/1 var(--body);color:var(--ink);background:var(--label-bg);border:1px solid color-mix(in srgb,var(--c) 60%,transparent);padding:4px 7px;border-radius:3px;letter-spacing:.01em;transition:background .15s}
+.lbl span::after{content:"";position:absolute;left:50%;top:100%;width:1px;height:9px;background:var(--c);opacity:.85}
+.lbl:hover span{background:var(--raise)}
+.lbl.sel span{background:var(--accent);color:var(--accent-ink);border-color:var(--accent);font-weight:600}
+.dotsonly .lbl span{opacity:0;pointer-events:none}
+.dotsonly .lbl:hover span,.dotsonly .lbl.sel span{opacity:1}
+.lbl.dim{opacity:.3}
+.lbl.hid span{opacity:0;pointer-events:none}
+.lbl.hid:hover span{opacity:1}
+[hidden]{display:none!important}
+
+#ui{position:fixed;inset:0;display:grid;grid-template-columns:minmax(0,300px) minmax(0,1fr) minmax(0,350px);grid-template-rows:auto minmax(0,1fr) auto;gap:12px;
+  padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));
+  padding-block:max(14px,env(safe-area-inset-top,0px)) max(14px,env(safe-area-inset-bottom,0px));pointer-events:none}
+#ui>*{pointer-events:auto}
+#ui>.top{grid-column:1/-1;display:flex;align-items:center;gap:14px;flex-wrap:wrap;pointer-events:none}
+.top>*{pointer-events:auto}
+.brand{display:flex;align-items:center;gap:12px;margin-right:auto;min-width:0}
+.mark{font:700 30px/0.9 var(--display);letter-spacing:.02em;color:var(--accent-ink);background:var(--accent);padding:6px 9px 4px;border-radius:3px}
+.brand h1{font:600 22px/1 var(--display);letter-spacing:.06em;text-transform:uppercase;margin:0}
+.brand p{margin:3px 0 0;color:var(--mute);font-size:12px}
+.btn{background:var(--raise);border:1px solid var(--line);border-radius:6px;padding:7px 12px;cursor:pointer;white-space:nowrap}
+.btn:hover{border-color:#47505b}
+.btn.on{background:var(--accent);color:var(--accent-ink);border-color:var(--accent);font-weight:600}
+.btn.primary{background:var(--accent);color:var(--accent-ink);border-color:var(--accent);font-weight:600}
+.btn:focus-visible,.pi:focus-visible,.tab:focus-visible,.step:focus-visible,select:focus-visible,input:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.mob{display:none;gap:6px}
+
+.panel{background:var(--panel);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);border:1px solid var(--line);border-radius:10px;overflow:auto;min-height:0;scrollbar-width:thin}
+#left{grid-column:1;grid-row:2;display:flex;flex-direction:column;overflow:hidden}
+#right{grid-column:3;grid-row:2;padding:18px 18px 20px}
+.tabs{display:flex;border-bottom:1px solid var(--line);flex:none}
+.tab{flex:1;background:none;border:0;padding:12px 8px;cursor:pointer;color:var(--mute);font:600 15px/1 var(--display);letter-spacing:.08em;text-transform:uppercase;border-bottom:2px solid transparent}
+.tab.on{color:var(--ink);border-bottom-color:var(--accent)}
+.tabbody{overflow:auto;padding:12px 12px 16px;min-height:0;flex:1}
+#q{width:100%;background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:8px 10px;margin-bottom:10px}
+.grp{margin-bottom:12px}
+.gh{display:flex;align-items:center;gap:8px;font:600 13px/1.2 var(--display);letter-spacing:.08em;text-transform:uppercase;color:var(--mute);padding:4px 2px}
+.dot{width:9px;height:9px;border-radius:50%;background:var(--c);flex:none}
+.eye{margin-left:auto;background:none;border:1px solid var(--line);border-radius:4px;font:500 10px/1 var(--body);letter-spacing:.04em;text-transform:none;color:var(--faint);padding:3px 6px;cursor:pointer}
+.eye.on{color:var(--ink);border-color:#47505b}
+.grp ul{list-style:none;margin:2px 0 0;padding:0}
+.pi{display:block;width:100%;text-align:left;background:none;border:0;border-radius:5px;padding:5px 8px 5px 19px;cursor:pointer;color:var(--ink);font-size:13px}
+.pi:hover{background:var(--raise)}
+.pi.sel{background:color-mix(in srgb,var(--accent) 22%,transparent)}
+.pi.off{color:var(--faint)}
+
+.bhead{display:flex;flex-direction:column;gap:10px;margin-bottom:12px}
+.prog{height:4px;background:var(--line);border-radius:2px;overflow:hidden}
+.prog i{display:block;height:100%;background:var(--accent);width:0;transition:width .4s}
+.brow{display:flex;gap:6px;flex-wrap:wrap}
+.brow .btn{padding:6px 10px;font-size:13px}
+#slist{list-style:none;margin:0;padding:0;counter-reset:s}
+.step{display:grid;grid-template-columns:26px 1fr;gap:8px;width:100%;text-align:left;background:none;border:0;border-radius:6px;padding:7px 6px;cursor:pointer;color:var(--mute);align-items:start}
+.step:hover{background:var(--raise)}
+.step b{font:600 13px/1.25 var(--body);color:inherit}
+.step .n{font:500 11px/20px var(--mono);text-align:center;border:1px solid var(--line);border-radius:4px;height:20px}
+.step.done{color:var(--ink)}
+.step.done .n{background:#28303a;border-color:#3a434e}
+.step.cur{color:var(--ink);background:color-mix(in srgb,var(--accent) 16%,transparent)}
+.step.cur .n{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
+
+.chip{display:inline-flex;align-items:center;gap:6px;font:600 12px/1 var(--display);letter-spacing:.09em;text-transform:uppercase;color:var(--c);border:1px solid color-mix(in srgb,var(--c) 50%,transparent);padding:4px 7px;border-radius:3px}
+#right h2{font:700 30px/1 var(--display);letter-spacing:.01em;margin:10px 0 4px;text-wrap:balance}
+.sub{color:var(--mute);font-size:12.5px;margin:0 0 14px}
+.sec{margin:14px 0 0}
+.sec h3{font:600 13px/1 var(--display);letter-spacing:.1em;text-transform:uppercase;color:var(--accent);margin:0 0 6px}
+.sec p{margin:0;line-height:1.55;color:#d6d0c6}
+.chk{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px}
+.chk label{display:grid;grid-template-columns:18px 1fr;gap:8px;line-height:1.45;color:#d6d0c6;cursor:pointer;align-items:start}
+.chk input{margin:3px 0 0;accent-color:var(--accent)}
+.acts{display:flex;gap:6px;flex-wrap:wrap;margin-top:16px}
+.acts .btn{font-size:13px;padding:6px 10px}
+.specs{display:grid;grid-template-columns:auto 1fr;gap:6px 14px;margin:12px 0 0;font-size:13px}
+.specs dt{color:var(--mute)}
+.specs dd{margin:0;font-family:var(--mono);font-size:12.5px}
+.hint{color:var(--mute);font-size:12.5px;line-height:1.6;margin:14px 0 0;padding:10px 12px;border:1px dashed var(--line);border-radius:6px}
+.hint kbd{font:500 11px var(--mono);background:var(--raise);border:1px solid var(--line);border-radius:3px;padding:1px 5px}
+.partchips{display:flex;flex-wrap:wrap;gap:6px}
+.partchips button{cursor:pointer;background:none;font-family:var(--display)}
+.note{font-size:12px;color:var(--faint);line-height:1.5;margin-top:14px}
+
+.dock{grid-column:1/-1;grid-row:3;display:flex;flex-direction:column;gap:10px;padding:12px 14px}
+.cyc{display:flex;gap:10px;align-items:stretch;flex-wrap:wrap}
+.cylrow{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:6px;flex:1 1 420px;min-width:0}
+.cyl{border:1px solid var(--line);border-radius:6px;padding:6px 8px 7px;background:var(--bg);position:relative;overflow:hidden;min-width:0}
+.cyl .cn{font:700 18px/1 var(--display)}
+.cyl .st{font:600 11px/1 var(--display);letter-spacing:.09em;text-transform:uppercase;color:var(--sc);margin-left:6px}
+.cyl .bar{position:absolute;left:0;bottom:0;height:3px;background:var(--sc);width:0}
+.cyl.fire{box-shadow:inset 0 0 0 1px var(--s-power);background:color-mix(in srgb,var(--s-power) 14%,var(--bg))}
+.readouts{display:flex;gap:16px;flex-wrap:wrap;align-items:center;font-size:12px;color:var(--mute)}
+.readouts b{display:block;font:500 15px/1.1 var(--mono);color:var(--ink);font-variant-numeric:tabular-nums}
+.fo{font:500 13px var(--mono);letter-spacing:.05em}
+.fo i{font-style:normal;color:var(--faint)}
+.fo i.hot{color:var(--s-power);font-weight:700}
+.ctrls{display:flex;gap:10px 16px;flex-wrap:wrap;align-items:center}
+.ctl{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--mute)}
+.ctl output{font:500 12px var(--mono);color:var(--ink);min-width:62px;font-variant-numeric:tabular-nums}
+input[type=range]{accent-color:var(--accent);width:130px}
+select{background:var(--raise);border:1px solid var(--line);border-radius:6px;padding:6px 8px}
+.toggles{display:flex;gap:6px;flex-wrap:wrap;margin-left:auto}
+.toggles .btn{padding:6px 10px;font-size:13px}
+#runBtn{min-width:118px;font-weight:600}
+.state{font:600 12px/1 var(--display);letter-spacing:.1em;text-transform:uppercase;color:var(--mute)}
+.state.live{color:#5fd38a}
+
+#tip{position:fixed;pointer-events:none;background:var(--panel-solid);border:1px solid var(--line);border-radius:5px;padding:6px 9px;font-size:12px;z-index:20;transform:translate(14px,14px);display:none;max-width:260px}
+#tip small{display:block;color:var(--mute);margin-top:2px}
+#banner{position:fixed;left:50%;top:max(80px,env(safe-area-inset-top,0px));transform:translateX(-50%);background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:10px 14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;z-index:15;max-width:calc(100% - 32px)}
+#banner span{color:var(--mute);font-size:12.5px}
+.modal{position:fixed;inset:0;background:rgba(5,6,8,.7);display:grid;place-items:center;z-index:30;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
+.card{background:var(--panel-solid);border:1px solid var(--line);border-radius:10px;padding:20px;max-width:440px;width:100%}
+.card h2{font:700 24px/1.1 var(--display);margin:0 0 8px}
+.card p{color:#d6d0c6;line-height:1.55;margin:0 0 12px}
+.drop{border:1px dashed #4a535e;border-radius:8px;padding:18px;text-align:center;color:var(--mute);margin:8px 0 14px}
+#loading{position:fixed;inset:0;display:grid;place-items:center;z-index:40;background:var(--bg);font:600 18px var(--display);letter-spacing:.12em;text-transform:uppercase;color:var(--mute)}
+
+@media (max-width:1100px){#ui{grid-template-columns:minmax(0,260px) minmax(0,1fr) minmax(0,300px)}}
+@media (max-width:860px){
+  #ui{grid-template-columns:minmax(0,1fr);gap:8px}
+  .mob{display:flex}
+  .brand p{display:none}
+  #left,#right{grid-column:1;grid-row:2;max-height:100%}
+  #left:not(.open),#right:not(.open){display:none}
+  .dock{padding:10px}
+  .cyl .st{display:block;margin:3px 0 0}
+  .readouts{gap:10px}
+  .toggles{margin-left:0}
+  input[type=range]{width:96px}
+}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+.engpick select{min-width:150px}
+.chklist{list-style:none;margin:6px 0 0;padding:0;display:flex;flex-direction:column;gap:4px}
+.chklist button{display:grid;grid-template-columns:12px 1fr;gap:2px 9px;width:100%;text-align:left;background:var(--raise);border:1px solid var(--line);border-radius:7px;padding:8px 10px;cursor:pointer;color:var(--ink);align-items:start}
+.chklist button:hover{border-color:#ffb020}
+.chklist .dot{margin-top:4px}
+.chklist small{grid-column:2;color:var(--mute);font-size:12px;line-height:1.4}
+.lbl.chk span{border-color:#ffb020;box-shadow:0 0 0 1px #ffb020}
+</style></head><body>
+<div id="loading">Assembling engine…</div>
+<div id="stage"></div>
+<div id="ui">
+  <header class="top">
+    <div class="brand"><div class="mark" id="mark"></div><div><h1>Engine Lab</h1><p id="engSub"></p></div></div>
+    <label class="ctl engpick">Engine <select id="engSel" aria-label="Engine"></select></label>
+    <nav class="mob" aria-label="Panels">
+      <button class="btn" data-open="parts">Parts</button><button class="btn" data-open="build">Build</button><button class="btn" data-open="info">Info</button>
+    </nav>
+    <button class="btn" id="glbBtn">View your .glb model</button>
+  </header>
+
+  <aside class="panel" id="left">
+    <div class="tabs" role="tablist">
+      <button class="tab on" data-tab="parts" role="tab">Parts</button>
+      <button class="tab" data-tab="build" role="tab">Build process</button>
+    </div>
+    <div class="tabbody" id="tab-parts">
+      <input id="q" type="search" placeholder="Search 60 parts" aria-label="Search parts">
+      <div id="plist"></div>
+    </div>
+    <div class="tabbody" id="tab-build" hidden>
+      <div class="bhead">
+        <div class="prog"><i id="bprog"></i></div>
+        <div id="bstat" class="sub" style="margin:0"></div>
+        <div class="brow">
+          <button class="btn" id="bStart">Strip to bare block</button>
+          <button class="btn" id="bPrev" aria-label="Previous step">◀ Prev</button>
+          <button class="btn primary" id="bNext">Next step ▶</button>
+          <button class="btn" id="bPlay">Auto-build</button>
+          <button class="btn" id="bAll">Finish build</button>
+        </div>
+        <label class="ctl"><input type="checkbox" id="bFollow" checked> Camera follows each step</label>
+      </div>
+      <ol id="slist"></ol>
+    </div>
+  </aside>
+
+  <aside class="panel" id="right" aria-live="polite"></aside>
+
+  <footer class="panel dock">
+    <div class="cyc">
+      <div class="cylrow" id="cylrow"></div>
+      <div class="readouts">
+        <div>Firing order<b class="fo" id="fo"></b></div>
+        <div>Crank<b id="rCrank">0°</b></div>
+        <div>Engine<b id="rRpm">0 rpm</b></div>
+        <div>Cam<b id="rCam">0 rpm</b></div>
+        <div>Power strokes<b id="rPs">0 /s</b></div>
+        <div>Piston speed<b id="rPv">0.0 m/s</b></div>
+        <div title="Typical values under load, shown for learning">Boost ≈<b id="rBoost">–</b></div>
+        <div title="Typical values, shown for learning"><span id="rRailL">Rail ≈</span><b id="rRail">–</b></div>
+      </div>
+    </div>
+    <div class="ctrls">
+      <button class="btn primary" id="runBtn">Start engine</button>
+      <span class="state" id="state">Stopped</span>
+      <label class="ctl">RPM <input type="range" id="rpm" min="600" max="2100" step="10" value="650"><output id="rpmO">650</output></label>
+      <label class="ctl">Playback <select id="spd"><option value="0.02">2% (slow motion)</option><option value="0.05" selected>5%</option><option value="0.1">10%</option><option value="0.25">25%</option><option value="1">Real time</option></select></label>
+      <span class="ctl"><button class="btn" id="stepB" aria-label="Turn crank back 15 degrees">−15°</button><button class="btn" id="stepF" aria-label="Turn crank forward 15 degrees">+15°</button></span>
+      <label class="ctl">Explode <input type="range" id="exp" min="0" max="1" step="0.01" value="0"><output id="expO">0%</output></label>
+      <div class="toggles">
+        <button class="btn" id="tCut" aria-pressed="false">Cutaway</button>
+        <button class="btn" id="tFlow" aria-pressed="false">Flow paths</button>
+        <button class="btn" id="tAO" aria-pressed="false" title="Ambient-occlusion shading. Turns off automatically in cutaway, isolate and flow views.">Deep shading</button>
+        <select id="tLbl" aria-label="Labels"><option value="all">Labels: names</option><option value="dots">Labels: dots</option><option value="off">Labels: off</option></select>
+        <button class="btn" id="tRot" aria-pressed="false">Turntable</button>
+        <button class="btn" id="tHome">Reset view</button>
+      </div>
+    </div>
+  </footer>
+</div>
+<div id="tip"></div>
+<div id="banner" hidden></div>
+<div class="modal" id="modal" hidden>
+  <div class="card" role="dialog" aria-labelledby="mh">
+    <h2 id="mh">View your own model</h2>
+    <p>Load a .glb file such as <b>cummins-x15-orange-chrome.glb</b>. The file opens in this browser only and is not uploaded anywhere.</p>
+    <p class="note" style="margin-top:0">A model exported as one merged mesh can be viewed and orbited, but its parts cannot be labelled separately. The lab engine is built part by part for that reason.</p>
+    <div class="drop" id="drop">Drop a .glb here, or <label class="btn" style="display:inline-block;margin-left:4px">choose file<input type="file" id="glbFile" accept=".glb,.gltf" hidden></label></div>
+    <div class="brow"><button class="btn" id="mClose">Cancel</button></div>
+  </div>
+</div>
+<script type="module" src="/src/engineLab/main.js"></script>
+</body></html>
