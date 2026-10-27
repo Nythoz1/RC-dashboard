@@ -407,7 +407,7 @@ const fns={};
 const sb=await mockSupabase({users,functions:fns});
 globalThis.fetch=async(input,init)=>{const u=String(input instanceof Request?input.url:input);return u.startsWith(SB)?sb.handle(input instanceof Request?input:new Request(u,init)):new Response(JSON.stringify({error:"no network in the smoke run"}),{status:503});};
 fns["team-logins"]=await loadEdgeFunction("team-logins",{SUPABASE_URL:SB,SUPABASE_ANON_KEY:sb.anonKey,SUPABASE_SERVICE_ROLE_KEY:sb.serviceKey});
-await sb.sql("insert into app_state (key, value) values ('rc:employees', $1::jsonb), ('rc:jobs', $2::jsonb), ('rc:timeEntries', $3::jsonb)",[JSON.stringify([{id:101,name:"Mike Test",nick:"Mike",role:"Diesel Tech",rate:40,hrs:40,status:"active"},{id:102,name:"Bob Jones",nick:"Bob",role:"Apprentice",rate:25,hrs:40,status:"active"}]),JSON.stringify([{id:301,kind:"service",vehicle:"Unit 412 · 2016 Kenworth T880",service:"Injector job",tech:"Mike",status:"in-progress",custId:0}]),JSON.stringify([{id:401,jobId:301,tech:"Mike",date:PD2,hours:6,rate:40}])]);
+await sb.sql("insert into tenant_state (tenant_id, key, value) values ('c0a10000-0000-4000-8000-000000000001', 'rc:employees', $1::jsonb), ('c0a10000-0000-4000-8000-000000000001', 'rc:jobs', $2::jsonb), ('c0a10000-0000-4000-8000-000000000001', 'rc:timeEntries', $3::jsonb)",[JSON.stringify([{id:101,name:"Mike Test",nick:"Mike",role:"Diesel Tech",rate:40,hrs:40,status:"active"},{id:102,name:"Bob Jones",nick:"Bob",role:"Apprentice",rate:25,hrs:40,status:"active"}]),JSON.stringify([{id:301,kind:"service",vehicle:"Unit 412 · 2016 Kenworth T880",service:"Injector job",tech:"Mike",status:"in-progress",custId:0}]),JSON.stringify([{id:401,jobId:301,tech:"Mike",date:PD2,hours:6,rate:40}])]);
 let mockDown=false;   // true: the data API stops answering, like a dropped connection in the shop
 const mockSrv=createServer(async(req,res)=>{const chunks=[];for await(const c of req)chunks.push(c);const body=Buffer.concat(chunks);if(mockDown&&req.url.startsWith("/rest/v1/")){res.writeHead(503,{"access-control-allow-origin":"*","access-control-allow-headers":"*","access-control-allow-methods":"*","content-type":"application/json"});res.end('{"message":"down for the test"}');return;}const rq=new Request(SB+req.url,{method:req.method,headers:Object.fromEntries(Object.entries(req.headers).filter(([k])=>k!=="host"&&k!=="connection"&&k!=="content-length")),body:["GET","HEAD"].includes(req.method)?undefined:body});
   const r=await sb.handle(rq);const h=Object.fromEntries(r.headers);h["access-control-allow-origin"]="*";res.writeHead(r.status,h);res.end(Buffer.from(await r.arrayBuffer()));}).listen(SBP,"127.0.0.1");
@@ -423,7 +423,7 @@ const toTimesheets=async()=>{await q.click('.rc-ni:has-text("Team")');await q.cl
 const dbDay=async date=>((await sb.sql("select data from timesheet_entries where employee_id = 101 and work_date = $1::date",[date]))[0]||{}).data||null;
 const MIKE="mike@rollincoal.test";
 // A scanned QR tag, opened signed out: sign in and that engine's record opens (it used to look for it before the shop data had loaded).
-await sb.sql("insert into inventory (id, sku, name, cat, status, data) values (777001, 'RC-CUX152021-901', 'Cummins X15 tag test', 'Complete Engine', 'available', $1::jsonb)",[JSON.stringify({id:777001,sku:"RC-CUX152021-901",name:"Cummins X15 tag test",cat:"Complete Engine",status:"available",qty:1})]);
+await sb.sql("insert into inventory (tenant_id, id, sku, name, cat, status, data) values ('c0a10000-0000-4000-8000-000000000001', 777001, 'RC-CUX152021-901', 'Cummins X15 tag test', 'Complete Engine', 'available', $1::jsonb)",[JSON.stringify({id:777001,sku:"RC-CUX152021-901",name:"Cummins X15 tag test",cat:"Complete Engine",status:"available",qty:1})]);
 await q.goto("http://localhost:4174/?engine=777001");
 await signIn(users[0].email,users[0].password);
 await q.waitForTimeout(1500);
@@ -472,7 +472,7 @@ await q.fill("#ts-finish","17:00");
 await q.click('.rc-mod .rc-ba:has-text("Save")');
 await q.waitForTimeout(1500);
 const tRow=await dbDay(TODAY),pRow=await dbDay(PD2);
-const mikeAsked=sb.log.slice(mark).filter(e=>e.email===MIKE&&/\/rest\/v1\/(app_state|inventory|rpc\/merge)|\/storage\/v1\//.test(e.path)).length;
+const mikeAsked=sb.log.slice(mark).filter(e=>e.email===MIKE&&/\/rest\/v1\/(app_state|tenant_state|inventory|rpc\/merge)|\/storage\/v1\//.test(e.path)).length;
 await q.click('.rc-emp-who button:has-text("Password")');
 await q.fill("#pw1","Torque-2026-Cam");await q.fill("#pw2","Torque-2026-Cam");
 await q.click('.rc-mod .rc-ba:has-text("Save")');
@@ -482,8 +482,8 @@ console.log("Mike's login: sidebar "+mikeNav+" | asked for other shop data "+mik
 const mikeTok=sb.session(sb.users.find(u=>u.email===MIKE)).access_token;
 const api=(method,path,body)=>sb.handle(new Request(SB+path,{method,headers:{apikey:sb.anonKey,Authorization:"Bearer "+mikeTok,"Content-Type":"application/json",Prefer:"resolution=merge-duplicates"},body:body&&JSON.stringify(body)}));
 const ahead=await api("POST","/rest/v1/timesheet_entries",[{id:"101|"+TOMORROW,employee_id:101,work_date:TOMORROW,data:{start:"8:00 AM",finish:"4:00 PM"}}]);
-const shopData=await (await api("GET","/rest/v1/app_state?select=key")).json();
-console.log("Mike straight at the database: tomorrow "+ahead.status+" | app_state rows "+shopData.length);
+const shopData=await (await api("GET","/rest/v1/tenant_state?select=key")).json();
+console.log("Mike straight at the database: tomorrow "+ahead.status+" | shop list rows "+shopData.length);
 await signOut();
 const cm=await b.newContext({viewport:{width:390,height:844},isMobile:true,hasTouch:true});const mq=await cm.newPage();
 mq.on("pageerror",e=>errs.push("mike pageerror: "+e.message));
@@ -516,10 +516,10 @@ console.log("stale screen: "+PD1+" refused: "+refusedToast+" | buttons left "+pd
 mockDown=true;
 await q.click('button:has-text("⚙ Settings")');await q.locator("#ts-ot").selectOption("2");
 await q.waitForSelector(".rc-savebad",{timeout:10000});
-const otWhileDown=(await sb.sql("select value->0->>'otRate' as r from app_state where key='rc:settings'"))[0]?.r??null;
+const otWhileDown=(await sb.sql("select value->0->>'otRate' as r from tenant_state where key='rc:settings'"))[0]?.r??null;
 mockDown=false;   // no tap needed: it retries by itself
 await q.waitForSelector(".rc-savebad",{state:"detached",timeout:20000});
-const otAfter=(await sb.sql("select value->0->>'otRate' as r from app_state where key='rc:settings'"))[0]?.r??null;
+const otAfter=(await sb.sql("select value->0->>'otRate' as r from tenant_state where key='rc:settings'"))[0]?.r??null;
 await q.locator("#ts-ot").selectOption("1.5");await q.click('.rc-mod button:has-text("Close")');await q.waitForTimeout(1200);
 console.log("connection dropped: badge shown true | saved while down "+otWhileDown+" | after it came back "+otAfter);
 const locked=await api("POST","/rest/v1/timesheet_entries",[{id:"101|"+PD2,employee_id:101,work_date:PD2,data:{start:"7:00 AM",finish:"11:00 PM"}}]);
@@ -546,7 +546,7 @@ const addCust=async(pg,name)=>{await pg.click('.rc-ni:has-text("Customers & Jobs
 await addCust(oq,"Owner Merge Hauling");
 await addCust(q,"Office Merge Trucking");
 await oq.waitForTimeout(1800);
-const bothSaved=((await sb.sql("select value from app_state where key='rc:customers'"))[0]?.value||[]).map(c=>c.name).filter(n=>/Merge/.test(n||""));
+const bothSaved=((await sb.sql("select value from tenant_state where key='rc:customers'"))[0]?.value||[]).map(c=>c.name).filter(n=>/Merge/.test(n||""));
 await oq.evaluate(()=>window.dispatchEvent(new Event("focus")));
 const ownerSees=await oq.waitForSelector('.rc-main :text("Office Merge Trucking")',{timeout:10000}).then(()=>true,()=>false);
 console.log("two people at once: customers saved "+JSON.stringify(bothSaved)+" | the owner's screen picked up the office's "+ownerSees);
