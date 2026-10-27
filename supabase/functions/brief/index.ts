@@ -102,11 +102,19 @@ function moveUsd(s: Any, t: Any, today: string): { usd: number, why: string, est
     case "inv": { const v = (s.invoices||[]).find((x: Any) => sameId(x.id, t.id)); if (!v) return null; const d = dueDateOf(v); const dl = d && d < today ? Math.round((new Date(today + "T12:00:00Z").getTime() - new Date(d + "T12:00:00Z").getTime()) / 864e5) : 0; return { usd: docTotal(v), why: "overdue" + (dl ? " · " + dl + " day" + (dl === 1 ? "" : "s") + " late" : "") }; }
     case "list": { const i = gi(t.id); return i && +i.price > 0 ? { usd: +i.price, why: "list price sitting unadvertised" } : { usd: 0, why: "ready to sell, not advertised" }; }
     case "stale": { const i = gi(t.id); if (!i) return null; return { usd: costBasis(i), why: "capital stuck " + days(i.stageDate) + " days in " + STAGE[engStatus(i)] }; }
+    case "core": { const x = (s.cores||[]).find((y: Any) => sameId(y.id, t.id)); return x ? { usd: coreValue(x), why: "core refund · " + coreWhen(x, today) } : null; }
     case "follow": { const r = [...(s.prospects||[]), ...(s.competitors||[])].find((x: Any) => sameId(x.id, t.id)); const n = r ? +r.truckCount || 0 : 0; const a = avgSale(s); return n > 0 && a > 0 ? { usd: Math.round(a), est: true, why: "est. one engine at your average sale · fleet of " + n + " truck" + (n === 1 ? "" : "s") } : { usd: 0, why: "follow-up" }; }
     default: return { usd: 0, why: "" };
   }
 }
 const plainLabel = (l: unknown) => String(l || "").replace(/^[^A-Za-z0-9$]+/u, "").trim();
+// ── core returns, mirrored from src/lib/cores.js ──
+const coreDir = (c: Any) => (c && c.dir === "out" ? "out" : "in");
+const coreValue = (c: Any) => (coreDir(c) === "out" ? (+c.refund || +c.deposit || 0) : (+c.deposit || 0));
+const dayUTC = (iso: string) => Date.UTC(+iso.slice(0, 4), +iso.slice(5, 7) - 1, +iso.slice(8, 10));
+const coreDaysLeft = (c: Any, today: string) => (c && ISO.test(String(c.dueDate || "")) ? Math.round((dayUTC(c.dueDate) - dayUTC(today)) / 864e5) : null);
+const coreAtRisk = (c: Any, today: string, d = 7) => { if (coreDir(c) !== "out" || (c.status || "pending") !== "pending") return false; const n = coreDaysLeft(c, today); return n != null && n <= d; };
+const coreWhen = (c: Any, today: string) => { const n = coreDaysLeft(c, today); if (n == null) return ""; if (n === 0) return "due today"; return n > 0 ? "due in " + n + " day" + (n === 1 ? "" : "s") : Math.abs(n) + " day" + (n === -1 ? "" : "s") + " past the deadline"; };
 function daily3(s: Any) {
   const c: Any[] = []; const E = (s.inventory||[]).filter(isEngine);
   E.filter((i: Any) => costBasis(i) <= 0).forEach((i: Any) => c.push({ t:"cost", id:i.id, l:"Enter core cost — " + (i.sku||i.name||"") }));
@@ -116,6 +124,7 @@ function daily3(s: Any) {
   E.filter(stuck).forEach((i: Any) => c.push({ t:"stale", id:i.id, l:"Touch " + (i.sku||i.name||"") + " — stuck in " + STAGE[engStatus(i)] }));
   const today = local(new Date()).ymd;
   (s.invoices||[]).filter((v: Any) => isOverdue(v, today)).forEach((v: Any) => c.push({ t:"inv", id:v.id, l:"Chase invoice " + (v.invNum||v.id) }));
+  (s.cores||[]).filter((x: Any) => coreAtRisk(x, today)).forEach((x: Any) => c.push({ t:"core", id:x.id, l:"Ship core back — " + (x.engineName||"core") + (x.vendor ? " to " + x.vendor : "") }));
   // Prospect / shop follow-ups due today or overdue (mirrors resFollowups(s,0) in the dashboard).
   [...(s.prospects||[]), ...(s.competitors||[])].filter((r: Any) => r.nextFollowUp && r.nextFollowUp <= today && !["not-a-fit","do-not-contact"].includes(r.status||""))
     .sort((a: Any, b: Any) => String(a.nextFollowUp).localeCompare(String(b.nextFollowUp)) || String(a.name).localeCompare(String(b.name)))
@@ -157,7 +166,8 @@ function compute(s: Any, now: Date) {
   const noCost = E.filter((i: Any) => costBasis(i) <= 0).length;
   const overdue = (s.invoices||[]).filter((v: Any) => isOverdue(v, t.ymd));
   const overdueSum = overdue.reduce((a: number, v: Any) => a + docTotal(v), 0);
-  const coresPending = (s.cores||[]).filter((c: Any) => c.status === "pending").length;
+  const coresPending = (s.cores||[]).filter((c: Any) => coreDir(c) === "in" && (c.status || "pending") === "pending").length;
+  const coreRisk = (s.cores||[]).filter((c: Any) => coreAtRisk(c, t.ymd)).map((c: Any) => ({ name: c.engineName || "core", vendor: c.vendor || "", usd: coreValue(c), when: coreWhen(c, t.ymd) }));
   const openDx = (s.diagnoses||[]).filter((x: Any) => (x.outcome||"open") !== "resolved").length;
   const wip = E.filter((i: Any) => WIP.includes(engStatus(i))); const wipCost = wip.reduce((a: number, i: Any) => a + costBasis(i), 0);
   // Break-even (mirrors breakEven in src/lib/money.js): this month's fixed costs (expenses by how often
@@ -169,7 +179,7 @@ function compute(s: Any, now: Date) {
     + mWins.filter((w: Any) => !invoicedSale(s, w)).reduce((a: number, w: Any) => a + (+w.price || 0), 0)
     - mWins.reduce((a: number, w: Any) => a + saleCost(w), 0)
     - (s.shipments||[]).filter((x: Any) => inMonth(x.shipDate || docDate(x))).reduce((a: number, x: Any) => a + (+x.freightCost || 0), 0));
-  return { t, y, E: E.length, avail: avail.length, wip: wip.length, wipCost, yWins, mWins, mRev, goal, yParts, yHours, yActs: yActs.length, yAvail, yDx: dxY.length, uw, stale, unlisted, noCost, overdue, overdueSum, coresPending, openDx, fixedMo, earned, d3: daily3(s) };
+  return { t, y, E: E.length, avail: avail.length, wip: wip.length, wipCost, yWins, mWins, mRev, goal, yParts, yHours, yActs: yActs.length, yAvail, yDx: dxY.length, uw, stale, unlisted, noCost, overdue, overdueSum, coresPending, coreRisk, openDx, fixedMo, earned, d3: daily3(s) };
 }
 
 const esc = (t: unknown) => String(t ?? "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
@@ -187,6 +197,7 @@ function render(c: Any, staff = false) {
   c.stale.slice(0, 4).forEach((x: Any) => att.push(`⏳ ${x.name} — ${x.d} days in ${x.st}`));
   if (c.overdue.length) att.push(`💰 ${c.overdue.length} overdue invoice${c.overdue.length > 1 ? "s" : ""} (${$(c.overdueSum)})`);
   if (c.unlisted) att.push(`📣 ${c.unlisted} available engine${c.unlisted > 1 ? "s" : ""} not advertised`);
+  c.coreRisk.forEach((x: Any) => att.push(`🔄 Ship core back: ${x.name}${x.vendor ? " to " + x.vendor : ""} · ${$(x.usd)} refund · ${x.when}`));
   if (c.coresPending) att.push(`🔄 ${c.coresPending} core return${c.coresPending > 1 ? "s" : ""} pending`);
   if (c.noCost) att.push(`💲 ${c.noCost} engine${c.noCost > 1 ? "s" : ""} with no cost basis (margins are fiction until entered)`);
   if (c.openDx) att.push(`🩺 ${c.openDx} open diagnos${c.openDx > 1 ? "es" : "is"}`);

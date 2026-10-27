@@ -63,3 +63,16 @@ test("when the dashboard already dealt today's card, the email shows that same c
   const r = await send(owner);
   assert.match(r.text, /1\. Photo ISX-7\n\s+2\. Chase invoice INV-1 · \$1,130 overdue/);
 });
+
+test("a core refund about to lapse is on the attention list and, being the biggest money, first of the 3", async () => {
+  const today = (await sb.sql("select public.shop_today()::text as d"))[0].d;
+  const inDays = (n) => { const x = new Date(today + "T12:00:00Z"); x.setUTCDate(x.getUTCDate() + n); return x.toISOString().slice(0, 10); };
+  const put = (k, v) => sb.sql("insert into tenant_state (tenant_id, key, value) values ('c0a10000-0000-4000-8000-000000000001', $1, $2::jsonb) on conflict (tenant_id, key) do update set value = excluded.value", ["rc:" + k, JSON.stringify(v)]);
+  await put("settings", []);
+  await put("cores", [{ id: 9, dir: "out", engineName: "ISX15 core", vendor: "Cummins Reman", refund: 1800, dueDate: inDays(3), status: "pending" },
+                      { id: 10, dir: "out", engineName: "C15 core", vendor: "Cat", refund: 2500, dueDate: inDays(3), status: "sent" }]);
+  const r = await send(owner);
+  assert.match(r.text, /Ship core back: ISX15 core to Cummins Reman · \$1,800 refund · due in 3 days/);
+  assert.doesNotMatch(r.text, /C15 core/);                                   // shipped: not at risk
+  assert.match(r.text, /1\. Ship core back — ISX15 core to Cummins Reman · \$1,800 core refund · due in 3 days\n\s+2\. Chase invoice INV-1/);
+});
