@@ -50,3 +50,16 @@ test("staff get the same brief without the break-even line, and so does the stor
   assert.doesNotMatch(stored.staffText, /fixed costs|break-even/);
   assert.doesNotMatch(stored.staffHtml, /fixed costs|break-even/);
 });
+
+test("today's 3 in the email are ranked by dollars, like the Home screen, with the reason", async () => {
+  const r = await send(owner);
+  assert.match(r.text, /1\. Chase invoice INV-1 · \$1,130 overdue · 30 days late/);
+});
+
+test("when the dashboard already dealt today's card, the email shows that same card", async () => {
+  const today = (await sb.sql("select public.shop_today()::text as d"))[0].d;
+  await sb.sql("insert into tenant_state (tenant_id, key, value) values ('c0a10000-0000-4000-8000-000000000001', 'rc:settings', $1::jsonb) on conflict (tenant_id, key) do update set value = excluded.value",
+    [JSON.stringify([{ id: 1, d3: { date: today, v: 2, tasks: [{ t: "photo", id: 7, l: "📷 Photo ISX-7" }, { t: "inv", id: 1, l: "💰 Chase invoice INV-1" }] } }])]);
+  const r = await send(owner);
+  assert.match(r.text, /1\. Photo ISX-7\n\s+2\. Chase invoice INV-1 · \$1,130 overdue/);
+});

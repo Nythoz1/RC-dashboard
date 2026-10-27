@@ -78,3 +78,10 @@ test("after 0017 a login gets its shop, and files go in the shop's folder", asyn
   assert.equal(shop.name, "Rollin Coal");
   assert.equal(await owner.shopFolder(), shop.id + "/");
 });
+
+test("the owner saves the shop profile; an employee can't", async () => {
+  const sh = await owner.saveShopProfile("Rollin Coal", { phone: "1-587-863-0505", tagline: "Canada's Diesel Engine Specialists" });
+  assert.equal(sh.profile.phone, "1-587-863-0505");
+  await assert.rejects(mike.saveShopProfile("Mike's shop", {}), /Only the shop's owner/);
+  assert.equal((await owner.getShop()).name, "Rollin Coal");
+});

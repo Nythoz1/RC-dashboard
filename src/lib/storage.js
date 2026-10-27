@@ -270,6 +270,15 @@ export function getShop() {
   return shopP;
 }
 export const forgetShop = () => { shopP = null; };
+// The owner edits their shop's name and profile (0017: update_shop_profile, owner only, merges into the
+// profile). Returns the fresh shop row; throws a plain-English error.
+export async function saveShopProfile(name, profile) {
+  if (!supabase) throw new Error("The shop profile needs the cloud setup.");
+  const { error } = await supabase.rpc("update_shop_profile", { p_name: name, p_profile: profile });
+  if (error) throw new Error(error.code === "42501" ? "Only the shop's owner can change this." : error.message || "Couldn't save the shop profile.");
+  shopP = null;
+  return getShop();
+}
 // The folder prefix for a new file: "<shop id>/" (or nothing before 0017).
 export async function shopFolder() {
   const s = await getShop();

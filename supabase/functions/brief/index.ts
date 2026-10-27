@@ -90,24 +90,50 @@ const payrollMonthly = (emps: Any[]) => (emps || []).filter((e) => !e.status || 
 const saleCost = (w: Any) => Math.max(0, (+w.cost || 0) - (+w.labor || 0));
 const invoicedSale = (s: Any, w: Any) => { const E = s.inventory || []; const e = w.engineId != null ? E.find((i: Any) => sameId(i.id, w.engineId)) : (w.sku ? E.find((i: Any) => i.sku === w.sku) : null); return !!e && (s.invoices || []).some((v: Any) => sameId(v.engineId, e.id)); };
 
+// Today's 3 moves, mirrored from genDaily3 / moveUsd in the dashboard: ranked by dollars (an overdue
+// invoice's total, an unadvertised engine's list price, the cost stuck in a stage, a follow-up with a known
+// fleet size at the shop's average sale, marked est.), the biggest first; moves with no honest number only
+// fill the card when fewer than three carry money. When the dashboard already dealt today's card
+// (settings.d3, v 2), the email uses that card, so both show the same three.
+const avgSale = (s: Any) => { const W = (s.wins||[]).filter((w: Any) => w.kind === "sale" && +w.price > 0); return W.length ? W.reduce((a: number, w: Any) => a + (+w.price), 0) / W.length : 0; };
+function moveUsd(s: Any, t: Any, today: string): { usd: number, why: string, est?: boolean } | null {
+  const gi = (id: unknown) => (s.inventory||[]).find((x: Any) => sameId(x.id, id));
+  switch (t.t) {
+    case "inv": { const v = (s.invoices||[]).find((x: Any) => sameId(x.id, t.id)); if (!v) return null; const d = dueDateOf(v); const dl = d && d < today ? Math.round((new Date(today + "T12:00:00Z").getTime() - new Date(d + "T12:00:00Z").getTime()) / 864e5) : 0; return { usd: docTotal(v), why: "overdue" + (dl ? " · " + dl + " day" + (dl === 1 ? "" : "s") + " late" : "") }; }
+    case "list": { const i = gi(t.id); return i && +i.price > 0 ? { usd: +i.price, why: "list price sitting unadvertised" } : { usd: 0, why: "ready to sell, not advertised" }; }
+    case "stale": { const i = gi(t.id); if (!i) return null; return { usd: costBasis(i), why: "capital stuck " + days(i.stageDate) + " days in " + STAGE[engStatus(i)] }; }
+    case "follow": { const r = [...(s.prospects||[]), ...(s.competitors||[])].find((x: Any) => sameId(x.id, t.id)); const n = r ? +r.truckCount || 0 : 0; const a = avgSale(s); return n > 0 && a > 0 ? { usd: Math.round(a), est: true, why: "est. one engine at your average sale · fleet of " + n + " truck" + (n === 1 ? "" : "s") } : { usd: 0, why: "follow-up" }; }
+    default: return { usd: 0, why: "" };
+  }
+}
+const plainLabel = (l: unknown) => String(l || "").replace(/^[^A-Za-z0-9$]+/u, "").trim();
 function daily3(s: Any) {
   const c: Any[] = []; const E = (s.inventory||[]).filter(isEngine);
-  E.filter((i: Any) => costBasis(i) <= 0).forEach((i: Any) => c.push({ t:"cost", l:"Enter core cost — " + (i.sku||i.name||"") }));
-  E.filter((i: Any) => engStatus(i) === "available" && !(i.listedOn||[]).length).forEach((i: Any) => c.push({ t:"list", l:"Post " + (i.sku||"") + " — not advertised" }));
-  E.filter((i: Any) => !i.photo).forEach((i: Any) => c.push({ t:"photo", l:"Photo " + (i.sku||i.name||"") }));
-  E.filter((i: Any) => !(i.serial||i.esn)).forEach((i: Any) => c.push({ t:"esn", l:"Record ESN — " + (i.sku||i.name||"") }));
-  E.filter(stuck).forEach((i: Any) => c.push({ t:"stale", l:"Touch " + (i.sku||i.name||"") + " — stuck in " + STAGE[engStatus(i)] }));
+  E.filter((i: Any) => costBasis(i) <= 0).forEach((i: Any) => c.push({ t:"cost", id:i.id, l:"Enter core cost — " + (i.sku||i.name||"") }));
+  E.filter((i: Any) => engStatus(i) === "available" && !(i.listedOn||[]).length).forEach((i: Any) => c.push({ t:"list", id:i.id, l:"Post " + (i.sku||"") + " — not advertised" }));
+  E.filter((i: Any) => !i.photo).forEach((i: Any) => c.push({ t:"photo", id:i.id, l:"Photo " + (i.sku||i.name||"") }));
+  E.filter((i: Any) => !(i.serial||i.esn)).forEach((i: Any) => c.push({ t:"esn", id:i.id, l:"Record ESN — " + (i.sku||i.name||"") }));
+  E.filter(stuck).forEach((i: Any) => c.push({ t:"stale", id:i.id, l:"Touch " + (i.sku||i.name||"") + " — stuck in " + STAGE[engStatus(i)] }));
   const today = local(new Date()).ymd;
-  (s.invoices||[]).filter((v: Any) => isOverdue(v, today)).forEach((v: Any) => c.push({ t:"inv", l:"Chase invoice " + (v.invNum||v.id) }));
+  (s.invoices||[]).filter((v: Any) => isOverdue(v, today)).forEach((v: Any) => c.push({ t:"inv", id:v.id, l:"Chase invoice " + (v.invNum||v.id) }));
   // Prospect / shop follow-ups due today or overdue (mirrors resFollowups(s,0) in the dashboard).
   [...(s.prospects||[]), ...(s.competitors||[])].filter((r: Any) => r.nextFollowUp && r.nextFollowUp <= today && !["not-a-fit","do-not-contact"].includes(r.status||""))
     .sort((a: Any, b: Any) => String(a.nextFollowUp).localeCompare(String(b.nextFollowUp)) || String(a.name).localeCompare(String(b.name)))
-    .forEach((r: Any) => c.push({ t:"follow", l:"Follow up — " + (r.name||"") + (r.city ? " (" + r.city + ")" : "") }));
-  const day = Math.floor(Date.now()/864e5); const types = [...new Set(c.map(x => x.t))]; const picks: Any[] = [];
-  for (let k = 0; k < types.length && picks.length < 3; k++) { const ty = types[(k+day) % types.length]; const cand = c.find(x => x.t === ty && !picks.includes(x)); if (cand) picks.push(cand); }
-  for (const x of c) { if (picks.length >= 3) break; if (!picks.includes(x)) picks.push(x); }
-  return picks.slice(0, 3);
+    .forEach((r: Any) => c.push({ t:"follow", id:r.id, l:"Follow up — " + (r.name||"") + (r.city ? " (" + r.city + ")" : "") }));
+  const dealt = ((s.settings||[])[0] || {}).d3;
+  let picks: Any[];
+  if (dealt && dealt.date === today && dealt.v === 2 && Array.isArray(dealt.tasks)) {
+    picks = dealt.tasks.slice(0, 3).map((x: Any) => ({ ...x, l: plainLabel(x.l) }));
+  } else {
+    picks = c.map((x) => [x, (moveUsd(s, x, today) || { usd: 0 }).usd || 0] as [Any, number]).filter(([, v]) => v > 0).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([x]) => x);
+    const rest = c.filter((x) => !picks.includes(x)); const day = Math.floor(Date.now()/864e5); const types = [...new Set(rest.map((x) => x.t))];
+    for (let k = 0; k < types.length && picks.length < 3; k++) { const ty = types[(k+day) % types.length]; const cand = rest.find((x) => x.t === ty && !picks.includes(x)); if (cand) picks.push(cand); }
+    for (const x of rest) { if (picks.length >= 3) break; if (!picks.includes(x)) picks.push(x); }
+  }
+  return picks.slice(0, 3).map((x) => { const m = moveUsd(s, x, today); return { ...x, usd: m ? m.usd : 0, est: !!(m && m.est), why: m ? m.why : "" }; });
 }
+// "Chase invoice INV-1 · $1,130 overdue · 30 days late"
+const moveLine = (x: Any) => x.l + (x.usd > 0 ? " · " + (x.est ? "~" : "") + $(x.usd) + (x.why ? " " + x.why : "") : "");
 
 function compute(s: Any, now: Date) {
   const t = local(now); const y = local(new Date(now.getTime() - 864e5)).ymd; const ym = t.ymd.slice(0, 7);
@@ -151,6 +177,7 @@ const sec = (t: string) => `<div style="font-size:11px;letter-spacing:2px;text-t
 
 // staff: true leaves out the break-even line, which includes payroll.
 function render(c: Any, staff = false) {
+  const shopName = String(c.shopName || "Rollin Coal"), shopCity = String(c.shopCity || "");
   const be = !staff && c.fixedMo > 0;
   const beTxt = be ? ` · fixed costs ${$(c.fixedMo)} a month: ${c.earned >= c.fixedMo ? "✓ break-even cleared" : $(Math.max(0, c.fixedMo - c.earned)) + " more margin to break even"}` : "";
   const pct = c.goal > 0 ? Math.min(999, Math.round(c.mRev / c.goal * 100)) : 0;
@@ -168,40 +195,42 @@ function render(c: Any, staff = false) {
     `⏱ ${c.yHours}h wrenching · 🧩 ${$(c.yParts)} parts into builds · 🔧 ${c.yAvail} reman${c.yAvail === 1 ? "" : "s"} completed`,
     `🩺 ${c.yDx} diagnos${c.yDx === 1 ? "is" : "es"} logged · 📜 ${c.yActs} actions in the shop log`,
   ];
-  const subject = `☀️ Rollin Coal brief — ${c.t.long}${c.uw.length ? " · ⚠ " + c.uw.length + " build" + (c.uw.length > 1 ? "s" : "") + " at risk" : ""}${c.yWins.length ? " · 🏆 " + c.yWins.length + " sold" : ""}`;
+  const subject = `☀️ ${shopName} brief — ${c.t.long}${c.uw.length ? " · ⚠ " + c.uw.length + " build" + (c.uw.length > 1 ? "s" : "") + " at risk" : ""}${c.yWins.length ? " · 🏆 " + c.yWins.length + " sold" : ""}`;
   const text = [
-    `ROLLIN COAL — MORNING BRIEF · ${c.t.long}`,
+    `${shopName.toUpperCase()} — MORNING BRIEF · ${c.t.long}`,
     ``, `YESTERDAY`, ...yest.map(l => "  " + l),
     ``, `NEEDS ATTENTION TODAY`, ...(att.length ? att.map(l => "  " + l) : ["  ✓ Nothing urgent — lot's clean."]),
-    ``, `TODAY'S 3`, ...(c.d3.length ? c.d3.map((x: Any, i: number) => `  ${i + 1}. ${x.l}`) : ["  Lot's clean — go sell something."]),
+    ``, `TODAY'S 3`, ...(c.d3.length ? c.d3.map((x: Any, i: number) => `  ${i + 1}. ${moveLine(x)}`) : ["  Lot's clean — go sell something."]),
     ``, `MONTH SO FAR`,
     `  ${$(c.mRev)} of ${$(c.goal)} goal (${pct}%) · ${c.mWins.length} engine${c.mWins.length === 1 ? "" : "s"} sold` + beTxt,
     `  Lot: ${c.E} engines · ${c.avail} available · ${c.wip} in WIP holding ${$K(c.wipCost)}`,
-    ``, ...(DASH ? [`Open the dashboard: ${DASH}`, ``] : []), `Sent automatically by your Rollin Coal dashboard.`,
+    ``, ...(DASH ? [`Open the dashboard: ${DASH}`, ``] : []), `Sent automatically by your ${shopName} dashboard.`,
   ].join("\n");
   const li = (a: string[]) => a.map(x => `<li style="margin:4px 0">${esc(x)}</li>`).join("");
   const html = `<!doctype html><html><body style="margin:0;background:#f4f2ef;font-family:Helvetica,Arial,sans-serif;color:#1b1b1b">
 <div style="max-width:620px;margin:0 auto;padding:18px">
- <div style="background:#d4581a;color:#fff;border-radius:10px 10px 0 0;padding:16px 20px"><div style="font-size:11px;letter-spacing:3px;text-transform:uppercase;opacity:.9">Rollin Coal</div><div style="font-size:22px;font-weight:800;letter-spacing:1px;margin-top:2px">☀️ Morning Brief</div><div style="font-size:12px;opacity:.9;margin-top:4px">${esc(c.t.long)}</div></div>
+ <div style="background:#d4581a;color:#fff;border-radius:10px 10px 0 0;padding:16px 20px"><div style="font-size:11px;letter-spacing:3px;text-transform:uppercase;opacity:.9">${esc(shopName)}</div><div style="font-size:22px;font-weight:800;letter-spacing:1px;margin-top:2px">☀️ Morning Brief</div><div style="font-size:12px;opacity:.9;margin-top:4px">${esc(c.t.long)}</div></div>
  <div style="background:#fff;border:1px solid #e3ded8;border-top:none;border-radius:0 0 10px 10px;padding:6px 20px 16px">
   ${sec("Yesterday")}<ul style="padding-left:18px;margin:6px 0 14px;font-size:14px;line-height:1.5">${li(yest)}</ul>
   ${sec("Needs attention today")}${att.length ? `<ul style="padding-left:18px;margin:6px 0 14px;font-size:14px;line-height:1.5">${li(att)}</ul>` : `<p style="font-size:14px;color:#1e7a34;margin:6px 0 14px">✓ Nothing urgent — lot's clean.</p>`}
-  ${sec("Today's 3")}${c.d3.length ? `<ol style="padding-left:20px;margin:6px 0 14px;font-size:14px;line-height:1.6">${c.d3.map((x: Any) => `<li>${esc(x.l)}</li>`).join("")}</ol>` : `<p style="font-size:14px;margin:6px 0 14px">Lot's clean — go sell something.</p>`}
+  ${sec("Today's 3")}${c.d3.length ? `<ol style="padding-left:20px;margin:6px 0 14px;font-size:14px;line-height:1.6">${c.d3.map((x: Any) => `<li>${esc(moveLine(x))}</li>`).join("")}</ol>` : `<p style="font-size:14px;margin:6px 0 14px">Lot's clean — go sell something.</p>`}
   ${sec("Month so far")}
   <div style="font-size:14px;margin:6px 0 4px"><b>${esc($(c.mRev))}</b> of ${esc($(c.goal))} goal · ${pct}% · ${c.mWins.length} engine${c.mWins.length === 1 ? "" : "s"} sold${esc(beTxt)}</div>
   <div style="height:10px;background:#eee;border-radius:6px;overflow:hidden;margin:6px 0 10px"><div style="height:100%;width:${Math.min(100, pct)}%;background:${pct >= 100 ? "#3fae5a" : "#d4581a"}"></div></div>
   <div style="font-size:12px;color:#666">Lot: ${c.E} engines · ${c.avail} available · ${c.wip} in WIP holding ${esc($K(c.wipCost))}</div>
   ${DASH ? `<p style="margin:16px 0 0"><a href="${esc(DASH)}" style="background:#d4581a;color:#fff;text-decoration:none;padding:9px 14px;border-radius:7px;font-size:13px;font-weight:700">Open the dashboard →</a></p>` : ""}
  </div>
- <div style="font-size:11px;color:#999;text-align:center;padding:12px">Sent automatically by your Rollin Coal dashboard · Medicine Hat, AB</div>
+ <div style="font-size:11px;color:#999;text-align:center;padding:12px">Sent automatically by your ${esc(shopName)} dashboard${shopCity ? " · " + esc(shopCity) : ""}</div>
 </div></body></html>`;
   return { subject, text, html, summary: { sold: c.yWins.length, atRisk: c.uw.length, stale: c.stale.length, overdue: c.overdue.length, monthRev: c.mRev, goal: c.goal } };
 }
 
-async function sendEmail(subject: string, html: string, text: string, to: string) {
+// The sender's address stays MAIL_FROM's; its display name is the shop's.
+const fromFor = (name: string) => { const m = MAIL_FROM.match(/<([^>]+)>/); return m ? `${name.replace(/[<>"]/g, "")} <${m[1]}>` : MAIL_FROM; };
+async function sendEmail(subject: string, html: string, text: string, to: string, from = MAIL_FROM) {
   if (!RESEND) return { sent: false, reason: "RESEND_API_KEY not set" };
   try {
-    const r = await fetch("https://api.resend.com/emails", { method: "POST", headers: { Authorization: "Bearer " + RESEND, "Content-Type": "application/json" }, body: JSON.stringify({ from: MAIL_FROM, to: [to], subject, html, text }) });
+    const r = await fetch("https://api.resend.com/emails", { method: "POST", headers: { Authorization: "Bearer " + RESEND, "Content-Type": "application/json" }, body: JSON.stringify({ from, to: [to], subject, html, text }) });
     const d: Any = await r.json().catch(() => ({}));
     if (!r.ok) return { sent: false, reason: d?.message || d?.name || ("Resend " + r.status) };
     return { sent: true, id: d?.id };
@@ -271,8 +300,11 @@ Deno.serve(async (req) => {
     // ── compute → email → store ──
     const to = String(shop.profile?.email || "") || MAIL_TO;
     const c = compute(s, now);
+    c.shopName = String(shop.name || "Rollin Coal");
+    const addr = String(shop.profile?.address || "").split(",").map((x: string) => x.trim()).filter(Boolean);
+    c.shopCity = String(shop.profile?.city || (addr.length >= 2 ? addr.slice(-2).join(", ") : addr[0] || ""));
     const out = render(c), staffOut = render(c, true);
-    const mail: Any = await sendEmail(out.subject, out.html, out.text, to);
+    const mail: Any = await sendEmail(out.subject, out.html, out.text, to, fromFor(c.shopName));
     const brief = { date: t.ymd, at: now.toISOString(), subject: out.subject, text: out.text, html: out.html, staffText: staffOut.text, staffHtml: staffOut.html, sent: !!mail.sent, to: mail.sent ? to : null, reason: mail.sent ? null : (mail.reason || null), summary: out.summary, by: mode };
     const up = await svc.from("tenant_state").upsert({ tenant_id: shop.id, key: "rc:brief", value: brief, updated_at: now.toISOString() }, { onConflict: "tenant_id,key" });
     if (up.error) console.error("brief store failed:", shop.id, up.error.message);

@@ -201,3 +201,16 @@ test("the brief: a user gets their own shop's; cron runs each shop on its own da
   const stored = await sb.sql("select tenant_id from tenant_state where key = 'rc:brief' order by tenant_id");
   assert.deepEqual(stored.map((r) => r.tenant_id).sort(), [B, RC_TENANT].sort());
 });
+
+test("the brief carries each shop's own name", async () => {
+  const sb = await mockSupabase({ users: [], tenants: [{ id: B, name: "Prairie Diesel", profile: { address: "12 Main St, Swift Current, SK" } }] });
+  globalThis.fetch = async (input, init) => { const u = String(input instanceof Request ? input.url : input); return u.startsWith(SB) ? sb.handle(input instanceof Request ? input : new Request(u, init)) : new Response("{}", { status: 503 }); };
+  const brief = await loadEdgeFunction("brief", { SUPABASE_URL: SB, SUPABASE_ANON_KEY: sb.anonKey, SUPABASE_SERVICE_ROLE_KEY: sb.serviceKey });
+  const all = await (await brief(new Request(SB + "/functions/v1/brief?force=1&tenant=" + B, { method: "POST", headers: { Authorization: "Bearer " + sb.serviceKey } }))).json();
+  const b = all.results[0];
+  assert.match(b.subject, /Prairie Diesel brief/);
+  assert.match(b.text, /^PRAIRIE DIESEL — MORNING BRIEF/);
+  assert.doesNotMatch(b.text, /Rollin Coal/i);
+  const html = (await sb.sql("select value->>'html' as h from tenant_state where tenant_id = $1 and key = 'rc:brief'", [B]))[0].h;
+  assert.match(html, /Swift Current, SK/); assert.doesNotMatch(html, /Rollin Coal|Medicine Hat/);
+});
