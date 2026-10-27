@@ -1,5 +1,5 @@
 import React, { useState, useReducer, useEffect, useRef, useMemo } from "react";
-import { db, enginePicklist } from "./lib/storage";
+import { db, enginePicklist, getShop } from "./lib/storage";
 import { ENGINES as LAB_ENGINES } from "./engineLab/engines/index.js";
 import { uploadPhoto, deletePhoto } from "./lib/photos";
 import { askClaude } from "./lib/ai";
@@ -792,7 +792,10 @@ function refusedMsg(refused,pp){
     return "Couldn't save "+ts.map(([,dt])=>Tsh.shortDate(dt)).join(", ")+": "+why+". It's back to what was saved. Ask the owner if something's wrong.";}
   return "Some changes weren't allowed, so they were put back to what's saved.";
 }
-async function loadAll(role){const d={};let m=null;const keys=keysFor(role);try{m=await db.getAll(keys.map(k=>"rc:"+k));}catch(e){console.error("[rc load] batch failed:",e&&e.message?e.message:e);}if(!m){STORE_KEYS.forEach(k=>{d[k]=EMPTY[k]||[];});d.__loadError=true;return d;}let err=false;const fresh=[];for(const k of STORE_KEYS){if(!keys.includes(k)){d[k]=[];continue;}const r=m["rc:"+k];if(r==null)fresh.push(k);try{d[k]=(r!=null)?JSON.parse(r):(EMPTY[k]||[]);}catch(e){err=true;d[k]=EMPTY[k]||[];console.error("[rc load] "+k+" parse failed:",e&&e.message?e.message:e);}}if(err)d.__loadError=true;else if(role!=="employee")fresh.push(...await seedResearch(d));d.__fresh=[...new Set(fresh)];return d;}
+// A new shop (0017: not Rollin Coal, the first shop) starts with only the generic reference lists; never the demo engines, Rollin Coal's injectors, content or sales research.
+const STARTER_KEYS=["boms","vendors","services","issues"];
+const seedFor=(k,shop)=>(!shop||shop.legacy_paths||STARTER_KEYS.includes(k))?(EMPTY[k]||[]):[];
+async function loadAll(role,shop){const d={};let m=null;const keys=keysFor(role);try{m=await db.getAll(keys.map(k=>"rc:"+k));}catch(e){console.error("[rc load] batch failed:",e&&e.message?e.message:e);}if(!m){STORE_KEYS.forEach(k=>{d[k]=EMPTY[k]||[];});d.__loadError=true;return d;}let err=false;const fresh=[];for(const k of STORE_KEYS){if(!keys.includes(k)){d[k]=[];continue;}const r=m["rc:"+k];if(r==null)fresh.push(k);try{d[k]=(r!=null)?JSON.parse(r):seedFor(k,shop);}catch(e){err=true;d[k]=seedFor(k,shop);console.error("[rc load] "+k+" parse failed:",e&&e.message?e.message:e);}}if(err)d.__loadError=true;else if(role!=="employee"&&(!shop||shop.legacy_paths))fresh.push(...await seedResearch(d));d.__fresh=[...new Set(fresh)];return d;}
 async function clearAll(){for(const k of STORE_KEYS){try{await db.removeItem("rc:"+k);}catch(e){}}}
 
 // Claude AI
@@ -3621,7 +3624,7 @@ export default function App(){
   const fresh=useRef(new Set());
   // Which login's data is on screen: a scanned tag waits for it (right after signing in, `loading` is
   // still false for one render before the load starts, with no shop data yet).
-  const loadedFor=useRef(null);const took=data=>{fresh.current=new Set(data.__fresh||[]);delete data.__fresh;lastSaved.current=data;loadedFor.current=live.current.role;d({type:"LOAD",d:data});};
+  const loadedFor=useRef(null);const [shop,setShop]=useState(null);const [noShop,setNoShop]=useState(false);const shopRef=useRef(null);const took=data=>{fresh.current=new Set(data.__fresh||[]);delete data.__fresh;lastSaved.current=data;loadedFor.current=live.current.role;d({type:"LOAD",d:data});};
   // Colour theme is a per-device preference (lib/prefs.js), never shop data: Day by default, Night, or Auto (follow the phone/computer).
   const[themePref,setThemePref]=useState(()=>getPref("rc:theme","day"));
   const[sysDark,setSysDark]=useState(()=>{try{return window.matchMedia("(prefers-color-scheme: dark)").matches;}catch(e){return false;}});
@@ -3648,7 +3651,7 @@ export default function App(){
   // SOLD splash: air horn (unless muted) + auto-dismiss
   useEffect(()=>{if(!s.soldSplash)return;if(getSet(s).soundOn!==false)horn();const t=setTimeout(()=>d({type:"SPLASH",d:null}),6500);return()=>clearTimeout(t);},[s.soldSplash]);
   // Load data once authenticated (immediately in localStorage mode). Never loads/saves while logged out.
-  useEffect(()=>{if(!authed||role==="none"){setLoading(false);return;}let off=false;loadedFor.current=null;setLoading(true);setLoadErr(false);(async()=>{try{const data=await loadAll(role);if(off)return;if(data.__loadError){setLoadErr(true);setLoading(false);return;}took(data);}catch(e){if(!off)setLoadErr(true);}if(!off)setLoading(false);})();return()=>{off=true;};},[authed,role]);
+  useEffect(()=>{if(!authed||role==="none"){setLoading(false);return;}let off=false;loadedFor.current=null;setLoading(true);setLoadErr(false);setNoShop(false);(async()=>{try{let sh=null;if(usingCloud){sh=await getShop();if(off)return;if(!sh){setNoShop(true);setLoading(false);return;}}shopRef.current=sh;setShop(sh);const data=await loadAll(role,sh);if(off)return;if(data.__loadError){setLoadErr(true);setLoading(false);return;}took(data);}catch(e){if(!off)setLoadErr(true);}if(!off)setLoading(false);})();return()=>{off=true;};},[authed,role]);
   // A scanned QR tag (?engine=<id>) opens that engine's record once the shop's data is in (after signing in).
   useEffect(()=>{if(loading||!authed||loadErr)return;if(role!=='employee'&&role!=='none'&&loadedFor.current!==role)return;const id=takeEngineParam();if(!id)return;
     if(role==="employee"||role==="none"){d({type:"TOAST",d:{msg:"That tag opens an engine's record, and this login doesn't have access to the inventory.",t:Date.now(),long:true}});return;}
@@ -3685,7 +3688,7 @@ export default function App(){
   // Live sync: quietly re-pull the shop's data on window focus and every 60s
   // (cloud only, never while a modal is open or local changes are unsaved),
   // so a tab left open overnight can't overwrite the crew's newer work.
-  useEffect(()=>{if(!usingCloud||!authed||loading)return;let busy=false;const refresh=async()=>{const before=sRef.current;const prev=lastSaved.current;if(busy||document.hidden||!prev||before.modal)return;if(keysFor(role).some(k=>before[k]!==prev[k]))return;busy=true;try{const data=await loadAll(role);const cur=sRef.current;if(!data.__loadError&&!cur.modal&&!keysFor(role).some(k=>cur[k]!==before[k]))took(data);}catch(e){}finally{busy=false;}};const iv=setInterval(refresh,60000);window.addEventListener("focus",refresh);return()=>{clearInterval(iv);window.removeEventListener("focus",refresh);};},[authed,loading,role]);
+  useEffect(()=>{if(!usingCloud||!authed||loading)return;let busy=false;const refresh=async()=>{const before=sRef.current;const prev=lastSaved.current;if(busy||document.hidden||!prev||before.modal)return;if(keysFor(role).some(k=>before[k]!==prev[k]))return;busy=true;try{const data=await loadAll(role,shopRef.current);const cur=sRef.current;if(!data.__loadError&&!cur.modal&&!keysFor(role).some(k=>cur[k]!==before[k]))took(data);}catch(e){}finally{busy=false;}};const iv=setInterval(refresh,60000);window.addEventListener("focus",refresh);return()=>{clearInterval(iv);window.removeEventListener("focus",refresh);};},[authed,loading,role]);
   useEffect(()=>{const t=setInterval(()=>setTime(new Date()),60000);return()=>clearInterval(t);},[]);
   useEffect(()=>{if(s.toast){const t=setTimeout(()=>d({type:"TOAST",d:null}),s.toast.undo?5000:s.toast.long?6500:2200);return()=>clearTimeout(t);}},[s.toast]);
   // A new view starts at the top of the page.
@@ -3706,7 +3709,7 @@ export default function App(){
   const toastEl=s.toast&&(<div role="status" className="rc-toast" style={{position:"fixed",bottom:20,left:"50%",transform:"translateX(-50%)",background:"var(--tx)",border:"none",borderLeft:"3px solid var(--ac)",borderRadius:10,padding:"11px 16px",display:"flex",alignItems:"center",gap:14,zIndex:9999,boxShadow:"var(--sh2)",fontFamily:"var(--fb)",fontSize:14,color:"var(--bg)",maxWidth:"calc(100vw - 32px)"}}><span>{s.toast.msg}</span>{s.toast.undo&&<button className="rc-bs" onClick={()=>d({type:"UNDO"})} style={{fontSize:13,color:"var(--act)",borderColor:"var(--ac)",background:"transparent"}}>↩ Undo</button>}</div>);
   if(usingCloud&&!authReady)return splash;
   if(usingCloud&&!session)return <Login onAuthed={setSession} theme={theme}/>;
-  if(usingCloud&&role==="none")return (<div className="rc-root" data-theme={theme} style={{display:"flex",alignItems:"center",justifyContent:"center",minHeight:"100vh",padding:20}}><style>{CSS}</style><div style={{textAlign:"center",maxWidth:360}}><div className="rc-hi" style={{width:50,height:50,fontSize:24,margin:"0 auto 12px"}}>RC</div><div style={{fontSize:14.5,color:"var(--tx2)",marginBottom:16,lineHeight:1.6}}>This login doesn't have access yet. Ask the owner to set it up from the Team tab.</div><button className="rc-bs" onClick={leave}>Sign out</button></div></div>);
+  if(usingCloud&&(role==="none"||noShop))return (<div className="rc-root" data-theme={theme} style={{display:"flex",alignItems:"center",justifyContent:"center",minHeight:"100vh",padding:20}}><style>{CSS}</style><div style={{textAlign:"center",maxWidth:360}}><div className="rc-hi" style={{width:50,height:50,fontSize:24,margin:"0 auto 12px"}}>RC</div><div style={{fontSize:14.5,color:"var(--tx2)",marginBottom:16,lineHeight:1.6}}>This login doesn't have access yet. Ask the owner to set it up from the Team tab.</div><button className="rc-bs" onClick={leave}>Sign out</button></div></div>);
   if(usingCloud&&loadErr)return (<div className="rc-root" data-theme={theme} style={{display:"flex",alignItems:"center",justifyContent:"center",minHeight:"100vh",padding:20}}><style>{CSS}</style><div style={{textAlign:"center",maxWidth:360}}><div className="rc-hi" style={{width:50,height:50,fontSize:24,margin:"0 auto 12px"}}>RC</div><div style={{fontFamily:"var(--fd)",fontSize:19,letterSpacing:1,textTransform:"uppercase",color:"var(--r)",marginBottom:8}}>Couldn't reach the server</div><div style={{fontSize:14,color:"var(--tx2)",marginBottom:16,lineHeight:1.6}}>Your shop data didn't load, so editing is paused to protect it — nothing will be saved over your cloud data until a clean load succeeds. Check your connection and retry.</div><button className="rc-ba" onClick={()=>window.location.reload()}>↻ Retry</button></div></div>);
   if(loading)return splash;
   // An employee login, or the owner looking at an employee's screen: their timesheet and nothing else.

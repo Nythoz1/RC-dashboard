@@ -13,7 +13,7 @@
 // localStorage mode (no Supabase) has no bucket, so we fall back to an inline
 // base64 data URL there — same as before, and fine for single-machine dev.
 // ─────────────────────────────────────────────────────────────
-import { supabase, usingCloud } from "./storage";
+import { supabase, usingCloud, shopFolder } from "./storage";
 
 const BUCKET = "engine-photos";
 
@@ -61,7 +61,7 @@ function blobToDataUrl(blob) {
 export async function uploadPhoto(file) {
   const blob = await compressToBlob(file);
   if (!usingCloud || !supabase) return blobToDataUrl(blob);
-  const path = `engines/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.jpg`;
+  const path = `${await shopFolder()}engines/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.jpg`;
   const { error } = await supabase.storage
     .from(BUCKET)
     .upload(path, blob, { contentType: "image/jpeg", upsert: true });

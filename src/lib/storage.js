@@ -9,7 +9,7 @@
 // unaware of the storage shape — it just calls db.getItem/setItem/removeItem.
 //
 // P4 relational migration (incremental): most lists still live as one JSON blob
-// per key in the `app_state` table. Lists that have graduated to their own real
+// per key in the `tenant_state` table (`app_state` before 0017). Lists that have graduated to their own real
 // table get an adapter in TABLE_ADAPTERS below; the dashboard keeps calling the
 // same "rc:<list>" key. Each row stores the full object in a `data` jsonb column
 // (exact round-trip — the app reads this back verbatim) plus a few projected,
@@ -37,7 +37,15 @@ const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
 export const supabase = url && anonKey ? createClient(url, anonKey) : null;
 export const usingCloud = !!supabase;
 
-const TABLE = "app_state";
+// Each shop's lists (migration 0017): one row per (shop, key). The shop is never
+// sent: the database fills it in from the login's membership and its policy keeps
+// every read and write inside that shop.
+// Until 0017 is applied, the database has no shops: the lists are still in
+// app_state and files keep their plain paths. The first call finds out which
+// (getShop) so this build can go live before or after the migration.
+let TABLE = "tenant_state";
+const PRE_SHOPS = { id: null, name: "", legacy_paths: true, pre: true };
+const missingTable = (e) => !!e && (["PGRST205", "42P01", "PGRST202"].includes(String(e.code || "")) || /does not exist|could not find the table/i.test(String(e.message || "")));
 
 // ── Per-list relational table adapters (cloud only) ──
 const num = (v) => (v === undefined || v === null || v === "" ? null : Number(v));
@@ -165,6 +173,7 @@ export const db = {
     if (!supabase) return localStorage.getItem(key);
     const a = TABLE_ADAPTERS[key];
     if (a) return tableGet(a);
+    await getShop().catch(() => null);
     const { data, error } = await supabase
       .from(TABLE)
       .select("value")
@@ -186,6 +195,7 @@ export const db = {
       keys.forEach((k) => { out[k] = localStorage.getItem(k); });
       return out;
     }
+    await getShop().catch(() => null);
     const blobKeys = keys.filter((k) => !TABLE_ADAPTERS[k]);
     const tableKeys = keys.filter((k) => TABLE_ADAPTERS[k]);
     const [blobRes, ...tableVals] = await Promise.all([
@@ -213,12 +223,13 @@ export const db = {
     }
     const a = TABLE_ADAPTERS[key];
     if (a) return tableSet(a, valueString, prevString);
+    await getShop().catch(() => null);
     const cur = JSON.parse(valueString);
     let prev = null;
     try { prev = prevString != null ? JSON.parse(prevString) : null; } catch (e) { prev = null; }
     if (!mergeable(cur) || (prev != null && !mergeable(prev))) {
       // A record without an id can't be merged: the list goes up whole, as it used to.
-      const { error } = await supabase.from(TABLE).upsert({ key, value: cur, updated_at: new Date().toISOString() });
+      const { error } = await supabase.from(TABLE).upsert({ key, value: cur, updated_at: new Date().toISOString() }, TABLE === "app_state" ? {} : { onConflict: "tenant_id,key" });
       if (error) throw error;
       return;
     }
@@ -239,6 +250,33 @@ export const db = {
     if (error) throw error;
   },
 };
+
+// The signed-in login's shop (migration 0017), from its membership: { id, name,
+// code, province, timezone, packs, plan, profile, legacy_paths } or null (no shop, or local mode).
+// Files go under "<shop id>/…" in Storage; the policies only accept that folder.
+let shopP = null;
+export function getShop() {
+  if (!supabase) return Promise.resolve(null);
+  if (!shopP) {
+    shopP = supabase.from("tenants").select("id,name,code,province,timezone,packs,plan,profile,legacy_paths").maybeSingle()
+      .then(({ data, error }) => {
+        if (error && missingTable(error)) { TABLE = "app_state"; return PRE_SHOPS; }
+        if (error) throw error;
+        TABLE = "tenant_state";
+        return data || null;
+      })
+      .catch((e) => { shopP = null; throw e; });
+  }
+  return shopP;
+}
+export const forgetShop = () => { shopP = null; };
+// The folder prefix for a new file: "<shop id>/" (or nothing before 0017).
+export async function shopFolder() {
+  const s = await getShop();
+  if (s && s.pre) return "";
+  if (!s || !s.id) throw new Error("This login isn't part of a shop yet.");
+  return s.id + "/";
+}
 
 // The engines a timesheet can name: id, stock #, name and stage of every engine that isn't sold
 // (migration 0015). Employee logins can't read the inventory, so their day editor asks for this.

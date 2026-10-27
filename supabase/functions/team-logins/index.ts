@@ -13,6 +13,9 @@
 //   no role                             → no access at all (0013) until given one
 // Owner logins can't be changed or removed here.
 //
+// Shops (0017): the owner manages only their own shop's logins. A new login joins
+// the owner's shop (a memberships row), and another shop's logins are invisible.
+//
 // Body {action, ...}:
 //   list                                                  → { logins: [...] }
 //   create   {employeeId, email, password, role}          → { login }
@@ -69,21 +72,41 @@ Deno.serve(async (req) => {
   if (roleOf(me) !== "owner") return json({ error: "Only the owner's login can manage logins." }, 403);
 
   const svc = createClient(SB_URL, SB_SERVICE, { auth: { persistSession: false, autoRefreshToken: false } });
+  // ── the owner's shop (0017): every login below is looked up, made and changed inside it ──
+  const mine = await svc.from("memberships").select("tenant_id, role").eq("user_id", me.id).maybeSingle();
+  if (mine.error || !mine.data || mine.data.role !== "owner") return json({ error: "Only the owner's login can manage logins." }, 403);
+  const shopId = String(mine.data.tenant_id);
+  const shopRow = await svc.from("tenants").select("legacy_paths").eq("id", shopId).maybeSingle();
+  // Logins made straight in Supabase before shops existed belong to no shop; only
+  // the first shop (legacy) may see and link them, so no shop sees another's.
+  const legacy = !!shopRow.data?.legacy_paths;
+  const members = async () => {
+    const { data, error } = await svc.from("memberships").select("user_id, tenant_id");
+    if (error) throw error;
+    return (data || []) as Any[];
+  };
   let body: Any = {};
   try { body = await req.json(); } catch (_e) { body = {}; }
+  // This shop's logins, plus (first shop only) logins that belong to no shop yet.
   const all = async () => {
     const { data, error } = await svc.auth.admin.listUsers({ page: 1, perPage: 1000 });
     if (error) throw error;
-    return (data?.users || []) as Any[];
+    const shopOf = new Map((await members()).map((m) => [String(m.user_id), String(m.tenant_id)]));
+    return ((data?.users || []) as Any[]).filter((u) => shopOf.get(String(u.id)) === shopId || (legacy && !shopOf.has(String(u.id))));
+  };
+  const join = async (u: Any, role: string, member: Any | null) => {
+    const { error } = await svc.from("memberships").upsert({ user_id: u.id, tenant_id: shopId, role, employee_id: member ? Number(member.id) : null, name: member ? String(member.name || "") : "", email: u.email || "" }, { onConflict: "user_id" });
+    if (error) throw error;
   };
   const team = async () => {
-    const { data } = await svc.from("app_state").select("value").eq("key", "rc:employees").maybeSingle();
+    const { data } = await svc.from("tenant_state").select("value").eq("tenant_id", shopId).eq("key", "rc:employees").maybeSingle();
     return (Array.isArray(data?.value) ? data.value : []) as Any[];
   };
   const target = async (id: string) => {
     if (!id) return { err: "Which login?" };
     const { data, error } = await svc.auth.admin.getUserById(id);
     if (error || !data?.user) return { err: "That login doesn't exist any more." };
+    if (!(await all()).some((u) => u.id === data.user!.id)) return { err: "That login doesn't exist any more." };   // another shop's: as if it weren't there
     if (roleOf(data.user) === "owner") return { err: "Owner logins can't be changed here." };
     return { user: data.user as Any };
   };
@@ -104,6 +127,10 @@ Deno.serve(async (req) => {
       const app_metadata = { role, employeeId: member ? Number(member.id) : null, name: member ? String(member.name || "") : "" };
       const { data, error } = await svc.auth.admin.createUser({ email, password, email_confirm: true, app_metadata });
       if (error || !data?.user) return json({ error: plain(error, "Couldn't create the login.") }, 400);
+      try { await join(data.user, role, member || null); } catch (e) {
+        await svc.auth.admin.deleteUser(data.user.id);   // a login with no shop is no use to anyone
+        return json({ error: plain(e, "Couldn't create the login.") }, 500);
+      }
       return json({ login: view(data.user) });
     }
 
@@ -128,6 +155,7 @@ Deno.serve(async (req) => {
       const app_metadata = { ...(t.user!.app_metadata || {}), role, employeeId: member ? Number(member.id) : null, name: member ? String(member.name || "") : "" };
       const { data, error } = await svc.auth.admin.updateUserById(t.user!.id, { app_metadata });
       if (error || !data?.user) return json({ error: plain(error, "Couldn't change the access.") }, 400);
+      await join(data.user, role, member || null);
       return json({ login: view(data.user) });
     }
 
@@ -137,6 +165,7 @@ Deno.serve(async (req) => {
       if (t.user!.id === me.id) return json({ error: "You can't remove your own login." }, 400);
       const { error } = await svc.auth.admin.deleteUser(t.user!.id);
       if (error) return json({ error: plain(error, "Couldn't remove the login.") }, 400);
+      await svc.from("memberships").delete().eq("user_id", t.user!.id);
       return json({ ok: true });
     }
 

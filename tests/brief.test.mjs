@@ -16,7 +16,7 @@ before(async () => {
   office = sb.session(sb.users[1]).access_token;
   const today = (await sb.sql("select public.shop_today()::text as d"))[0].d;
   const daysAgo = (n) => { const x = new Date(today + "T12:00:00Z"); x.setUTCDate(x.getUTCDate() - n); return x.toISOString().slice(0, 10); };
-  const put = (k, v) => sb.sql("insert into app_state (key, value) values ($1, $2::jsonb)", ["rc:" + k, JSON.stringify(v)]);
+  const put = (k, v) => sb.sql("insert into tenant_state (tenant_id, key, value) values ('c0a10000-0000-4000-8000-000000000001', $1, $2::jsonb)", ["rc:" + k, JSON.stringify(v)]);
   // Dated 60 days ago on Net 30 and still pending: overdue by itself. $1,000 + 13% HST = $1,130.
   await put("invoices", [{ id: 1, invNum: "INV-1", custId: 1, date: daysAgo(60), due: "Net 30", status: "pending", taxRate: 0.13, items: [{ d: "Head gasket", q: 1, r: 1000 }] }]);
   // $12,000 a year = $1,000 a month, plus 10 h a week at $20 = $866.67 a month of payroll.
@@ -25,7 +25,7 @@ before(async () => {
   // Sold this month without an invoice for $10,000; cost basis $8,000, of which $500 is shop labour.
   await put("wins", [{ id: 4, kind: "sale", engineId: 99, name: "C15", price: 10000, cost: 8000, labor: 500, ts: new Date().toISOString() }]);
   // $9,000 to buy and $600 of freight against an $11,000 list: 87% (it used to read as $600, 5%).
-  await sb.sql("insert into inventory (id, sku, name, cat, status, price, cost, data) values (7, 'ISX-7', 'ISX15', 'Complete Engine', 'in-reman', 11000, 9000, $1::jsonb)",
+  await sb.sql("insert into inventory (tenant_id, id, sku, name, cat, status, price, cost, data) values ('c0a10000-0000-4000-8000-000000000001', 7, 'ISX-7', 'ISX15', 'Complete Engine', 'in-reman', 11000, 9000, $1::jsonb)",
     [JSON.stringify({ id: 7, sku: "ISX-7", name: "ISX15", cat: "Complete Engine", status: "in-reman", price: 11000, cost: 9000, costFreight: 600, stageDate: new Date().toISOString() })]);
   brief = await loadEdgeFunction("brief", { SUPABASE_URL: SB, SUPABASE_ANON_KEY: sb.anonKey, SUPABASE_SERVICE_ROLE_KEY: sb.serviceKey });
 });
@@ -45,7 +45,7 @@ test("staff get the same brief without the break-even line, and so does the stor
   assert.equal(r.ok, true);
   assert.match(r.text, /1 overdue invoice/);
   assert.doesNotMatch(r.text, /fixed costs|break-even/);
-  const stored = (await sb.sql("select value from app_state where key = 'rc:brief'"))[0].value;
+  const stored = (await sb.sql("select value from tenant_state where key = 'rc:brief'"))[0].value;
   assert.match(stored.text, /fixed costs/);
   assert.doesNotMatch(stored.staffText, /fixed costs|break-even/);
   assert.doesNotMatch(stored.staffHtml, /fixed costs|break-even/);

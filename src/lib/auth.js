@@ -10,11 +10,11 @@
 // login gate entirely. The gate only engages against a real Supabase backend.
 //
 // Security note: the login gate in the UI is convenience only. The real
-// enforcement is server-side — RLS scopes app_state to authenticated users
-// (migrations/0002_auth.sql) and the AI Edge Function rejects non-users. A
+// enforcement is server-side — RLS scopes each shop's data to its own logins
+// (migrations/0002_auth.sql, 0013, 0017) and the AI Edge Function rejects non-users. A
 // client that bypasses the UI still cannot read/write data without a session.
 // ─────────────────────────────────────────────────────────────
-import { supabase, usingCloud } from "./storage";
+import { supabase, usingCloud, forgetShop } from "./storage";
 
 export { usingCloud };
 
@@ -50,6 +50,6 @@ export async function signOut() {
 // Subscribe to login/logout. Returns a subscription with .unsubscribe().
 export function onAuthChange(cb) {
   if (!supabase) return { unsubscribe() {} };
-  const { data } = supabase.auth.onAuthStateChange((_event, session) => cb(session || null));
+  const { data } = supabase.auth.onAuthStateChange((event, session) => { if (event === "SIGNED_IN" || event === "SIGNED_OUT") forgetShop(); cb(session || null); });
   return data.subscription;
 }

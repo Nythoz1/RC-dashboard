@@ -28,32 +28,32 @@ before(async () => {
   today = (await db.query("select public.shop_today()::text as d")).rows[0].d;
   D = (n) => { const x = new Date(today + "T12:00:00Z"); x.setUTCDate(x.getUTCDate() + n); return x.toISOString().slice(0, 10); };
   floor = (await db.query("select public.ts_floor()::text as d")).rows[0].d;
-  await db.query("insert into app_state (key, value) values ('rc:customers', '[{\"id\":1,\"name\":\"Smoke Test Hauling\"}]'), ('rc:employees', '[{\"id\":101,\"name\":\"Mike Test\",\"rate\":40}]')");
-  await db.query("insert into inventory (id, sku, name, data) values (1, 'BH-001', 'ISX15', '{}')");
+  await db.query("insert into tenant_state (tenant_id, key, value) values ('c0a10000-0000-4000-8000-000000000001', 'rc:customers', '[{\"id\":1,\"name\":\"Smoke Test Hauling\"}]'), ('c0a10000-0000-4000-8000-000000000001', 'rc:employees', '[{\"id\":101,\"name\":\"Mike Test\",\"rate\":40}]')");
+  await db.query("insert into inventory (tenant_id, id, sku, name, data) values ('c0a10000-0000-4000-8000-000000000001', 1, 'BH-001', 'ISX15', '{}')");
   await db.query("insert into storage.objects (bucket_id, name) values ('engine-photos', 'bh-001.jpg'), ('ecm-files', '9/log.csv')");
 });
 
 test("a login with no role gets nothing until the owner gives it access", async () => {
-  assert.equal((await rows(nobody, "select key from app_state")).length, 0);
+  assert.equal((await rows(nobody, "select key from tenant_state")).length, 0);
   assert.equal((await rows(nobody, "select id from inventory")).length, 0);
   assert.equal((await rows(nobody, "select name from storage.objects")).length, 0);
-  await refuses(asLogin(db, nobody, "insert into app_state (key, value) values ('rc:customers', '[]')"));
+  await refuses(asLogin(db, nobody, "insert into tenant_state (key, value) values ('rc:customers', '[]')"));
   assert.equal((await rows(nobody, "update inventory set data = '{}' returning id")).length, 0);
-  assert.equal((await rows({ ...nobody, app_metadata: { provider: "anonymous" } }, "select key from app_state")).length, 0);
+  assert.equal((await rows({ ...nobody, app_metadata: { provider: "anonymous" } }, "select key from tenant_state")).length, 0);
 });
 
 test("an employee login can't read or write any other shop data", async () => {
-  assert.equal((await rows(mike, "select key from app_state")).length, 0);
+  assert.equal((await rows(mike, "select key from tenant_state")).length, 0);
   assert.equal((await rows(mike, "select id from inventory")).length, 0);
   assert.equal((await rows(mike, "select name from storage.objects")).length, 0);
-  await refuses(asLogin(db, mike, "insert into app_state (key, value) values ('rc:customers', '[]')"));
+  await refuses(asLogin(db, mike, "insert into tenant_state (key, value) values ('rc:customers', '[]')"));
   await refuses(asLogin(db, mike, "insert into storage.objects (bucket_id, name) values ('ecm-files', 'x')"));
-  assert.equal((await rows(mike, "update app_state set value = '[]' where key = 'rc:customers' returning key")).length, 0);
+  assert.equal((await rows(mike, "update tenant_state set value = '[]' where key = 'rc:customers' returning key")).length, 0);
   // office staff and the owner still have the whole dashboard
-  assert.equal((await rows(staff, "select key from app_state")).length, 2);
+  assert.equal((await rows(staff, "select key from tenant_state")).length, 2);
   assert.equal((await rows(staff, "select name from storage.objects")).length, 2);
   assert.equal((await rows(owner, "select id from inventory")).length, 1);
-  assert.equal((await rows("anon", "select key from app_state")).length, 0);
+  assert.equal((await rows("anon", "select key from tenant_state")).length, 0);
 });
 
 test("an employee fills in today and earlier days, never tomorrow, and only their own", async () => {

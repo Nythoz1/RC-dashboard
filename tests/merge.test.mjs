@@ -23,7 +23,7 @@ before(async () => {
   const dev = (u) => loadDevice({ url: SB, anonKey: sb.anonKey, email: u.email, password: u.password });
   [owner, office, mike] = [await dev(users[0]), await dev(users[1]), await dev(users[2])];
 });
-const stored = async (key) => { const r = await sb.sql("select value from app_state where key = $1", [key]); return r.length ? r[0].value : null; };
+const stored = async (key) => { const r = await sb.sql("select value from tenant_state where key = $1", [key]); return r.length ? r[0].value : null; };
 const engine = async (id) => (await sb.sql("select data, price from inventory where id = $1", [id]))[0];
 
 // ── the merge itself ──
@@ -88,18 +88,18 @@ test("the database merges exactly like lib/merge.js, whatever else is stored", a
     if (!ch) continue;
     const full = r() < 0.15 ? mine : null;
     const missing = r() < 0.1;
-    if (!missing) await sb.sql("insert into app_state (key, value) values ($1, $2::jsonb)", [key, J(theirs)]);
+    if (!missing) await sb.sql("insert into tenant_state (tenant_id, key, value) values ('c0a10000-0000-4000-8000-000000000001', $1, $2::jsonb)", [key, J(theirs)]);
     const res = await owner.supabase.rpc("merge_list", { p_key: key, p_changes: ch, p_full: full });
     assert.equal(res.error, null, k + ": " + (res.error && res.error.message));
     const want = applyList(missing ? null : theirs, ch, full);
-    const same = await sb.sql("select value = $2::jsonb as eq, value from app_state where key = $1", [key, J(want)]);
+    const same = await sb.sql("select value = $2::jsonb as eq, value from tenant_state where key = $1", [key, J(want)]);
     assert.ok(same[0].eq, "case " + k + ": " + J(same[0].value) + " vs " + J(want));
   }
 });
 
 // ── two people at once, through the real storage layer ──
 test("two people add a customer from the same copy: both stay", async () => {
-  await sb.sql("insert into app_state (key, value) values ('rc:customers', $1::jsonb)", [J([{ id: 1, name: "Base Hauling" }])]);
+  await sb.sql("insert into tenant_state (tenant_id, key, value) values ('c0a10000-0000-4000-8000-000000000001', 'rc:customers', $1::jsonb)", [J([{ id: 1, name: "Base Hauling" }])]);
   const base = (await owner.db.getAll(["rc:customers"]))["rc:customers"];
   await owner.db.setItem("rc:customers", J([...P(base), { id: 1001, name: "Owner's new customer" }]), base);
   await office.db.setItem("rc:customers", J([...P(base), { id: 1002, name: "Office's new customer" }]), base);
@@ -142,7 +142,7 @@ test("a seeded list goes up whole on its first save, and a second device's first
   await office.db.setItem("rc:prospects", J(seed.map((x) => (x.id === "fleet-004" ? { ...x, status: "interested" } : x))), J(seed), { fresh: true });
   assert.deepEqual((await stored("rc:prospects")).map((x) => x.status), ["", "contacted", "", "interested", ""]);
   // A list stored empty gets the seed back with the edit (the dashboard seeds research lists stored empty).
-  await sb.sql("insert into app_state (key, value) values ('rc:competitors', '[]'::jsonb)");
+  await sb.sql("insert into tenant_state (tenant_id, key, value) values ('c0a10000-0000-4000-8000-000000000001', 'rc:competitors', '[]'::jsonb)");
   await owner.db.setItem("rc:competitors", J(ownerEdit), J(seed), { fresh: true });
   assert.equal((await stored("rc:competitors")).length, 5);
   // Without `fresh`, a device only ever sends its own changes.

@@ -9,7 +9,7 @@
 // arguments in a JSON body, run as the caller). Every request is logged as
 // {method, path, as, email}.
 import { randomUUID } from "node:crypto";
-import { freshDb, asLogin } from "./pg.mjs";
+import { freshDb, asLogin, RC_TENANT } from "./pg.mjs";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -17,17 +17,26 @@ const CORS = {
   "Access-Control-Allow-Methods": "GET, POST, PATCH, PUT, DELETE, OPTIONS",
   "Access-Control-Expose-Headers": "content-range, x-total-count, x-supabase-api-version",
 };
-const TABLES = { app_state: "key", inventory: "id", timesheet_entries: "id", timesheet_approvals: "id" };
+const TABLES = { app_state: "key", tenant_state: "tenant_id,key", tenants: "id", memberships: "user_id", inventory: "id", timesheet_entries: "id", timesheet_approvals: "id" };
 const COL = /^[a-z_][a-z0-9_]*$/;
 const MAX_ROWS = 1000;
 const b64url = (s) => Buffer.from(s).toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 
-export async function mockSupabase({ users = [], anonKey = "anon-key", serviceKey = "service-key", functions = {} } = {}) {
-  const db = await freshDb();
+export async function mockSupabase({ users = [], tenants = [], skip = [], anonKey = "anon-key", serviceKey = "service-key", functions = {} } = {}) {
+  const db = await freshDb({ skip });
   const log = [];
+  // Logins given with a role belong to a shop (Rollin Coal unless u.tenant says
+  // otherwise), the way 0017 backfills the real ones. Logins made later through
+  // the admin API get theirs from whoever made them (team-logins).
   const tokens = new Map();      // access token → user id
   const byId = (id) => users.find((u) => u.id === id);
   users.forEach((u) => { u.id = u.id || randomUUID(); u.created_at = u.created_at || new Date().toISOString(); });
+  for (const t of tenants) await db.query("insert into public.tenants (id, name, profile) values ($1, $2, $3::jsonb)", [t.id, t.name || "Shop", JSON.stringify(t.profile || {})]);
+  for (const u of users) {
+    const m = u.app_metadata || {};
+    if (db.shops && ["owner", "staff", "employee"].includes(m.role)) await db.query("insert into public.memberships (user_id, tenant_id, role, employee_id, name, email) values ($1, $2, $3, $4, $5, $6) on conflict (user_id) do nothing",
+      [u.id, u.tenant || RC_TENANT, m.role, /^\d+$/.test(String(m.employeeId || "")) ? Number(m.employeeId) : null, m.name || "", u.email || ""]);
+  }
   const userJson = (u) => ({ id: u.id, aud: "authenticated", role: "authenticated", email: u.email, app_metadata: { provider: "email", providers: ["email"], ...(u.app_metadata || {}) }, user_metadata: {}, created_at: u.created_at, updated_at: u.created_at, last_sign_in_at: u.last_sign_in_at || null });
   function session(u) {
     const now = Math.floor(Date.now() / 1000);
@@ -41,7 +50,7 @@ export async function mockSupabase({ users = [], anonKey = "anon-key", serviceKe
     const t = (req.headers.get("authorization") || "").replace(/^Bearer\s+/i, "").trim();
     if (t === serviceKey) return "service";
     const s = tokens.get(t), u = s && byId(s.id);
-    return u ? { id: u.id, email: u.email, app_metadata: s.app_metadata } : "anon";
+    return u ? { id: u.id, email: u.email, app_metadata: s.app_metadata, noShop: true } : "anon";   // its shop comes from memberships only
   };
   const reply = (status, body, extra = {}) => new Response(body === undefined ? null : JSON.stringify(body), { status, headers: { ...CORS, "Content-Type": "application/json", ...extra } });
   const pgError = (e) => { const code = e && e.code; return reply(code === "42501" ? 403 : code === "23505" ? 409 : 400, { code: code || "PGRST", message: (e && e.message) || String(e), details: null, hint: null }); };

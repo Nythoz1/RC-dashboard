@@ -7,10 +7,16 @@
 import { PGlite } from "@electric-sql/pglite";
 import { readFileSync } from "node:fs";
 
-const MIGRATIONS = ["0001_init.sql", "0002_auth.sql", "0003_inventory_table.sql", "0004_engine_photos_storage.sql", "0005_narrow_photo_listing.sql", "0010_ecm_files_bucket.sql", "0011_timesheets.sql", "0012_ts_locked_invoker.sql", "0013_known_roles_only.sql", "0014_merged_saves.sql", "0015_timesheet_engines.sql", "0016_timesheet_autofill.sql"];
+const MIGRATIONS = ["0001_init.sql", "0002_auth.sql", "0003_inventory_table.sql", "0004_engine_photos_storage.sql", "0005_narrow_photo_listing.sql", "0010_ecm_files_bucket.sql", "0011_timesheets.sql", "0012_ts_locked_invoker.sql", "0013_known_roles_only.sql", "0014_merged_saves.sql", "0015_timesheet_engines.sql", "0016_timesheet_autofill.sql", "0017_shops.sql"];
 
-export async function freshDb() {
+// Rollin Coal, the first shop (0017). Logins with a role join it unless they
+// already belong to a shop, the way 0017 backfills the real logins.
+export const RC_TENANT = "c0a10000-0000-4000-8000-000000000001";
+
+// skip: migrations to leave out (e.g. ["0017_shops.sql"] for a database from before shops).
+export async function freshDb({ skip = [] } = {}) {
   const db = new PGlite();
+  db.shops = !skip.includes("0017_shops.sql");
   await db.exec(`
     create role anon nologin; create role authenticated nologin; create role service_role nologin bypassrls;
     create schema auth; create schema storage; create schema extensions;
@@ -24,7 +30,7 @@ export async function freshDb() {
     grant usage on schema auth, storage, public, extensions to anon, authenticated, service_role;
     grant execute on all functions in schema auth to anon, authenticated, service_role;
   `);
-  for (const f of MIGRATIONS) await db.exec(readFileSync(new URL("../../supabase/migrations/" + f, import.meta.url), "utf8"));
+  for (const f of MIGRATIONS.filter((x) => !skip.includes(x))) await db.exec(readFileSync(new URL("../../supabase/migrations/" + f, import.meta.url), "utf8"));
   await db.exec(`grant all on all tables in schema public, storage to anon, authenticated, service_role;
                  grant all on all sequences in schema public, storage to anon, authenticated, service_role;`);
   return db;
@@ -40,6 +46,11 @@ export function asLogin(db, who, sql, params = []) {
   const run = async () => {
     const role = who === "anon" ? "anon" : who === "service" ? "service_role" : "authenticated";
     await db.exec("reset role");
+    if (db.shops && who && typeof who === "object" && ["owner", "staff", "employee"].includes(who.app_metadata && who.app_metadata.role) && !who.noShop) {
+      const m = who.app_metadata;
+      await db.query("insert into public.memberships (user_id, tenant_id, role, employee_id, name, email) values ($1, $2, $3, $4, $5, $6) on conflict (user_id) do nothing",
+        [who.id, who.tenant || RC_TENANT, m.role, /^\d+$/.test(String(m.employeeId || "")) ? Number(m.employeeId) : null, m.name || "", who.email || ""]);
+    }
     await db.query("select set_config('request.jwt.claims', $1, false)", [JSON.stringify(claimsFor(who))]);
     await db.exec("set role " + role);
     try { return await db.query(sql, params); } finally { await db.exec("reset role"); }

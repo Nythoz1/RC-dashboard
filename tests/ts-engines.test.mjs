@@ -14,10 +14,10 @@ const rows = async (who, sql, params) => (await asLogin(db, who, sql, params)).r
 before(async () => {
   db = await freshDb();
   today = (await db.query("select public.shop_today()::text as d")).rows[0].d;
-  await db.query(`insert into inventory (id, sku, name, cat, status, price, cost, data) values
-    (1, 'RC-CUX152021-001', 'Cummins X15', 'Complete Engine', 'in-reman', 52000, 2000, '{}'),
-    (2, 'RC-CAC2005-001', 'Caterpillar C7', 'Complete Engine', 'sold', 42000, 3500, '{}'),
-    (3, 'INJ-1', 'Injector', 'Injectors', null, 300, 100, '{}')`);
+  await db.query(`insert into inventory (tenant_id, id, sku, name, cat, status, price, cost, data) values
+    ('c0a10000-0000-4000-8000-000000000001', 1, 'RC-CUX152021-001', 'Cummins X15', 'Complete Engine', 'in-reman', 52000, 2000, '{}'),
+    ('c0a10000-0000-4000-8000-000000000001', 2, 'RC-CAC2005-001', 'Caterpillar C7', 'Complete Engine', 'sold', 42000, 3500, '{}'),
+    ('c0a10000-0000-4000-8000-000000000001', 3, 'INJ-1', 'Injector', 'Injectors', null, 300, 100, '{}')`);
 });
 
 test("employees get the engines to pick from, nothing else and nothing sold", async () => {

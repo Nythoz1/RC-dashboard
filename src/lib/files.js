@@ -12,7 +12,7 @@
 // The job records only metadata (`ecmFiles` list: path, name, size, type); the
 // bytes never go into app_state.
 // ─────────────────────────────────────────────────────────────
-import { supabase, usingCloud } from "./storage";
+import { supabase, usingCloud, shopFolder } from "./storage";
 
 export const ECM_BUCKET = "ecm-files";
 export const ECM_MAX_BYTES = 10 * 1024 * 1024;          // per file — our own cap
@@ -57,6 +57,8 @@ export async function uploadEcmFile(path, file) {
   if (!type) throw new Error("That file type isn't accepted. Use CSV, TXT, XML, PDF, ZIP or an image.");
   if (file.size > ECM_MAX_BYTES) throw new Error("Files are limited to 10 MB each.");
   if (usingCloud && supabase) {
+    // Each shop's files live in its own folder (0017); the path saved on the record includes it.
+    path = (await shopFolder()) + path;
     // Never overwrite: every upload has its own path.
     const { error } = await supabase.storage.from(ECM_BUCKET).upload(path, file, { contentType: type, upsert: false });
     if (error) {

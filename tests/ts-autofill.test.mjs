@@ -16,7 +16,7 @@ const day = async (emp, date) => ((await db.query("select data from timesheet_en
 
 before(async () => {
   db = await freshDb();
-  await db.query(`insert into app_state (key, value) values ('rc:employees', $1::jsonb)`, [JSON.stringify([
+  await db.query(`insert into tenant_state (tenant_id, key, value) values ('c0a10000-0000-4000-8000-000000000001', 'rc:employees', $1::jsonb)`, [JSON.stringify([
     { id: 101, name: "Mike Test", status: "active" },
     { id: 102, name: "Austin", status: "active", autoTs: "off" },
     { id: 103, name: "Kendall", status: "active", autoTs: "on" },
@@ -38,7 +38,7 @@ test("nothing before the day is over, then the full day for everyone on auto", a
 });
 
 test("Friday is 8:00 AM to 1:00 PM, weekends get nothing, a day already filled in is left alone", async () => {
-  await db.query("insert into timesheet_entries (id, employee_id, work_date, data) values ('x', 101, '2026-10-16', $1::jsonb) on conflict do nothing", [JSON.stringify({ start: "7:00 AM", finish: "3:00 PM", notes: "" })]);
+  await db.query("insert into timesheet_entries (tenant_id, id, employee_id, work_date, data) values ('c0a10000-0000-4000-8000-000000000001', 'x', 101, '2026-10-16', $1::jsonb) on conflict do nothing", [JSON.stringify({ start: "7:00 AM", finish: "3:00 PM", notes: "" })]);
   assert.equal(await fill("2026-10-16T12:59:00"), 0);            // Friday, 12:59 PM
   assert.equal(await fill("2026-10-16T13:07:00"), 1);            // Kendall only: Mike already has his day
   assert.deepEqual([(await day(103, "2026-10-16")).finish, (await day(101, "2026-10-16")).finish], ["1:00 PM", "3:00 PM"]);

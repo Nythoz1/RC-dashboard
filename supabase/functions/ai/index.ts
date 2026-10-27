@@ -52,6 +52,10 @@ Deno.serve(async (req) => {
     const { data, error } = await sb.auth.getUser(token);
     if (error || !data?.user) return json({ error: "Not authenticated" }, 401);
     if (!["owner", "staff"].includes(data.user.app_metadata?.role)) return json({ error: "Not available for this login" }, 403);
+    // and belong to a shop (0017); asked as the caller, so it's their own membership
+    const asMe = createClient(SB_URL, SB_ANON, { auth: { persistSession: false }, global: { headers: { Authorization: "Bearer " + token } } });
+    const shop = await asMe.rpc("current_tenant");
+    if (shop.error || !shop.data) return json({ error: "Not available for this login" }, 403);
   } catch (_e) {
     return json({ error: "Auth check failed" }, 401);
   }

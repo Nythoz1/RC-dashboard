@@ -17,7 +17,7 @@ const call = async (tok, body) => { const r = await fn(new Request(SB + "/functi
 
 before(async () => {
   sb = await mockSupabase({ users });
-  await sb.sql("insert into app_state (key, value) values ('rc:employees', $1::jsonb)", [JSON.stringify([{ id: 101, name: "Mike Test", rate: 40 }, { id: 102, name: "Bob Jones", rate: 25 }])]);
+  await sb.sql("insert into tenant_state (tenant_id, key, value) values ('c0a10000-0000-4000-8000-000000000001', 'rc:employees', $1::jsonb)", [JSON.stringify([{ id: 101, name: "Mike Test", rate: 40 }, { id: 102, name: "Bob Jones", rate: 25 }])]);
   globalThis.fetch = async (input, init) => sb.handle(input instanceof Request ? input : new Request(String(input), init));
   fn = await loadEdgeFunction("team-logins", { SUPABASE_URL: SB, SUPABASE_ANON_KEY: sb.anonKey, SUPABASE_SERVICE_ROLE_KEY: sb.serviceKey });
   ownerTok = sb.session(users[0]).access_token;

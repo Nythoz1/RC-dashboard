@@ -1,7 +1,7 @@
 // ─────────────────────────────────────────────────────────────
 // Rollin Coal — Morning Brief Edge Function (Deno)
 //
-// Computes the shop's daily brief from live data (inventory table + app_state
+// Computes the shop's daily brief from live data (inventory table + tenant_state, one shop at a time (0017)
 // blobs) and emails it. Runs autonomously: pg_cron calls this hourly (see
 // migrations/0008_morning_brief_cron.sql); the function only acts at 07:00
 // America/Edmonton (DST-proof) once per calendar day, retrying at 08:00/09:00
@@ -16,7 +16,7 @@
 // Secrets: RESEND_API_KEY (optional — without it the brief is computed + stored
 //   but not emailed), MAIL_TO (default wayne@rollin-coal.ca), MAIL_FROM (default
 //   Resend sandbox sender), DASHBOARD_URL (optional link in the email).
-// Output: upserts app_state 'rc:brief' = {date, at, subject, text, html, staffText, staffHtml, sent,
+// Output: upserts the shop's tenant_state 'rc:brief' = {date, at, subject, text, html, staffText, staffHtml, sent,
 //   to, reason, summary, by}; the dashboard renders it read-only. The staff copy leaves out the
 //   break-even line, which includes payroll; a staff login's Send now gets that copy back too.
 // Keep the cost/status helpers below in sync with RollinCoalDashboard.jsx and src/lib/money.js.
@@ -198,10 +198,10 @@ function render(c: Any, staff = false) {
   return { subject, text, html, summary: { sold: c.yWins.length, atRisk: c.uw.length, stale: c.stale.length, overdue: c.overdue.length, monthRev: c.mRev, goal: c.goal } };
 }
 
-async function sendEmail(subject: string, html: string, text: string) {
+async function sendEmail(subject: string, html: string, text: string, to: string) {
   if (!RESEND) return { sent: false, reason: "RESEND_API_KEY not set" };
   try {
-    const r = await fetch("https://api.resend.com/emails", { method: "POST", headers: { Authorization: "Bearer " + RESEND, "Content-Type": "application/json" }, body: JSON.stringify({ from: MAIL_FROM, to: [MAIL_TO], subject, html, text }) });
+    const r = await fetch("https://api.resend.com/emails", { method: "POST", headers: { Authorization: "Bearer " + RESEND, "Content-Type": "application/json" }, body: JSON.stringify({ from: MAIL_FROM, to: [to], subject, html, text }) });
     const d: Any = await r.json().catch(() => ({}));
     if (!r.ok) return { sent: false, reason: d?.message || d?.name || ("Resend " + r.status) };
     return { sent: true, id: d?.id };
@@ -221,40 +221,66 @@ Deno.serve(async (req) => {
     try { const { data } = await svc.rpc("brief_secret"); vaultSecret = (data as string) || ""; } catch (_e) { /* vault not configured */ }
     if ((vaultSecret && hdr === vaultSecret) || (ENV_SECRET && hdr === ENV_SECRET)) mode = "cron";
   }
+  let callerId = "";
   if (!mode && token) {
     if (token === SB_SERVICE) mode = "service";
-    else if (SB_ANON) { try { const sb = createClient(SB_URL, SB_ANON, { auth: { persistSession: false } }); const { data, error } = await sb.auth.getUser(token); if (!error && data?.user && ["owner", "staff"].includes(data.user.app_metadata?.role)) { mode = "user"; callerRole = data.user.app_metadata.role; } } catch (_e) { /* fall through */ } }
+    else if (SB_ANON) { try { const sb = createClient(SB_URL, SB_ANON, { auth: { persistSession: false } }); const { data, error } = await sb.auth.getUser(token); if (!error && data?.user && ["owner", "staff"].includes(data.user.app_metadata?.role)) { mode = "user"; callerRole = data.user.app_metadata.role; callerId = data.user.id; } } catch (_e) { /* fall through */ } }
   }
   if (!mode) return json({ error: "Not authorized" }, 401);
 
   const url = new URL(req.url);
   const force = url.searchParams.get("force") === "1" || mode === "user";
   const now = new Date(); const t = local(now);
-  // ── load everything the brief needs (parallel) ──
-  const [inv, blobs, prev] = await Promise.all([
-    svc.from("inventory").select("data").order("id"),
-    svc.from("app_state").select("key,value").in("key", BLOBS.map(k => "rc:" + k)),
-    svc.from("app_state").select("value").eq("key", "rc:brief").maybeSingle(),
-  ]);
-  if (inv.error) return json({ error: "inventory: " + inv.error.message }, 500);
-  if (blobs.error) return json({ error: "app_state: " + blobs.error.message }, 500);
-  const s: Any = { inventory: (inv.data || []).map((r: Any) => r.data) };
-  const by = new Map((blobs.data || []).map((r: Any) => [r.key, r.value]));
-  BLOBS.forEach(k => { const v = by.get("rc:" + k); s[k] = Array.isArray(v) ? v : []; });
-  const last = (prev.data?.value as Any) || null;
-  // ── gate (scheduled calls only): 07:00 local, once per day. If the email
-  //    did not go out (Resend hiccup / key not set yet) the 08:00 and 09:00
-  //    runs retry; a sent brief for today short-circuits them. ──
-  if (!force) {
-    if (t.hour < 7 || t.hour > 9) return json({ skipped: "outside 07:00-09:00 " + TZ, localHour: t.hour, date: t.ymd });
-    if (last && last.date === t.ymd && last.sent) return json({ skipped: "already sent today", date: t.ymd });
+  // ── which shops (0017): a signed-in user gets their own shop's brief; cron and
+  //    the service role run every shop (or ?tenant=<id>). ──
+  let shops: Any[] = [];
+  if (mode === "user") {
+    const m = await svc.from("memberships").select("tenant_id").eq("user_id", callerId).maybeSingle();
+    if (m.error || !m.data) return json({ error: "This login isn't part of a shop" }, 403);
+    const sh = await svc.from("tenants").select("id,name,profile").eq("id", m.data.tenant_id).maybeSingle();
+    if (sh.error || !sh.data) return json({ error: "Shop not found" }, 404);
+    shops = [sh.data];
+  } else {
+    const q = svc.from("tenants").select("id,name,profile").order("created_at");
+    const one = url.searchParams.get("tenant");
+    const sh = await (one ? q.eq("id", one) : q);
+    if (sh.error) return json({ error: "tenants: " + sh.error.message }, 500);
+    shops = sh.data || [];
   }
-  // ── compute → email → store ──
-  const c = compute(s, now);
-  const out = render(c), staffOut = render(c, true);
-  const mail: Any = await sendEmail(out.subject, out.html, out.text);
-  const brief = { date: t.ymd, at: now.toISOString(), subject: out.subject, text: out.text, html: out.html, staffText: staffOut.text, staffHtml: staffOut.html, sent: !!mail.sent, to: mail.sent ? MAIL_TO : null, reason: mail.sent ? null : (mail.reason || null), summary: out.summary, by: mode };
-  const up = await svc.from("app_state").upsert({ key: "rc:brief", value: brief, updated_at: now.toISOString() });
-  if (up.error) console.error("brief store failed:", up.error.message);
-  return json({ ok: true, date: t.ymd, sent: brief.sent, to: brief.to, reason: brief.reason, subject: out.subject, text: callerRole === "staff" ? staffOut.text : out.text, summary: out.summary, stored: !up.error });
+
+  async function runShop(shop: Any) {
+    // ── load everything the brief needs (parallel), this shop only ──
+    const [inv, blobs, prev] = await Promise.all([
+      svc.from("inventory").select("data").eq("tenant_id", shop.id).order("id"),
+      svc.from("tenant_state").select("key,value").eq("tenant_id", shop.id).in("key", BLOBS.map(k => "rc:" + k)),
+      svc.from("tenant_state").select("value").eq("tenant_id", shop.id).eq("key", "rc:brief").maybeSingle(),
+    ]);
+    if (inv.error) return { error: "inventory: " + inv.error.message };
+    if (blobs.error) return { error: "tenant_state: " + blobs.error.message };
+    const s: Any = { inventory: (inv.data || []).map((r: Any) => r.data) };
+    const by = new Map((blobs.data || []).map((r: Any) => [r.key, r.value]));
+    BLOBS.forEach(k => { const v = by.get("rc:" + k); s[k] = Array.isArray(v) ? v : []; });
+    const last = (prev.data?.value as Any) || null;
+    // ── gate (scheduled calls only): 07:00 local, once per day. If the email
+    //    did not go out (Resend hiccup / key not set yet) the 08:00 and 09:00
+    //    runs retry; a sent brief for today short-circuits them. ──
+    if (!force) {
+      if (t.hour < 7 || t.hour > 9) return { skipped: "outside 07:00-09:00 " + TZ, localHour: t.hour, date: t.ymd };
+      if (last && last.date === t.ymd && last.sent) return { skipped: "already sent today", date: t.ymd };
+    }
+    // ── compute → email → store ──
+    const to = String(shop.profile?.email || "") || MAIL_TO;
+    const c = compute(s, now);
+    const out = render(c), staffOut = render(c, true);
+    const mail: Any = await sendEmail(out.subject, out.html, out.text, to);
+    const brief = { date: t.ymd, at: now.toISOString(), subject: out.subject, text: out.text, html: out.html, staffText: staffOut.text, staffHtml: staffOut.html, sent: !!mail.sent, to: mail.sent ? to : null, reason: mail.sent ? null : (mail.reason || null), summary: out.summary, by: mode };
+    const up = await svc.from("tenant_state").upsert({ tenant_id: shop.id, key: "rc:brief", value: brief, updated_at: now.toISOString() }, { onConflict: "tenant_id,key" });
+    if (up.error) console.error("brief store failed:", shop.id, up.error.message);
+    return { ok: true, tenant: shop.id, date: t.ymd, sent: brief.sent, to: brief.to, reason: brief.reason, subject: out.subject, text: callerRole === "staff" ? staffOut.text : out.text, summary: out.summary, stored: !up.error };
+  }
+
+  const results: Any[] = [];
+  for (const shop of shops) results.push(await runShop(shop));
+  if (mode === "user") { const r = results[0]; return r.error ? json(r, 500) : json(r); }
+  return json({ ok: true, shops: results.length, results });
 });
