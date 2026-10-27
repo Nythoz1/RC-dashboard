@@ -3,7 +3,16 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark light" />
     <title>Rollin Coal — Shop Management</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600;700&family=Public+Sans:wght@400;500;600;700&display=swap" />
+    <style>html{background:#0d0f11;}body{margin:0;}</style>
+    <script>
+      // Paint the page in the theme this device picked before the app loads (Night unless it chose Day).
+      try { var t = localStorage.getItem("rc:theme"); var day = t === "day" || (t === "auto" && !matchMedia("(prefers-color-scheme: dark)").matches); if (day) document.documentElement.style.background = "#f4f2ec"; } catch (e) {}
+    </script>
   </head>
   <body>
     <div id="root"></div>

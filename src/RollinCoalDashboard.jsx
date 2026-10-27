@@ -17,7 +17,7 @@ import { CREW_SPOTS, crewList, SHIFT, SHIFT_MIN, shopClock, onShift, workedMin, 
 import * as Tsh from "./lib/timesheet";
 import * as Mny from "./lib/money";
 import { canManageLogins, listLogins, createLogin, setLoginPassword, setLoginAccess, removeLogin, makePassword } from "./lib/logins";
-const FONTS="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700;800&family=Public+Sans:wght@400;500;600;700&display=swap";
+const FONTS="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600;700&family=Public+Sans:wght@400;500;600;700&display=swap";
 
 // ═══════════════════════════════════════════════════════════════
 // ROLLIN COAL v3 — FULL SHOP MANAGEMENT
@@ -638,11 +638,28 @@ function genDaily3(s){
   E.filter(i=>["core","in-reman","on-hold"].includes(engStatus(i))&&i.stageDate&&Date.now()-new Date(i.stageDate).getTime()>7*864e5).forEach(i=>c.push({t:"stale",id:i.id,l:"⏳ Touch "+(i.sku||i.name||"")+" — stuck in "+engStatusLabel(engStatus(i))}));
   (s.invoices||[]).filter(v=>Mny.isOverdue(v)).forEach(v=>c.push({t:"inv",id:v.id,l:"💰 Chase invoice "+(v.invNum||v.id)}));
   resFollowups(s,0).forEach(([list,r])=>c.push({t:"follow",id:r.id,list,l:"📞 Follow up — "+(r.name||"")+(r.city?" ("+r.city+")":"")}));
-  const day=Math.floor(Date.now()/864e5);const types=[...new Set(c.map(x=>x.t))];const picks=[];
-  for(let k=0;k<types.length&&picks.length<3;k++){const ty=types[(k+day)%types.length];const cand=c.find(x=>x.t===ty&&!picks.includes(x));if(cand)picks.push(cand);}
-  for(const x of c){if(picks.length>=3)break;if(!picks.includes(x))picks.push(x);}
+  // Today's 3 moves are ranked by dollars (moveUsd): the biggest money first. Moves with no honest dollar figure
+  // (a photo, an ESN, a follow-up with no fleet size) only fill the card when fewer than three carry money,
+  // rotating by type day to day as before.
+  const picks=c.map(x=>[x,(moveUsd(s,x)||{}).usd||0]).filter(([,v])=>v>0).sort((a,b)=>b[1]-a[1]).slice(0,3).map(([x])=>x);
+  const rest=c.filter(x=>!picks.includes(x));const day=Math.floor(Date.now()/864e5);const types=[...new Set(rest.map(x=>x.t))];
+  for(let k=0;k<types.length&&picks.length<3;k++){const ty=types[(k+day)%types.length];const cand=rest.find(x=>x.t===ty&&!picks.includes(x));if(cand)picks.push(cand);}
+  for(const x of rest){if(picks.length>=3)break;if(!picks.includes(x))picks.push(x);}
   return picks.slice(0,3);
 }
+// The dollar reason for a move, computed from the record: the overdue amount, the list price sitting unadvertised,
+// the capital stuck in a stage, or (for a follow-up with a known fleet size) one engine at the shop's average sale.
+// null when there's no honest number; `why` still says what's at stake.
+const avgSale=s=>{const W=Mny.sales(s).filter(w=>+w.price>0);return W.length?W.reduce((a,w)=>a+(+w.price),0)/W.length:0;};
+function moveUsd(s,t){const gi=id=>(s.inventory||[]).find(x=>x.id===id);switch(t.t){
+  case "inv":{const v=(s.invoices||[]).find(x=>x.id===t.id);if(!v)return null;const dl=Mny.daysLate(v);return{usd:invTot(v),why:"overdue"+(dl?" · "+dl+" day"+(dl===1?"":"s")+" late":"")};}
+  case "list":{const i=gi(t.id);return i&&+i.price>0?{usd:+i.price,why:"list price sitting unadvertised"}:{usd:0,why:"ready to sell, not advertised"};}
+  case "stale":{const i=gi(t.id);if(!i)return null;const dd=i.stageDate?Math.floor((Date.now()-new Date(i.stageDate).getTime())/864e5):0;return{usd:costBasis(i),why:"capital stuck "+dd+" days in "+engStatusLabel(engStatus(i))};}
+  case "follow":{const r=resById(s,t.list,t.id);const n=r?+r.truckCount||0:0;const a=avgSale(s);return n>0&&a>0?{usd:Math.round(a),est:true,why:"est. one engine at your average sale · fleet of "+n+" truck"+(n===1?"":"s")}:{usd:0,why:"follow-up"};}
+  case "cost":return{usd:0,why:"true margin unknown until the cost is in"};
+  case "photo":return{usd:0,why:"a listing without a photo sells slower"};
+  case "esn":return{usd:0,why:"no ESN on the passport"};
+  default:return null;}}
 const d3Done=(s,t)=>{const gi=id=>(s.inventory||[]).find(x=>x.id===id);switch(t.t){
   case "cost":{const i=gi(t.id);return !i||costBasis(i)>0;}
   case "list":{const i=gi(t.id);return !i||engStatus(i)!=="available"||(i.listedOn||[]).length>0;}
@@ -818,6 +835,60 @@ function BtnRow({children,nw}){return (<div style={{display:"flex",gap:4,flexWra
 // ═══════════════════════════════════════════════════════════════
 // OVERVIEW
 // ═══════════════════════════════════════════════════════════════
+// ── The ops-terminal home: money counters, the shop level, streaks, the revenue pulse ──
+// Reduced motion: no counting, no pulsing (the CSS turns animations off; the counters check this too).
+const RM=()=>{try{return window.matchMedia("(prefers-reduced-motion: reduce)").matches;}catch(e){return false;}};
+// A money counter runs from the value it last showed (per key, for the session) up to the new one: 600 ms, ease-out.
+const CNT_LAST=new Map();
+function useCountUp(key,v,ms=600){const to=+v||0;const start=RM()?to:(CNT_LAST.has(key)?CNT_LAST.get(key):0);const[n,setN]=useState(start);const cur=useRef(start);
+  useEffect(()=>{const from=cur.current;CNT_LAST.set(key,to);if(RM()||from===to||typeof requestAnimationFrame!=="function"){cur.current=to;setN(to);return;}
+    let raf,t0=null;const step=t=>{if(t0==null)t0=t;const k=Math.min(1,(t-t0)/ms);const x=from+(to-from)*(1-Math.pow(1-k,3));cur.current=x;setN(x);if(k<1)raf=requestAnimationFrame(step);};raf=requestAnimationFrame(step);
+    return()=>{cancelAnimationFrame(raf);};},[to]);return n;}
+// Whole dollars for the big figures ("$48,250", "−$1,200").
+const $R=n=>{const v=Math.round(+n||0);return (v<0?"−$":"$")+Math.abs(v).toLocaleString("en-US");};
+function Count({k,v,fmt}){const n=useCountUp(k,v);return <>{(fmt||$R)(n)}</>;}
+// Revenue by shop date: invoices before tax on their date, plus engines sold without an invoice (the P&L's rule).
+const revByDay=(s,from,to)=>{const m={};const add=(dt,v)=>{if(dt&&dt>=from&&dt<=to)m[dt]=(m[dt]||0)+(+v||0);};(s.invoices||[]).forEach(v=>add(Mny.docDate(v),Mny.docSub(v)));Mny.sales(s).forEach(w=>{if(!Mny.invoicedSale(s,w))add(Mny.winDate(w),w.price);});return m;};
+// Gross profit between two dates, the way Mny.pnl counts it for whole months: revenue − the engines' cost − freight.
+const grossBetween=(s,from,to)=>{const inR=dt=>!!dt&&dt>=from&&dt<=to;const rev=Object.values(revByDay(s,from,to)).reduce((a,v)=>a+v,0);const cogs=Mny.sales(s).filter(w=>inR(Mny.winDate(w))).reduce((a,w)=>a+Mny.saleCost(w),0);const fr=(s.shipments||[]).filter(x=>inR(x.shipDate||Mny.docDate(x))).reduce((a,x)=>a+(+x.freightCost||0),0);return Mny.r2(rev-cogs-fr);};
+// Shop level from the last 90 days' gross profit: a new level every $50k.
+const SHOP_LEVELS=[[0,"Shop Rat"],[50000,"Wrench Turner"],[100000,"Journeyman"],[150000,"Rebuilder"],[200000,"Reman Pro"],[250000,"Big Bore"],[300000,"Torque Boss"],[350000,"Iron Baron"],[400000,"Diesel Legend"]];
+const shopLevel=g=>{let i=0;SHOP_LEVELS.forEach(([t],k)=>{if(g>=t)i=k;});const nx=SHOP_LEVELS[i+1]||null,lo=SHOP_LEVELS[i][0];return{n:i+1,name:SHOP_LEVELS[i][1],next:nx,pct:nx?Math.max(0,Math.min(100,(g-lo)/(nx[0]-lo)*100)):100,toNext:nx?nx[0]-g:0};};
+// Streak: weekdays in a row on which every active Team member's timesheet was filled in. Today only counts once it's
+// filled (it isn't over yet); someone added to the Team later isn't held to the days before they joined.
+const empJoined=e=>{const t=+e.id;return t>1e12?Tsh.shopToday(new Date(t)):"";};
+function tsStreak(s,today){const act=(s.employees||[]).filter(e=>!e.status||e.status==="active");if(!act.length)return null;
+  const filled=new Set((s.timesheets||[]).filter(Tsh.isFilled).map(r=>String(r.emp)+"|"+r.date));
+  const okDay=dt=>{const who=act.filter(e=>!empJoined(e)||empJoined(e)<=dt);return who.length>0&&who.every(e=>filled.has(String(e.id)+"|"+dt));};
+  let n=0,dt=today;if(Tsh.isWeekday(today)&&!okDay(today))dt=Tsh.addDaysISO(today,-1);
+  for(let k=0;k<500;k++,dt=Tsh.addDaysISO(dt,-1)){if(!Tsh.isWeekday(dt))continue;if(!okDay(dt))break;n++;}return n;}
+// Streak: days in a row with no invoice past its due date (a paid one counts as paid on its paid date, or on time).
+function clearStreak(s,today){const inv=s.invoices||[];if(inv.some(v=>Mny.isOverdue(v,today)))return 0;const first=inv.map(Mny.docDate).filter(Boolean).sort()[0];if(!first)return null;
+  const late=dt=>inv.some(v=>{const dd=Mny.dueDateOf(v),d0=Mny.docDate(v);if(!dd||!d0||d0>dt||dd>=dt)return false;const pd=Mny.isPaid(v)?(v.paidDate||dd):null;return !pd||pd>dt;});
+  let n=0;for(let dt=today,k=0;k<730&&dt>=first;k++,dt=Tsh.addDaysISO(dt,-1)){if(late(dt))break;n++;}return n;}
+// Shop Log time in Medicine Hat: 14:32 today, Oct 26 before.
+const feedWhen=ts=>{const t=new Date(ts);if(!ts||isNaN(t))return "";return Tsh.shopToday(t)===Tsh.shopToday()?t.toLocaleTimeString("en-CA",{timeZone:Tsh.SHOP_TZ,hour:"2-digit",minute:"2-digit",hour12:false}):Tsh.shortDate(Tsh.shopToday(t));};
+// What this device last saw (for the session): new Shop Log entries slide in, moves finished since then celebrate.
+const FEED_SEEN={ids:null};const D3_SEEN={date:"",done:[]};
+function GoalRing({pct,mark}){const p=useCountUp("ring",Math.max(0,Math.min(100,pct)));const r=46,c=2*Math.PI*r;const tick=a=>{const t=(a*3.6-90)*Math.PI/180;return{x1:55+(r-9)*Math.cos(t),y1:55+(r-9)*Math.sin(t),x2:55+(r+9)*Math.cos(t),y2:55+(r+9)*Math.sin(t)};};
+  return(<svg className="rc-ring" viewBox="0 0 110 110" role="img" aria-label={Math.round(pct)+"% of this month's goal"}><circle cx="55" cy="55" r={r} className="t"/><circle cx="55" cy="55" r={r} className={"f"+(pct>=100?" done":"")} strokeDasharray={c} strokeDashoffset={c*(1-p/100)} transform="rotate(-90 55 55)"/>{mark!=null&&mark<100&&<line {...tick(mark)} className="m"><title>break-even</title></line>}<text x="55" y="56" className="v">{Math.round(pct)}%</text><text x="55" y="71" className="s">OF GOAL</text></svg>);}
+// The revenue pulse: one line, the last point emphasised, a crosshair and a tip on hover.
+function Spark({pts,label}){const[h,setH]=useState(null);const plot=useRef(null);const n=pts.length;const max=Math.max(1,...pts.map(p=>p[1]));const W=300,H=72,pad=8;
+  const X=i=>n>1?i/(n-1)*W:W/2,Y=v=>H-pad-(v/max)*(H-pad*2);
+  const line=pts.map((p,i)=>(i?"L":"M")+X(i).toFixed(1)+" "+Y(p[1]).toFixed(1)).join(" ");const area=line+" L"+W+" "+H+" L0 "+H+" Z";
+  const hi=h==null?n-1:h;const lx=Math.max(14,Math.min(86,X(hi)/W*100));
+  const move=e=>{const el=plot.current;if(!el)return;const r=el.getBoundingClientRect();if(!r.width)return;setH(Math.max(0,Math.min(n-1,Math.round((e.clientX-r.left)/r.width*(n-1)))));};
+  if(!n)return null;
+  return(<div className="rc-spark" onPointerMove={move} onPointerLeave={()=>setH(null)} role="img" aria-label={label}>
+    <div className="rc-spark-tip" style={{left:lx+"%"}} aria-hidden="true">{h==null?"TODAY":Tsh.shortDate(pts[hi][0]).toUpperCase()} · {$R(pts[hi][1])}</div>
+    <div className="rc-spark-p" ref={plot}>
+      <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" aria-hidden="true"><line x1="0" x2={W} y1={H-pad} y2={H-pad} className="b"/><path d={area} className="a"/><path d={line} className="l"/></svg>
+      {h!=null&&<div className="rc-spark-x" style={{left:X(h)/W*100+"%"}}/>}
+      <div className={"rc-spark-dot"+(h==null?" end":"")} style={{left:X(hi)/W*100+"%",top:Y(pts[hi][1])/H*100+"%"}}/>
+    </div>
+  </div>);}
+function Kpi({k,label,v,sub,go,goLabel,money}){const body=(<><div className="rc-kpi-l">{label}</div><div className={"rc-kpi-v"+(money?" money":"")}><Count k={k} v={v}/></div>{sub&&<div className="rc-kpi-s">{sub}</div>}</>);
+  const cls="rc-kpi"+(money?" m":"");return go?(<button className={cls} onClick={go} aria-label={goLabel}>{body}</button>):(<div className={cls}>{body}</div>);}
 function Overview({s,d,owner=true}){
   const[briefBusy,setBriefBusy]=useState(false);const[showBrief,setShowBrief]=useState(false);const[justSent,setJustSent]=useState(null);
   const sendBrief=async()=>{if(briefBusy)return;setBriefBusy(true);const r=await requestBriefNow();setBriefBusy(false);if(!r||r.error){d({type:"TOAST",d:{msg:"⚠ Brief failed: "+(r&&r.error||"unknown"),t:Date.now()}});return;}setJustSent(r);setShowBrief(true);d({type:"TOAST",d:{msg:r.sent?"✉ Brief emailed to "+(r.to||"you"):"☀️ Brief generated — email not configured yet",t:Date.now()}});};
@@ -830,89 +901,129 @@ function Overview({s,d,owner=true}){
   const nl=s.leads.filter(l=>l.status==="new"||l.status==="contacted").length;
   const pendCores=(s.cores||[]).filter(c=>c.status==="pending").length;
   const activeShip=(s.shipments||[]).filter(sh=>!sh.deliveryConfirmed).length;
-  const overdueInv=s.invoices.filter(i=>Mny.isOverdue(i)).length;
+  const overList=s.invoices.filter(i=>Mny.isOverdue(i));const overdueInv=overList.length;const overSum=overList.reduce((a,v)=>a+invTot(v),0);
   const openPOs=(s.purchaseOrders||[]).filter(p=>p.status!=="received").length;
   const activeWarranties=(s.warranties||[]).filter(w=>w.status==="active").length;
-  // Monthly goal thermometer (fed by the wins feed)
+  // Monthly goal ring (fed by the wins feed)
   const goal=+getSet(s).monthlyGoal||50000;
   // Months are Medicine Hat months (the Morning Brief counts the same way), not UTC ones.
-  const cmKey=Tsh.shopToday().slice(0,7);const wMonth=w=>Mny.winDate(w).slice(0,7);
+  const shopT=Tsh.shopToday();const cmKey=shopT.slice(0,7);const wMonth=w=>Mny.winDate(w).slice(0,7);
   const mWins=(s.wins||[]).filter(w=>w.kind==="sale"&&wMonth(w)===cmKey);
   const mRev=mWins.reduce((a,w)=>a+(+w.price||0),0);
   const prevBest=Object.values((s.wins||[]).filter(w=>w.kind==="sale"&&wMonth(w)!==cmKey).reduce((m,w)=>{const k=wMonth(w);m[k]=(m[k]||0)+(+w.price||0);return m;},{})).reduce((a,v)=>Math.max(a,v),0);
   const isRecord=prevBest>0&&mRev>prevBest;
-  const pct=Math.max(0,Math.min(100,goal>0?mRev/goal*100:0));
+  const pct=Math.max(0,goal>0?mRev/goal*100:0);
   const monthName=Tsh.monthLabel(cmKey).split(" ")[0].toUpperCase();
-  // Shop Day digest (auto-captured activity + gaps)
+  // KPI strip: this month's revenue and gross margin (before tax, the P&L's rule; payroll stays out, so staff see it too),
+  // cash owed with the overdue part, and the capital tied up in engines still in core / reman / on hold.
+  const pl=Mny.pnl(s,Mny.periodFor("month"));const gmPct=pl.revenue>0?Math.round(pl.gross/pl.revenue*100):null;
   const tIso=isoToday();
-  const todays=(s.activity||[]).filter(x=>(x.ts||"").slice(0,10)===tIso).slice(0,8);
   const hrsToday=(s.timeEntries||[]).filter(t=>t.date===tIso).reduce((a,t)=>a+(+t.hours||0),0);
   const engsO=s.inventory.filter(isEngine);
+  const wipO=engsO.filter(i=>["core","in-reman","on-hold"].includes(engStatus(i)));const wipCap=wipO.reduce((a,i)=>a+costBasis(i),0);
   const unlistedO=engsO.filter(i=>engStatus(i)==="available"&&!(i.listedOn||[]).length).length;
   const noCostO=engsO.filter(i=>costBasis(i)<=0).length;
-  const staleO=engsO.filter(i=>["core","in-reman","on-hold"].includes(engStatus(i))&&i.stageDate&&(Date.now()-new Date(i.stageDate).getTime())>7*864e5);
+  const staleO=wipO.filter(i=>i.stageDate&&(Date.now()-new Date(i.stageDate).getTime())>7*864e5);
   const uwO=engsO.filter(i=>uwLevel(i));
-  // Daily 3 shift card: dealt once per day, tasks self-complete as data is fixed
+  // Shop level (last 90 days' gross profit), the revenue pulse (30 days) and the streaks.
+  const g90=useMemo(()=>grossBetween(s,Tsh.addDaysISO(shopT,-89),shopT),[s.invoices,s.wins,s.inventory,s.shipments,shopT]);const lv=shopLevel(g90);
+  const pulse=useMemo(()=>{const m=revByDay(s,Tsh.addDaysISO(shopT,-29),shopT);return Tsh.rangeDays(Tsh.addDaysISO(shopT,-29),shopT).map(dt=>[dt,m[dt]||0]);},[s.invoices,s.wins,s.inventory,shopT]);
+  const p30=pulse.reduce((a,p)=>a+p[1],0);const best=pulse.reduce((b,p)=>p[1]>b[1]?p:b,["",0]);
+  const tsRun=useMemo(()=>tsStreak(s,shopT),[s.employees,s.timesheets,shopT]);const clearRun=useMemo(()=>clearStreak(s,shopT),[s.invoices,shopT]);
+  // Today's 3 moves: dealt once per day (ranked by dollars, genDaily3), each done by itself once the record is fixed.
   const d3set=getSet(s);
-  const d3=(d3set.d3&&d3set.d3.date===tIso)?(d3set.d3.tasks||[]):null;
-  useEffect(()=>{const cur=(s.settings||[])[0];if(cur&&cur.d3&&cur.d3.date===tIso)return;const tasks=genDaily3(s);const patch={d3:{date:tIso,tasks}};if(cur)d({type:"UPDATE",list:"settings",id:cur.id,d:patch});else d({type:"ADD",list:"settings",d:patch,label:"Shift card dealt"});},[tIso,s.settings]);
-  const d3done=d3?d3.map(t=>d3Done(s,t)):[];
+  const d3=(d3set.d3&&d3set.d3.date===tIso&&d3set.d3.v===2)?(d3set.d3.tasks||[]):null;
+  useEffect(()=>{const cur=(s.settings||[])[0];if(cur&&cur.d3&&cur.d3.date===tIso&&cur.d3.v===2)return;const tasks=genDaily3(s);const patch={d3:{date:tIso,v:2,tasks}};if(cur)d({type:"UPDATE",list:"settings",id:cur.id,d:patch});else d({type:"ADD",list:"settings",d:patch,label:"Shift card dealt"});},[tIso,s.settings]);
+  const d3done=d3?d3.map(t=>d3Done(s,t)):[];const d3usd=d3?d3.map(t=>moveUsd(s,t)||{usd:0,why:""}):[];
+  const doneN=d3done.filter(Boolean).length;const banked=d3?d3usd.reduce((a,m,x)=>a+(d3done[x]?m.usd||0:0),0):0;
   const allDone=!!d3&&d3.length>0&&d3done.every(Boolean);
   useEffect(()=>{if(!allDone)return;const cur=(s.settings||[])[0];if(!cur||cur.d3LastDone===tIso)return;const y=new Date(Date.now()-864e5).toISOString().slice(0,10);const streak=cur.d3LastDone===y?(+cur.d3Streak||0)+1:1;d({type:"UPDATE",list:"settings",id:cur.id,d:{d3LastDone:tIso,d3Streak:streak}});d({type:"TOAST",d:{msg:"✅ Shift card complete — 🔥 streak "+streak,t:Date.now()}});},[allDone]);
   const d3streak=+d3set.d3Streak||0;
+  // A move finished since this device last looked gets its moment: the check stamps in, the dollars float up.
+  const[pop,setPop]=useState([]);const doneKey=d3done.join(",");
+  useEffect(()=>{if(!d3)return;const was=D3_SEEN.date===tIso?D3_SEEN.done:null;const fresh=was?d3done.map((v,x)=>v&&!was[x]?x:-1).filter(x=>x>=0):[];D3_SEEN.date=tIso;D3_SEEN.done=d3done.slice();if(!fresh.length)return;setPop(fresh);const t=setTimeout(()=>setPop([]),1800);return()=>clearTimeout(t);},[doneKey,!!d3]);
   const d3open=t=>{if(t.t==="inv"){d({type:"TAB",v:"invoices"});return;}if(t.t==="follow"){d({type:"MODAL",v:"pros-rec",d:{list:t.list,id:t.id}});return;}const i=(s.inventory||[]).find(x=>x.id===t.id);if(i)d({type:"MODAL",v:"part-detail",d:i});};
   // Break-even (the owner's view only, since it includes payroll): this month's fixed costs against what the
-  // month earned after the engines' cost. The mark on the bar is the sales that cover them at the usual margin.
+  // month earned after the engines' cost. The mark on the ring is the sales that cover them at the usual margin.
   const be=owner?Mny.breakEven(s,cmKey):null;const fixedMo=be?be.fixed:0;const beEng=be&&be.engines;
   const bePct=be&&fixedMo>0&&be.salesNeeded&&goal>0?Math.min(100,be.salesNeeded/goal*100):null;
-  return (<div>
-    <div className="rc-card rc-goal">
-      <div className="rc-goal-top"><span className="rc-sl" style={{margin:0,fontSize:12,letterSpacing:2}}>{monthName} GOAL</span>{isRecord&&<span className="rc-goal-best">🏆 BEST MONTH EVER</span>}<span style={{flex:1}}/><span className="rc-goal-v">{$K(mRev)} <em>/ {$K(goal)}</em></span><button className="rc-bs" style={{fontSize:12}} onClick={()=>d({type:"MODAL",v:"set-goal"})}>✎ Goal</button></div>
-      <div className="rc-goal-bar"><div className="rc-goal-fill" style={{width:pct+"%",background:pct>=100?"linear-gradient(90deg,var(--g),var(--g))":"var(--grad)"}}/>{bePct!=null&&bePct<100&&<div className="rc-goal-mark" style={{left:bePct+"%"}} title={"sales to break even about "+$K(be.salesNeeded)}/>}</div>
-      <div className="rc-goal-sub">{mWins.length} engine{mWins.length===1?"":"s"} sold this month · {pct.toFixed(0)}% of goal{owner&&(fixedMo>0?(<span> · fixed costs {$K(fixedMo)} a month{beEng?` ≈ ${beEng} engine${beEng>1?"s":""}`:""}{be.cleared?" · ✓ break-even cleared":" · "+$K(Math.max(0,fixedMo-be.earned))+" more margin to break even"}</span>):(<span style={{color:"var(--ft)"}}> · add monthly expenses to see your break-even line</span>))}</div>
+  // Live feed: the latest Shop Log entries; ones that weren't there the last time this device looked slide in.
+  const feed=(s.activity||[]).slice(0,9);const seen=FEED_SEEN.ids;
+  useEffect(()=>{FEED_SEEN.ids=new Set([...(FEED_SEEN.ids||[]),...feed.map(x=>String(x.id))]);});
+  const todayActs=(s.activity||[]).filter(x=>x.ts&&Tsh.shopToday(new Date(x.ts))===shopT).length;
+  const warrExp=(s.warranties||[]).filter(w=>w.status==="active"&&w.expiryDate&&w.expiryDate<isoToday()).length;
+  return (<div className="rc-home">
+    <div className="rc-kpis">
+      <Kpi k="ov-rev" money label={"Revenue · "+monthName} v={pl.revenue} sub={<>{pl.engines} engine{pl.engines===1?"":"s"} sold · before tax</>}/>
+      <Kpi k="ov-gm" money label="Gross margin" v={pl.gross} sub={gmPct!=null?<span className={gmPct>=0?"ok":"bad"}>{gmPct}% of revenue</span>:"no revenue yet this month"}/>
+      <Kpi k="ov-owed" label="Cash owed" v={pa} go={()=>d({type:"TAB",v:"invoices"})} goLabel={"Cash owed "+$R(pa)+", "+$R(overSum)+" overdue. Open Invoicing"} sub={overSum>0?<span className="bad">{$R(overSum)} overdue · {overdueInv} invoice{overdueInv===1?"":"s"}</span>:<span className="ok">nothing overdue</span>}/>
+      <Kpi k="ov-wip" label="WIP capital" v={wipCap} go={()=>d({type:"TAB",v:"inventory"})} goLabel={"WIP capital "+$R(wipCap)+", "+staleO.length+" stuck over 7 days. Open Engines"} sub={<>{wipO.length} in core · reman · hold{staleO.length>0?<span className="bad"> · {staleO.length} stuck &gt;7d</span>:""}</>}/>
     </div>
-    {(()=>{const b=justSent&&justSent.text?{date:isoToday(),text:justSent.text,sent:justSent.sent,to:justSent.to,reason:justSent.reason}:(s.brief&&s.brief.date?s.brief:null);return(<div className="rc-card" style={{padding:"12px 16px",marginBottom:16}}>
-      <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}><span className="rc-sl" style={{margin:0,fontSize:12,letterSpacing:2}}>☀️ MORNING BRIEF</span>{b?(<span style={{fontSize:12,color:b.sent?"var(--g)":"var(--w)"}}>{b.date} · {b.sent?"emailed to "+(b.to||"you"):"generated, not emailed"+(b.reason?" — "+b.reason:"")}</span>):(<span style={{fontSize:12,color:"var(--mt)"}}>lands in your inbox at 7am · runs by itself</span>)}<span style={{flex:1}}/>{b&&<button className="rc-fb" onClick={()=>setShowBrief(v=>!v)}>{showBrief?"Hide":"Read"}</button>}{usingCloud&&<button className="rc-bs" disabled={briefBusy} onClick={sendBrief}>{briefBusy?"⏳ Working…":"✉ Send now"}</button>}</div>
-      {b&&showBrief&&<pre style={{whiteSpace:"pre-wrap",fontSize:13,lineHeight:1.65,color:"var(--tx)",marginTop:10,fontFamily:"var(--fb)",background:"var(--in)",border:"1px solid var(--ln)",borderRadius:9,padding:"10px 12px",maxHeight:360,overflowY:"auto"}}>{!owner&&b.staffText!=null?b.staffText:b.text}</pre>}
+    <div className="rc-home-g">
+      <section className="rc-card rc-moves" aria-labelledby="rc-moves-h">
+        <div className="rc-hd"><h2 className="rc-k" id="rc-moves-h">Today's 3 moves</h2><span className="rc-k2">ranked by dollars</span>{d3streak>0&&<span className="rc-chip warn">🔥 {d3streak}-day streak</span>}<span style={{flex:1}}/><span className="rc-mvn" aria-label={doneN+" of "+(d3?d3.length:0)+" moves done"}>MOVES <b key={doneN} className={pop.length?"tick":""}>{doneN}</b>/{d3?d3.length:0}</span></div>
+        {!d3||d3.length===0?(<div className="rc-moves-clear">🏁 Lot's clean — nothing urgent today. Go sell something.</div>):d3.map((t,x)=>{const m=d3usd[x],dn=d3done[x];return(<button key={x} className={"rc-move"+(dn?" done":"")+(pop.includes(x)?" pop":"")} disabled={dn} onClick={()=>!dn&&d3open(t)} aria-label={(dn?"Done: ":"Open: ")+t.l+(m.usd>0?", "+$R(m.usd):"")}>
+          <span className="rc-move-n" aria-hidden="true">{dn?"✓":x+1}</span>
+          <span className="rc-move-b"><span className="rc-move-t">{t.l}</span><span className="rc-move-w">{m.usd>0?<b>{m.est?"≈ ":""}{$R(m.usd)}</b>:null}{m.usd>0?" · ":""}{dn?"handled today":m.why}</span></span>
+          {dn?<span className="rc-move-g">DONE</span>:<span className="rc-move-go" aria-hidden="true">→</span>}
+          {pop.includes(x)&&m.usd>0&&<span className="rc-move-fly" aria-hidden="true">+{$R(m.usd)}</span>}
+        </button>);})}
+        {d3&&d3.length>0&&<div className="rc-moves-f">{allDone?<span className="rc-lm-full">✅ SHIFT COMPLETE</span>:<span>Each move checks itself off once the record is fixed.</span>}<span style={{flex:1}}/>{banked>0&&<span className="rc-banked">+<Count k="ov-banked" v={banked}/> moved today</span>}</div>}
+      </section>
+      <section className="rc-card rc-goalc" aria-labelledby="rc-goal-h">
+        <div className="rc-hd"><h2 className="rc-k" id="rc-goal-h">{monthName} goal</h2>{isRecord&&<span className="rc-goal-best">🏆 BEST MONTH EVER</span>}<span style={{flex:1}}/><button className="rc-bs" style={{fontSize:12.5}} onClick={()=>d({type:"MODAL",v:"set-goal"})}>✎ Goal</button></div>
+        <div className="rc-goalrow"><GoalRing pct={pct} mark={bePct}/><div style={{minWidth:0}}>
+          <div className="rc-goal-v"><Count k="ov-mrev" v={mRev}/> <em>/ {$R(goal)}</em></div>
+          <div className="rc-goal-sub">{mWins.length} engine{mWins.length===1?"":"s"} sold this month · {pct.toFixed(0)}% of goal{owner&&(fixedMo>0?(<span> · fixed costs {$K(fixedMo)} a month{beEng?` ≈ ${beEng} engine${beEng>1?"s":""}`:""}{be.cleared?" · ✓ break-even cleared":" · "+$K(Math.max(0,fixedMo-be.earned))+" more margin to break even"}</span>):(<span style={{color:"var(--ft)"}}> · add monthly expenses to see your break-even line</span>))}</div>
+        </div></div>
+        <div className="rc-level"><div className="rc-level-top"><span className="rc-level-n">LVL {lv.n}</span><b>{lv.name}</b><span style={{flex:1}}/><span className="rc-mono">{$R(g90)}</span></div>
+          <div className="rc-level-bar" role="progressbar" aria-label="Shop level" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(lv.pct)}><span style={{width:lv.pct+"%"}}/></div>
+          <div className="rc-level-s">90-day gross profit{lv.next?" · "+$K(lv.toNext)+" to "+lv.next[1]:" · top level"}</div></div>
+        <div className="rc-streaks">
+          <div className={"rc-streak"+(tsRun>0?" on":"")}><b>{tsRun==null?"—":tsRun}</b><span>{tsRun==null?"add your Team to track timesheets":(tsRun===1?"weekday":"weekdays")+" · every timesheet filled"}</span></div>
+          <div className={"rc-streak"+(clearRun>0?" on":"")}><b>{clearRun==null?"—":clearRun}</b><span>{clearRun==null?"no invoices yet":(clearRun===1?"day":"days")+" · nothing overdue"}</span></div>
+        </div>
+      </section>
+    </div>
+    <div className="rc-home-g b">
+      <section className="rc-card rc-pulse" aria-labelledby="rc-pulse-h">
+        <div className="rc-hd"><h2 className="rc-k" id="rc-pulse-h">Revenue pulse · 30 days</h2><span style={{flex:1}}/><span className="rc-mono big money"><Count k="ov-p30" v={p30}/></span></div>
+        <Spark pts={pulse} label={"Revenue, last 30 days: "+$R(p30)+" in all, before tax"+(best[1]>0?"; best day "+Tsh.shortDate(best[0])+" at "+$R(best[1]):"")+"; today "+$R(pulse.length?pulse[pulse.length-1][1]:0)}/>
+        <div className="rc-pulse-f"><span>{Tsh.shortDate(pulse.length?pulse[0][0]:"")}</span><span>{best[1]>0?"best day "+Tsh.shortDate(best[0])+" · "+$R(best[1]):"no sales in 30 days"}</span><span>today</span></div>
+      </section>
+      <section className="rc-card rc-feed" aria-labelledby="rc-feed-h">
+        <div className="rc-hd"><h2 className="rc-k" id="rc-feed-h"><span className="rc-live" aria-hidden="true"/>Live · Shop Log</h2><span className="rc-chip">{todayActs} today · {hrsToday}h logged</span><span style={{flex:1}}/><button className="rc-fb" onClick={()=>d({type:"MODAL",v:"shop-log"})}>📜 Full Log</button></div>
+        <div aria-live="polite">{feed.length===0?(<div className="rc-feed-none">Nothing logged yet — this fills in as the crew works.</div>):feed.map(x=>(<div key={x.id} className={"rc-act"+(seen&&!seen.has(String(x.id))?" in":"")}><span className="rc-act-t">{feedWhen(x.ts)}</span><span className="rc-act-u">{x.user}</span><span style={{flex:1,minWidth:0}}>{x.msg}</span></div>))}</div>
+      </section>
+    </div>
+    {(()=>{const b=justSent&&justSent.text?{date:isoToday(),text:justSent.text,sent:justSent.sent,to:justSent.to,reason:justSent.reason}:(s.brief&&s.brief.date?s.brief:null);return(<div className="rc-card rc-brief">
+      <div className="rc-hd"><h2 className="rc-k">☀️ Morning brief</h2>{b?(<span className="rc-brief-st" style={{color:b.sent?"var(--g)":"var(--w)"}}>{b.date} · {b.sent?"emailed to "+(b.to||"you"):"generated, not emailed"+(b.reason?" — "+b.reason:"")}</span>):(<span className="rc-brief-st">lands in your inbox at 7am · runs by itself</span>)}<span style={{flex:1}}/>{b&&<button className="rc-fb" onClick={()=>setShowBrief(v=>!v)}>{showBrief?"Hide":"Read"}</button>}{usingCloud&&<button className="rc-bs" disabled={briefBusy} onClick={sendBrief}>{briefBusy?"⏳ Working…":"✉ Send now"}</button>}</div>
+      {b&&showBrief&&<pre className="rc-brief-txt">{!owner&&b.staffText!=null?b.staffText:b.text}</pre>}
     </div>);})()}
-    <div className="rc-card" style={{padding:"12px 16px",marginBottom:16}}>
-      <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:8,flexWrap:"wrap"}}><span className="rc-sl" style={{margin:0,fontSize:12,letterSpacing:2}}>TODAY'S 3 — SHIFT CARD</span>{d3streak>0&&<span style={{fontSize:12,color:"var(--w)",fontWeight:700}}>🔥 {d3streak}-day streak</span>}<span style={{flex:1}}/>{allDone&&<span className="rc-lm-full" style={{fontSize:13}}>✅ SHIFT COMPLETE</span>}</div>
-      {!d3||d3.length===0?(<div style={{fontSize:13,color:"var(--g)"}}>🏁 Lot's clean — nothing urgent today. Go sell something.</div>):d3.map((t,x)=>(<div key={x} onClick={()=>!d3done[x]&&d3open(t)} style={{display:"flex",gap:9,alignItems:"center",padding:"6px 0",borderBottom:x<d3.length-1?"1px solid var(--ln2)":"none",fontSize:14,cursor:d3done[x]?"default":"pointer",opacity:d3done[x]?.55:1}}><span style={{width:16,textAlign:"center",color:d3done[x]?"var(--g)":"var(--mt)",fontWeight:700}}>{d3done[x]?"✓":x+1}</span><span style={{flex:1,textDecoration:d3done[x]?"line-through":"none"}}>{t.l}</span>{!d3done[x]&&<span style={{fontSize:11,color:"var(--mt)"}}>tap to open →</span>}</div>))}
-    </div>
-    <div className="rc-g6">
+    <div className="rc-g6 rc-mini">
       <Stat label="Active Jobs" value={aj}/><Stat label="Engines Available" value={ec}/><Stat label="Open Quotes" value={aq}/>
       <Stat label="Pending Revenue" value={$K(pa)} sub={`${pi.length} invoices`}/><Stat label="Revenue Collected" value={$K(rv+engRev)} sub={engRev>0?"incl "+$K(engRev)+" engines":undefined}/><Stat label="New Leads" value={nl}/>
-    </div>
-    <div className="rc-g6">
       <Stat label="Pending Cores" value={pendCores} sub={pendCores>0?"needs follow-up":"all clear"} dir={pendCores>0?"dn":"up"}/><Stat label="Active Shipments" value={activeShip}/>
       <Stat label="Overdue Invoices" value={overdueInv} sub={overdueInv>0?"action needed":""} dir={overdueInv>0?"dn":"up"}/><Stat label="Open POs" value={openPOs}/>
       <Stat label="Active Warranties" value={activeWarranties}/><Stat label="Customers" value={(s.customers||[]).length}/>
     </div>
     <div className="rc-2col">
       <div><SH title="Recent Jobs"/>{s.jobs.length===0?(<Empty icon="🔧" title="No Jobs" sub="Add work orders" action={()=>d({type:"MODAL",v:"add-job"})} label="+ New Job"/>):(<Tbl headers={["Customer","Service","Due","Status"]}>{s.jobs.filter(j=>j.status!=="complete").slice(0,5).map(j=>(<tr key={j.id} style={{cursor:"pointer"}} onClick={()=>d({type:"MODAL",v:"job-detail",d:j})}><td className="rc-tn">{jobCust(s,j)}</td><td style={{color:"var(--tx2)",fontSize:13}}>{j.service}</td><td style={{color:"var(--mt)",fontSize:13}}>{j.due}</td><td><Badge s={j.status}/></td></tr>))}</Tbl>)}</div>
-      <div><SH title="Alerts"/><div className="rc-card" style={{padding:"12px 16px"}}>
-        {overdueInv>0&&<div style={{display:"flex",gap:10,padding:"8px 0",borderBottom:"1px solid var(--ln)",alignItems:"center"}}><span style={{color:"var(--r)",fontSize:17.5}}>⚠</span><span style={{fontSize:14,color:"var(--r)"}}>{overdueInv} overdue invoice{overdueInv>1?"s":""}</span></div>}
-        {pendCores>0&&<div style={{display:"flex",gap:10,padding:"8px 0",borderBottom:"1px solid var(--ln)",alignItems:"center"}}><span style={{color:"var(--w)",fontSize:17.5}}>🔄</span><span style={{fontSize:14,color:"var(--w)"}}>{pendCores} core return{pendCores>1?"s":""} pending</span></div>}
-        {activeShip>0&&<div style={{display:"flex",gap:10,padding:"8px 0",borderBottom:"1px solid var(--ln)",alignItems:"center"}}><span style={{color:"var(--b)",fontSize:17.5}}>🚚</span><span style={{fontSize:14,color:"var(--b)"}}>{activeShip} shipment{activeShip>1?"s":""} in transit</span></div>}
-        {(s.warranties||[]).filter(w=>w.status==="active"&&w.expiryDate&&w.expiryDate<isoToday()).length>0&&<div style={{display:"flex",gap:10,padding:"8px 0",alignItems:"center"}}><span style={{color:"var(--r)",fontSize:17.5}}>📋</span><span style={{fontSize:14,color:"var(--r)"}}>Warranties expiring soon</span></div>}
-        {overdueInv===0&&pendCores===0&&activeShip===0&&<div style={{fontSize:14,color:"var(--g)",padding:"12px 0"}}>✓ All clear — no urgent items</div>}
+      <div><SH title="Alerts"/><div className="rc-card rc-alerts">
+        {overdueInv>0&&<div className="rc-alert bad"><span aria-hidden="true">⚠</span>{overdueInv} overdue invoice{overdueInv>1?"s":""} · {$R(overSum)}</div>}
+        {pendCores>0&&<div className="rc-alert warn"><span aria-hidden="true">🔄</span>{pendCores} core return{pendCores>1?"s":""} pending</div>}
+        {activeShip>0&&<div className="rc-alert info"><span aria-hidden="true">🚚</span>{activeShip} shipment{activeShip>1?"s":""} in transit</div>}
+        {warrExp>0&&<div className="rc-alert bad"><span aria-hidden="true">📋</span>Warranties expiring soon</div>}
+        {uwO.slice(0,3).map(i=>(<div key={"uw"+i.id} className={"rc-alert "+(uwLevel(i)==="crit"?"bad":"warn")}><span aria-hidden="true">⚠</span>{i.name} — cost at {Math.round(uwRatio(i)*100)}% of expected sale</div>))}
+        {staleO.slice(0,3).map(i=>(<div key={i.id} className="rc-alert warn"><span aria-hidden="true">⏳</span>{i.name} — {Math.floor((Date.now()-new Date(i.stageDate).getTime())/864e5)}d in {engStatusLabel(engStatus(i))}</div>))}
+        {unlistedO>0&&<div className="rc-alert warn"><span aria-hidden="true">📣</span>{unlistedO} available engine{unlistedO>1?"s":""} not advertised</div>}
+        {noCostO>0&&<div className="rc-alert warn"><span aria-hidden="true">💲</span>{noCostO} engine{noCostO>1?"s":""} missing cost basis</div>}
+        {overdueInv===0&&pendCores===0&&activeShip===0&&warrExp===0&&!uwO.length&&!staleO.length&&!unlistedO&&!noCostO&&<div className="rc-alert ok"><span aria-hidden="true">✓</span>All clear — no urgent items</div>}
       </div></div>
     </div>
-    <div className="rc-2col">
-      <div><SH title="Today at the Shop"><span className="rc-bc">{hrsToday}h logged</span><button className="rc-fb" onClick={()=>d({type:"MODAL",v:"shop-log"})}>📜 Full Log</button></SH><div className="rc-card" style={{padding:"10px 14px"}}>
-        {todays.length===0?(<div style={{fontSize:13,color:"var(--mt)",padding:"8px 0"}}>Nothing logged yet today — this fills in as the crew works.</div>):todays.map(x=>(<div key={x.id} className="rc-act"><span className="rc-act-t">{(x.ts||"").slice(11,16)}</span><span className="rc-act-u">{x.user}</span><span style={{flex:1,minWidth:0}}>{x.msg}</span></div>))}
-        {(uwO.length>0||staleO.length>0||unlistedO>0||noCostO>0)&&(<div style={{borderTop:"1px solid var(--ln)",marginTop:8,paddingTop:8}}>
-          <div className="rc-ml" style={{marginBottom:4}}>Gaps</div>
-          {uwO.slice(0,3).map(i=>(<div key={"uw"+i.id} className="rc-gap" style={{color:uwLevel(i)==="crit"?"var(--r)":"var(--w)"}}>⚠ {i.name} — cost at {Math.round(uwRatio(i)*100)}% of expected sale</div>))}
-          {staleO.slice(0,3).map(i=>(<div key={i.id} className="rc-gap">⏳ {i.name} — {Math.floor((Date.now()-new Date(i.stageDate).getTime())/864e5)}d in {engStatusLabel(engStatus(i))}</div>))}
-          {unlistedO>0&&<div className="rc-gap">📣 {unlistedO} available engine{unlistedO>1?"s":""} not advertised</div>}
-          {noCostO>0&&<div className="rc-gap">💲 {noCostO} engine{noCostO>1?"s":""} missing cost basis</div>}
-        </div>)}
-      </div></div>
-      <div><SH title="Wins"/><div className="rc-card" style={{padding:"10px 14px"}}>
-        {(s.wins||[]).length===0?(<div style={{fontSize:13,color:"var(--mt)",padding:"8px 0"}}>Your first SOLD lands here. 🏆</div>):(s.wins||[]).slice(0,6).map(w=>(<div key={w.id} className="rc-win"><span className="rc-win-i">🏆</span><span style={{flex:1,minWidth:0}}><span className="rc-tn">{w.name}</span><span className="rc-win-d"> · {(w.ts||"").slice(0,10)} · {w.user}</span></span>{w.src?(<span style={{fontSize:12,color:"var(--b)",border:"1px solid var(--b)",borderRadius:8,padding:"1px 6px",flexShrink:0}}>{srcLabel(w.src)}</span>):(<select value="" onChange={e=>e.target.value&&d({type:"UPDATE",list:"wins",id:w.id,d:{src:e.target.value}})} style={{background:"var(--in)",border:"1px solid var(--ln)",borderRadius:6,color:"var(--tx2)",fontSize:12,padding:"1px 2px",flexShrink:0,fontFamily:"var(--fb)"}}><option value="">src?</option>{SALE_SRC.map(([k,l])=>(<option key={k} value={k}>{l}</option>))}</select>)}<span className="rc-win-p">{$$(w.price)}</span></div>))}
-      </div></div>
-    </div>
+    <div><SH title="Wins"/><div className="rc-card" style={{padding:"10px 14px"}}>
+      {(s.wins||[]).length===0?(<div style={{fontSize:13,color:"var(--mt)",padding:"8px 0"}}>Your first SOLD lands here. 🏆</div>):(s.wins||[]).slice(0,6).map(w=>(<div key={w.id} className="rc-win"><span className="rc-win-i">🏆</span><span style={{flex:1,minWidth:0}}><span className="rc-tn">{w.name}</span><span className="rc-win-d"> · {(w.ts||"").slice(0,10)} · {w.user}</span></span>{w.src?(<span className="rc-chip info" style={{flexShrink:0}}>{srcLabel(w.src)}</span>):(<select value="" aria-label={"Where the buyer of "+(w.name||"this engine")+" came from"} onChange={e=>e.target.value&&d({type:"UPDATE",list:"wins",id:w.id,d:{src:e.target.value}})} className="rc-win-src"><option value="">src?</option>{SALE_SRC.map(([k,l])=>(<option key={k} value={k}>{l}</option>))}</select>)}<span className="rc-win-p">{$$(w.price)}</span></div>))}
+    </div></div>
   </div>);
 }
 
@@ -3056,14 +3167,14 @@ function Modals({s,d,owner=true,who={role:"owner"}}){
 // CSS
 // ═══════════════════════════════════════════════════════════════
 const CSS=`@import url('${FONTS}');
-.rc-root{--bg:#f3f2ef;--sf:#ffffff;--sf2:#f6f4f1;--in:#ffffff;--ln:#e2ded7;--ln2:#eeebe6;--tx:#1c1b19;--tx2:#48443d;--mt:#6d685f;--ft:#a19b91;--ac:#d4581a;--act:#b44810;--acs:#fbede4;--ach:#bf4c13;--acb:#c24e14;--acbh:#a94310;--g:#2e7d4a;--gs:#e4f2e9;--w:#95600f;--ws:#fbf0d9;--r:#b8321f;--rs:#fbe4e0;--b:#2d6aa6;--bs:#e3edf8;--p:#7a4fb5;--ps:#f1e9fa;--sh1:0 1px 2px rgba(28,25,20,.05);--sh2:0 12px 32px -16px rgba(28,25,20,.28);--ov:rgba(28,27,25,.42);--grad:linear-gradient(135deg,#e26a2c,#d4581a);--fd:'Barlow Condensed','Arial Narrow',sans-serif;--fb:'Public Sans',system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;color-scheme:light;font-family:var(--fb);font-size:14px;line-height:1.5;color:var(--tx);background:var(--bg);min-height:100vh;-webkit-font-smoothing:antialiased;}
-.rc-root[data-theme="night"]{--bg:#121314;--sf:#1a1c1f;--sf2:#212428;--in:#15171a;--ln:#2d3136;--ln2:#25282c;--tx:#ecebe7;--tx2:#c8c4bc;--mt:#9a958c;--ft:#6e6961;--ac:#e2682a;--act:#ff9058;--acs:rgba(226,104,42,.16);--ach:#ef7836;--acb:#c24e14;--acbh:#d4581a;--g:#4cc38a;--gs:rgba(76,195,138,.14);--w:#e2b24c;--ws:rgba(226,178,76,.14);--r:#f06b58;--rs:rgba(240,107,88,.15);--b:#6ea9ea;--bs:rgba(110,169,234,.15);--p:#b28ceb;--ps:rgba(178,140,235,.15);--sh1:0 1px 2px rgba(0,0,0,.35);--sh2:0 16px 40px -18px rgba(0,0,0,.85);--ov:rgba(0,0,0,.62);--grad:linear-gradient(135deg,#f07a3a,#e2682a);color-scheme:dark;}
+.rc-root{--bg:#f4f2ec;--sf:#ffffff;--sf2:#f7f5f0;--in:#ffffff;--ln:#ddd8cf;--ln2:#ebe7df;--tx:#17150f;--tx2:#423e36;--mt:#655e54;--ft:#9c958a;--ac:#c94f12;--act:#b0430c;--acs:#f9ebe1;--ach:#b8480f;--acb:#c24e14;--acbh:#a63f0b;--g:#2a7444;--gs:#e3f1e7;--w:#8e5a0c;--ws:#f9efd9;--r:#b3301d;--rs:#fae3df;--b:#2a64a0;--bs:#e2ecf7;--p:#7448b0;--ps:#efe7f9;--sh1:0 1px 2px rgba(23,21,15,.05);--sh2:0 12px 32px -16px rgba(23,21,15,.3);--ov:rgba(23,21,15,.45);--grad:linear-gradient(90deg,#d8642a,#c94f12);--gridc:rgba(23,21,15,.045);--scan:transparent;--glow:none;--fd:'Barlow Condensed','Arial Narrow',sans-serif;--fb:'Public Sans',system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;--fm:'IBM Plex Mono',ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color-scheme:light;font-family:var(--fb);font-size:14px;line-height:1.5;color:var(--tx);background:var(--bg);min-height:100vh;-webkit-font-smoothing:antialiased;}
+.rc-root[data-theme="night"]{--bg:#0d0f11;--sf:#14171a;--sf2:#1a1e22;--in:#101316;--ln:#262b31;--ln2:#1e2227;--tx:#e9e4da;--tx2:#c4beb3;--mt:#9a9389;--ft:#6e685f;--ac:#ff7a2e;--act:#ff8f50;--acs:rgba(255,122,46,.13);--ach:#ff8a45;--acb:#c24e14;--acbh:#b8480f;--g:#4cc38a;--gs:rgba(76,195,138,.13);--w:#e2b24c;--ws:rgba(226,178,76,.13);--r:#f47563;--rs:rgba(244,117,99,.14);--b:#72aaf0;--bs:rgba(114,170,240,.14);--p:#b892ee;--ps:rgba(184,146,238,.14);--sh1:0 1px 0 rgba(0,0,0,.4);--sh2:0 18px 44px -18px rgba(0,0,0,.9);--ov:rgba(4,5,6,.7);--grad:linear-gradient(90deg,#c24e14,#ff7a2e);--gridc:rgba(233,228,218,.035);--scan:rgba(233,228,218,.018);--glow:0 0 18px rgba(255,122,46,.3);color-scheme:dark;}
 *{margin:0;padding:0;box-sizing:border-box;}
 .rc-root button,.rc-root input,.rc-root select,.rc-root textarea{font-family:inherit;}
 .rc-root button:focus-visible,.rc-root a:focus-visible{outline:2px solid var(--ac);outline-offset:2px;}
 .rc-root select option{background:var(--sf);color:var(--tx);}
 .rc-ico{width:18px;height:18px;flex-shrink:0;fill:none;stroke:currentColor;stroke-width:1.9;stroke-linecap:round;stroke-linejoin:round;}
-.rc-shell{display:grid;grid-template-columns:236px minmax(0,1fr);min-height:100vh;}
+.rc-shell{display:grid;grid-template-columns:244px minmax(0,1fr);min-height:100vh;}
 .rc-side{position:sticky;top:0;height:100vh;height:100dvh;overflow:hidden;background:var(--sf);border-right:1px solid var(--ln);display:flex;flex-direction:column;padding:18px 14px 14px;z-index:60;}
 .rc-logo{display:flex;align-items:center;gap:10px;padding:2px 6px 16px;}
 .rc-hi{width:38px;height:38px;border-radius:10px;background:var(--ac);color:#fff;display:grid;place-items:center;font:800 18px/1 var(--fd);letter-spacing:-.5px;flex-shrink:0;}
@@ -3520,19 +3631,203 @@ const CSS=`@import url('${FONTS}');
 .rc-win-i{font-size:17px;}
 .rc-win-d{color:var(--mt);font-size:11.5px;}
 .rc-win-p{font:700 16px var(--fd);color:var(--g);}
-.rc-splash{position:fixed;inset:0;z-index:3000;background:rgba(10,10,10,.9);backdrop-filter:blur(6px);display:flex;align-items:center;justify-content:center;cursor:pointer;animation:fdin .25s;color:#f3efe8;}
+.rc-splash{position:fixed;inset:0;z-index:3000;background:radial-gradient(ellipse at 50% 38%,rgba(255,122,46,.2),transparent 62%),repeating-linear-gradient(0deg,rgba(233,228,218,.025) 0 1px,transparent 1px 3px),linear-gradient(rgba(233,228,218,.045) 1px,transparent 1px) 0 0/22px 22px,linear-gradient(90deg,rgba(233,228,218,.045) 1px,transparent 1px) 0 0/22px 22px,rgba(9,10,12,.96);backdrop-filter:blur(6px);display:flex;cursor:pointer;animation:fdin .25s;color:#e9e4da;overflow-y:auto;padding:16px;}
 @keyframes fdin{from{opacity:0}to{opacity:1}}
-.rc-splash-in{text-align:center;padding:30px;}
-.rc-stamp{display:inline-block;font:900 min(110px,22vw)/1 var(--fd);letter-spacing:6px;color:#ff6a20;border:7px solid #ff6a20;border-radius:14px;padding:6px 28px;transform:rotate(-8deg);box-shadow:0 0 60px rgba(255,106,32,.55),inset 0 0 30px rgba(255,106,32,.25);animation:stampin .45s cubic-bezier(.2,1.6,.4,1);}
+.rc-splash-in{text-align:center;padding:24px 8px;max-width:560px;width:100%;margin:auto;}
+.rc-stamp{display:inline-block;font:900 min(104px,22vw)/1 var(--fd);letter-spacing:6px;color:#ff7a2e;border:7px solid #ff7a2e;border-radius:12px;padding:6px 28px;transform:rotate(-8deg);box-shadow:0 0 60px rgba(255,122,46,.55),inset 0 0 30px rgba(255,122,46,.25);text-shadow:0 0 24px rgba(255,122,46,.6);animation:stampin .45s cubic-bezier(.2,1.6,.4,1);}
 @keyframes stampin{0%{transform:rotate(-8deg) scale(2.6);opacity:0;}60%{opacity:1;}100%{transform:rotate(-8deg) scale(1);}}
-.rc-spl-name{font:800 28px var(--fd);margin-top:26px;letter-spacing:1px;}
-.rc-spl-price{font:900 46px var(--fd);color:#6fd98a;margin-top:6px;}
-.rc-spl-margin{font-size:16px;color:#f0c14a;margin-top:8px;font-weight:600;}
-.rc-spl-margin.dim{color:#9a958c;font-style:italic;font-weight:400;}
-.rc-spl-note{font-size:12px;color:#8a857c;margin-top:18px;letter-spacing:1px;text-transform:uppercase;}
-.rc-splash-mute{position:absolute;top:18px;right:18px;font-size:16px;}
+@keyframes rc-rise{from{opacity:0;transform:translateY(14px);}to{opacity:1;transform:none;}}
+.rc-spl-photo{display:block;width:min(240px,62vw);aspect-ratio:4/3;object-fit:cover;margin:24px auto 0;border-radius:10px;border:1px solid rgba(233,228,218,.2);box-shadow:0 0 44px -10px rgba(255,122,46,.6);animation:rc-rise .5s .15s both;}
+.rc-spl-name{font:800 30px/1.1 var(--fd);margin-top:22px;letter-spacing:1px;text-transform:uppercase;animation:rc-rise .5s .2s both;}
+.rc-spl-sku{font:500 13px var(--fm);letter-spacing:.12em;color:#9a9389;margin-top:5px;}
+.rc-spl-price{font:600 min(56px,12vw)/1.1 var(--fm);color:#ff8f50;margin-top:10px;letter-spacing:-.03em;font-variant-numeric:tabular-nums;text-shadow:0 0 30px rgba(255,122,46,.55);}
+.rc-spl-margin{font:600 15.5px var(--fm);color:#4cc38a;margin-top:6px;font-variant-numeric:tabular-nums;}
+.rc-spl-margin.dim{color:#9a9389;font:italic 400 15px var(--fb);}
+.rc-spl-month{margin:22px auto 0;max-width:400px;text-align:left;animation:rc-rise .5s .3s both;}
+.rc-spl-mt{display:flex;justify-content:space-between;gap:10px;font:600 12px var(--fm);letter-spacing:.1em;color:#c4beb3;margin-bottom:7px;font-variant-numeric:tabular-nums;}
+.rc-spl-bar{position:relative;height:12px;border-radius:3px;background:#1a1e22;border:1px solid #2e343b;overflow:hidden;}
+.rc-spl-bar span{position:absolute;left:0;top:0;bottom:0;}
+.rc-spl-bar .now{background:linear-gradient(90deg,#c24e14,#ff7a2e);box-shadow:0 0 16px rgba(255,122,46,.75);transition:width .8s cubic-bezier(.2,1.25,.4,1);}
+.rc-spl-bar .was{background:#6b4026;}
+.rc-spl-hit{font:700 12.5px var(--fm);color:#4cc38a;letter-spacing:.14em;margin-top:7px;}
+.rc-spl-src{margin-top:18px;}
+.rc-spl-src-l{font:600 11.5px var(--fm);color:#c4beb3;letter-spacing:.12em;text-transform:uppercase;margin-bottom:7px;}
+.rc-splash .rc-bs{background:#14171a;border-color:#2e343b;color:#e9e4da;}
+.rc-splash .rc-bs:hover{border-color:#ff7a2e;color:#ff8f50;}
+.rc-splash .rc-bs.on{border-color:#4cc38a;color:#4cc38a;background:rgba(76,195,138,.14);}
+.rc-spl-note{font:500 11.5px var(--fm);color:#9a9389;margin-top:18px;letter-spacing:.12em;text-transform:uppercase;}
+.rc-splash-mute{position:fixed;top:18px;right:18px;font-size:16px;z-index:1;}
 .rc-bomtick{font-size:12px;padding:3px 6px;}
 .rc-noprint{}.rc-print-only{display:none;}.rc-print-header{display:none;}
+/* ── Ops terminal (Design A): the grid, mono figures, the control-room sidebar and header ── */
+.rc-main,.rc-gridbg{background-color:var(--bg);background-image:linear-gradient(var(--gridc) 1px,transparent 1px),linear-gradient(90deg,var(--gridc) 1px,transparent 1px);background-size:22px 22px;background-position:-1px -1px;}
+.rc-root[data-theme="night"] .rc-main,.rc-root[data-theme="night"].rc-gridbg{background-image:repeating-linear-gradient(0deg,var(--scan) 0 1px,transparent 1px 3px),linear-gradient(var(--gridc) 1px,transparent 1px),linear-gradient(90deg,var(--gridc) 1px,transparent 1px);background-size:auto,22px 22px,22px 22px;background-position:0 0,-1px -1px,-1px -1px;}
+.rc-root[data-theme="night"] .rc-side{background:linear-gradient(180deg,var(--sf),var(--bg));}
+.rc-hi{border-radius:7px;background:var(--acb);box-shadow:var(--glow);}
+.rc-nsec{font:600 11px/1 var(--fm);letter-spacing:.16em;padding:18px 10px 7px;}
+.rc-ni{border-radius:6px;padding:8px 10px;white-space:nowrap;gap:10px;}
+.rc-ni.on{background:var(--acs);color:var(--act);box-shadow:inset 3px 0 0 var(--ac);}
+.rc-ncnt{margin-left:auto;font:500 11.5px/1.55 var(--fm);font-variant-numeric:tabular-nums;color:var(--mt);border:1px solid var(--ln);border-radius:4px;padding:0 5px;min-width:24px;text-align:center;}
+.rc-ncnt.hot{color:var(--r);border-color:color-mix(in srgb,var(--r) 45%,transparent);background:var(--rs);}
+.rc-ni.on .rc-ncnt{color:var(--act);border-color:color-mix(in srgb,var(--ac) 45%,transparent);}
+.rc-nlive{margin-left:auto;display:inline-flex;align-items:center;gap:6px;font:600 11px/1 var(--fm);letter-spacing:.14em;color:var(--g);}
+.rc-live{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--g);flex:none;animation:rc-pulse 2s ease-out infinite;}
+@keyframes rc-pulse{0%{box-shadow:0 0 0 0 color-mix(in srgb,var(--g) 60%,transparent);}70%{box-shadow:0 0 0 7px transparent;}100%{box-shadow:0 0 0 0 transparent;}}
+.rc-top{padding:20px 30px 4px;}
+.rc-pt{font:700 32px/1 var(--fd);letter-spacing:.6px;text-transform:uppercase;}
+.rc-psub{font:500 12px/1.4 var(--fm);letter-spacing:.06em;text-transform:uppercase;margin-top:6px;}
+.rc-sys{margin-left:auto;display:inline-flex;align-items:center;gap:7px;font:600 11.5px/1 var(--fm);letter-spacing:.12em;text-transform:uppercase;color:var(--mt);border:1px solid var(--ln);background:var(--sf);border-radius:6px;padding:7px 10px;white-space:nowrap;}
+.rc-card{border-radius:10px;}
+.rc-stat{border-radius:10px;}
+.rc-sl{font:500 12px/1.3 var(--fm);letter-spacing:.03em;}
+.rc-sv{font:600 28px/1.08 var(--fm);letter-spacing:-.03em;}
+.rc-ss{font:500 12px/1.4 var(--fm);}
+.rc-tbl th{font:600 11.5px/1.3 var(--fm);letter-spacing:.08em;}
+.rc-badge{font:600 11px/1.45 var(--fm);letter-spacing:.06em;border-radius:5px;padding:2px 8px;}
+.rc-bc{font-family:var(--fm);border-radius:5px;}
+.rc-ml,.rc-ecm-ph,.rc-li-h{font-family:var(--fm);letter-spacing:.06em;}
+.rc-mv{font:600 18px/1.2 var(--fm);letter-spacing:-.02em;}
+.rc-aging-v{font:600 18px/1.25 var(--fm);}
+.rc-pl-net{font:600 22px/1.15 var(--fm);letter-spacing:-.02em;}
+.rc-pl-r>span:last-child,.rc-tot,.rc-ts-tbl td.n,.rc-my-tbl td.n{font-family:var(--fm);font-size:13px;}
+.rc-pipe-i .n{font:600 20px/1.15 var(--fm);}
+.rc-ts-pay b{font:600 22px/1 var(--fm);letter-spacing:-.02em;}
+.rc-s3-meter b{font:600 19px/1 var(--fm);}
+.rc-win-p{font:600 14.5px var(--fm);font-variant-numeric:tabular-nums;}
+.rc-ba{border-radius:7px;}
+.rc-root[data-theme="night"] .rc-ba{box-shadow:0 0 0 1px color-mix(in srgb,var(--ac) 35%,transparent),0 0 18px -6px color-mix(in srgb,var(--ac) 70%,transparent);}
+.rc-bs{border-radius:7px;}
+.rc-fb{border-radius:6px;}
+.rc-fi,.rc-si{border-radius:7px;}
+.rc-mod{border-radius:12px;border-top:2px solid var(--ac);box-shadow:var(--sh2);}
+.rc-toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:var(--sf);border:1px solid var(--ln);border-left:3px solid var(--ac);border-radius:8px;padding:11px 16px;display:flex;align-items:center;gap:14px;z-index:9999;box-shadow:var(--sh2);font:500 14px/1.45 var(--fb);color:var(--tx);max-width:calc(100vw - 32px);animation:rc-toastin .22s ease-out;}
+@keyframes rc-toastin{from{opacity:0;transform:translate(-50%,8px);}to{opacity:1;transform:translateX(-50%);}}
+.rc-toast .rc-bs{font-size:13px;color:var(--act);border-color:var(--ac);background:transparent;}
+/* the home: KPI strip, today's 3 moves, the goal ring, level and streaks, the revenue pulse, the live feed */
+.rc-home .rc-hd{display:flex;align-items:center;gap:8px 10px;flex-wrap:wrap;margin-bottom:12px;}
+.rc-k{font:600 12px/1.2 var(--fm);letter-spacing:.14em;text-transform:uppercase;color:var(--tx2);display:inline-flex;align-items:center;gap:8px;margin:0;}
+.rc-k2{font:500 11.5px var(--fm);letter-spacing:.06em;color:var(--mt);}
+.rc-mono{font-family:var(--fm);font-variant-numeric:tabular-nums;font-weight:600;color:var(--tx);}
+.rc-mono.big{font-size:20px;letter-spacing:-.02em;}
+.rc-home .money{color:var(--act);}
+.rc-root[data-theme="night"] .rc-home .money{text-shadow:0 0 18px color-mix(in srgb,var(--ac) 40%,transparent);}
+.rc-chip{font:600 11.5px/1.45 var(--fm);letter-spacing:.06em;text-transform:uppercase;color:var(--mt);border:1px solid var(--ln);border-radius:5px;padding:1px 7px;white-space:nowrap;}
+.rc-chip.warn{color:var(--w);border-color:color-mix(in srgb,var(--w) 40%,transparent);background:var(--ws);}
+.rc-chip.info{color:var(--b);border-color:color-mix(in srgb,var(--b) 40%,transparent);background:var(--bs);}
+.rc-kpis{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-bottom:16px;}
+.rc-kpi{display:block;width:100%;text-align:left;font-family:var(--fb);color:var(--tx);background:var(--sf);border:1px solid var(--ln);border-radius:10px;padding:14px 16px 13px;position:relative;overflow:hidden;box-shadow:var(--sh1);min-width:0;}
+.rc-kpi::before{content:"";position:absolute;left:0;top:0;right:0;height:2px;background:var(--ln);}
+.rc-kpi.m::before{background:var(--ac);}
+button.rc-kpi{cursor:pointer;transition:border-color .12s;}
+button.rc-kpi:hover{border-color:color-mix(in srgb,var(--ac) 55%,var(--ln));}
+button.rc-kpi:focus-visible{outline:2px solid var(--ac);outline-offset:2px;}
+.rc-kpi-l{font:600 11.5px/1.2 var(--fm);letter-spacing:.12em;text-transform:uppercase;color:var(--mt);}
+.rc-kpi-v{font:600 30px/1.1 var(--fm);letter-spacing:-.03em;color:var(--tx);margin:9px 0 5px;font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.rc-kpi-v.money{color:var(--act);}
+.rc-root[data-theme="night"] .rc-kpi-v.money{text-shadow:0 0 20px color-mix(in srgb,var(--ac) 40%,transparent);}
+.rc-kpi-s{font:500 12px/1.4 var(--fm);color:var(--mt);}
+.rc-kpi-s .bad,.rc-home .bad{color:var(--r);}.rc-kpi-s .ok{color:var(--g);}
+.rc-home-g{display:grid;grid-template-columns:minmax(0,1.45fr) minmax(0,1fr);gap:16px;}
+.rc-home-g.b{grid-template-columns:minmax(0,1fr) minmax(0,1fr);}
+.rc-home-g>.rc-card{padding:14px 16px;margin-bottom:16px;overflow:visible;}
+.rc-move{position:relative;display:flex;gap:12px;align-items:center;width:100%;text-align:left;background:var(--sf2);border:1px solid var(--ln2);border-radius:8px;padding:10px 12px;margin-bottom:8px;color:var(--tx);font-family:var(--fb);cursor:pointer;transition:border-color .12s,background .12s;}
+.rc-move:hover:not(:disabled){border-color:var(--ac);background:var(--acs);}
+.rc-move:focus-visible{outline:2px solid var(--ac);outline-offset:2px;}
+.rc-move:disabled{cursor:default;}
+.rc-move-n{width:30px;height:30px;flex:none;border-radius:6px;border:1px solid var(--ln);display:grid;place-items:center;font:600 14px var(--fm);color:var(--mt);background:var(--sf);}
+.rc-move-b{flex:1;min-width:0;display:grid;gap:3px;}
+.rc-move-t{font-size:14.5px;font-weight:600;overflow-wrap:anywhere;}
+.rc-move-w{font:500 12.5px/1.4 var(--fm);color:var(--mt);}
+.rc-move-w b{color:var(--act);font-weight:600;font-size:13.5px;}
+.rc-move-go{color:var(--mt);font-size:16px;}
+.rc-move-g{font:600 11.5px var(--fm);letter-spacing:.12em;color:var(--g);}
+.rc-move.done{background:var(--sf);}
+.rc-move.done .rc-move-t{text-decoration:line-through;color:var(--mt);}
+.rc-move.done .rc-move-n{background:var(--gs);border-color:var(--g);color:var(--g);}
+.rc-move.pop{animation:rc-ring-g 1.6s ease-out;}
+.rc-move.pop .rc-move-n{animation:rc-check .6s cubic-bezier(.2,1.6,.4,1);}
+@keyframes rc-check{0%{transform:scale(.3) rotate(-35deg);opacity:0;}100%{transform:none;opacity:1;}}
+@keyframes rc-ring-g{0%{box-shadow:0 0 0 0 color-mix(in srgb,var(--g) 60%,transparent);}100%{box-shadow:0 0 0 14px transparent;}}
+.rc-move-fly{position:absolute;right:52px;top:4px;font:700 15px var(--fm);color:var(--g);pointer-events:none;animation:rc-fly 1.7s ease-out forwards;}
+@keyframes rc-fly{0%{opacity:0;transform:translateY(8px);}20%{opacity:1;}100%{opacity:0;transform:translateY(-24px);}}
+.rc-mvn{font:600 12px var(--fm);letter-spacing:.12em;color:var(--mt);}
+.rc-mvn b{display:inline-block;color:var(--tx);font-size:15px;}
+.rc-mvn b.tick{color:var(--g);animation:rc-tick .5s cubic-bezier(.2,1.6,.4,1);}
+@keyframes rc-tick{0%{transform:translateY(-80%);opacity:0;}100%{transform:none;opacity:1;}}
+.rc-moves-f{display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:12.5px;color:var(--mt);margin-top:2px;}
+.rc-banked{font:600 13px var(--fm);color:var(--g);font-variant-numeric:tabular-nums;}
+.rc-moves-clear{font-size:14px;color:var(--g);padding:8px 0;}
+.rc-goalrow{display:flex;gap:16px;align-items:center;margin-bottom:12px;}
+.rc-ring{width:112px;height:112px;flex:none;}
+.rc-ring circle{fill:none;stroke-width:9;}
+.rc-ring .t{stroke:var(--ln);}
+.rc-ring .f{stroke:var(--ac);stroke-linecap:round;}
+.rc-ring .f.done{stroke:var(--g);}
+.rc-root[data-theme="night"] .rc-ring .f{filter:drop-shadow(0 0 5px color-mix(in srgb,var(--ac) 60%,transparent));}
+.rc-ring .m{stroke:var(--w);stroke-width:2.5;}
+.rc-ring .v{font:600 22px var(--fm);fill:var(--tx);text-anchor:middle;}
+.rc-ring .s{font:600 10.5px var(--fm);letter-spacing:.12em;fill:var(--mt);text-anchor:middle;}
+.rc-home .rc-goal-v{font:600 24px/1.15 var(--fm);color:var(--act);letter-spacing:-.02em;}
+.rc-home .rc-goal-v em{font-size:15px;color:var(--mt);letter-spacing:0;}
+.rc-level{border-top:1px solid var(--ln2);padding-top:11px;}
+.rc-level-top{display:flex;align-items:center;gap:8px;font-size:14.5px;}
+.rc-level-n{font:700 11.5px/1.5 var(--fm);letter-spacing:.12em;color:var(--bg);background:var(--tx);border-radius:4px;padding:0 6px;}
+.rc-level-bar{height:7px;background:var(--sf2);border:1px solid var(--ln);border-radius:3px;overflow:hidden;margin:9px 0 6px;}
+.rc-level-bar span{display:block;height:100%;background:var(--grad);transition:width .6s ease-out;}
+.rc-level-s{font:500 12px/1.4 var(--fm);color:var(--mt);}
+.rc-streaks{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:12px;}
+.rc-streak{display:flex;align-items:center;gap:8px;border:1px solid var(--ln);border-radius:8px;padding:8px 10px;background:var(--sf2);min-width:0;}
+.rc-streak b{font:600 22px/1 var(--fm);color:var(--mt);font-variant-numeric:tabular-nums;}
+.rc-streak.on b{color:var(--g);}
+.rc-streak span{font-size:12.5px;color:var(--tx2);line-height:1.3;}
+.rc-spark{position:relative;padding:26px 7px 0;cursor:crosshair;touch-action:pan-y;}
+.rc-spark-p{position:relative;height:80px;}
+.rc-spark-p svg{position:absolute;inset:0;width:100%;height:100%;overflow:visible;}
+.rc-spark .l{fill:none;stroke:var(--ac);stroke-width:2;vector-effect:non-scaling-stroke;stroke-linejoin:round;stroke-linecap:round;}
+.rc-spark .a{fill:color-mix(in srgb,var(--ac) 12%,transparent);stroke:none;}
+.rc-spark .b{stroke:var(--ln);stroke-width:1;vector-effect:non-scaling-stroke;}
+.rc-spark-x{position:absolute;top:0;bottom:0;width:1px;background:var(--mt);transform:translateX(-.5px);}
+.rc-spark-dot{position:absolute;width:9px;height:9px;border-radius:50%;background:var(--ac);border:2px solid var(--sf);transform:translate(-50%,-50%);}
+.rc-spark-dot.end{width:13px;height:13px;box-shadow:0 0 0 4px color-mix(in srgb,var(--ac) 25%,transparent);}
+.rc-root[data-theme="night"] .rc-spark-dot.end{box-shadow:0 0 0 4px color-mix(in srgb,var(--ac) 25%,transparent),0 0 16px var(--ac);}
+.rc-spark-tip{position:absolute;top:0;transform:translateX(-50%);font:600 12px/1.5 var(--fm);color:var(--tx);background:var(--sf2);border:1px solid var(--ln);border-radius:5px;padding:1px 7px;white-space:nowrap;pointer-events:none;font-variant-numeric:tabular-nums;}
+.rc-pulse-f{display:flex;justify-content:space-between;gap:8px;font:500 11.5px/1.4 var(--fm);color:var(--mt);text-transform:uppercase;letter-spacing:.06em;margin-top:8px;}
+.rc-feed .rc-act{font-size:13.5px;}
+.rc-feed>div[aria-live]{max-height:300px;overflow-y:auto;}
+.rc-act-t{font:500 12px/1.4 var(--fm);width:46px;font-variant-numeric:tabular-nums;}
+.rc-act-u{font-family:var(--fm);}
+.rc-act.in{animation:rc-slidein .5s ease-out;}
+@keyframes rc-slidein{from{opacity:0;transform:translateX(-14px);background:var(--acs);}to{opacity:1;transform:none;background:transparent;}}
+.rc-feed-none{font-size:13px;color:var(--mt);padding:8px 0;}
+.rc-brief{padding:12px 16px;margin-bottom:16px;}
+.rc-home .rc-brief .rc-hd{margin:0;}
+.rc-brief-st{font:500 12px/1.4 var(--fm);color:var(--mt);}
+.rc-brief-txt{white-space:pre-wrap;font:13px/1.65 var(--fm);color:var(--tx);margin-top:10px;background:var(--in);border:1px solid var(--ln);border-radius:8px;padding:10px 12px;max-height:360px;overflow-y:auto;}
+.rc-mini{grid-template-columns:repeat(auto-fit,minmax(150px,1fr));}
+.rc-mini .rc-stat{padding:11px 13px;}
+.rc-mini .rc-sv{font-size:22px;}
+.rc-alerts{padding:6px 14px;}
+.rc-alert{display:flex;gap:10px;align-items:baseline;padding:8px 0;border-bottom:1px solid var(--ln2);font-size:14px;}
+.rc-alert:last-child{border-bottom:0;}
+.rc-alert.bad{color:var(--r);}.rc-alert.warn{color:var(--w);}.rc-alert.info{color:var(--b);}.rc-alert.ok{color:var(--g);}
+.rc-win-src{background:var(--in);border:1px solid var(--ln);border-radius:6px;color:var(--tx2);font:12px var(--fb);padding:1px 2px;flex-shrink:0;}
+/* sign-in */
+.rc-login{display:flex;align-items:center;justify-content:center;min-height:100vh;padding:20px;}
+.rc-login-wrap{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,380px);width:100%;max-width:820px;background:var(--sf);border:1px solid var(--ln);border-top:2px solid var(--ac);border-radius:12px;overflow:hidden;box-shadow:var(--sh2);}
+.rc-login-hero{padding:28px;border-right:1px solid var(--ln);background-color:var(--sf2);background-image:repeating-linear-gradient(0deg,var(--scan) 0 1px,transparent 1px 3px);display:flex;flex-direction:column;gap:16px;}
+.rc-login-hero .rc-logo{padding:0;}
+.rc-login-k{font:600 12px/1 var(--fm);letter-spacing:.22em;color:var(--act);text-transform:uppercase;}
+.rc-login-h{font:800 42px/.98 var(--fd);text-transform:uppercase;letter-spacing:.5px;color:var(--tx);}
+.rc-login-boot{font:500 12.5px/1.9 var(--fm);color:var(--mt);margin-top:auto;}
+.rc-login-boot b{color:var(--g);font-weight:600;}
+.rc-caret{display:inline-block;width:8px;height:14px;background:var(--ac);vertical-align:-2px;margin-left:5px;animation:rc-blink 1.1s steps(1) infinite;}
+@keyframes rc-blink{50%{opacity:0;}}
+.rc-login-form{padding:28px;}
+.rc-login-note{font-size:12.5px;color:var(--mt);margin-top:14px;line-height:1.6;}
+@media(max-width:1100px){.rc-kpis{grid-template-columns:repeat(2,minmax(0,1fr));}}
+@media(max-width:900px){.rc-home-g,.rc-home-g.b{grid-template-columns:minmax(0,1fr);}.rc-top{padding:12px 16px 10px;}.rc-pt{font-size:24px;}.rc-psub{font-size:11.5px;}}
+@media(max-width:700px){.rc-login-wrap{grid-template-columns:minmax(0,1fr);}.rc-login-hero{border-right:0;border-bottom:1px solid var(--ln);padding:20px 22px;}.rc-login-h{font-size:32px;}.rc-login-boot{display:none;}.rc-login-form{padding:22px;}}
+@media(max-width:600px){.rc-kpi{padding:12px 12px 11px;}.rc-kpi-v{font-size:22px;}.rc-kpi-l{letter-spacing:.08em;}.rc-streaks{grid-template-columns:minmax(0,1fr);}.rc-ring{width:96px;height:96px;}.rc-goalrow{gap:12px;}.rc-sys{display:none;}.rc-move{padding:9px 10px;gap:10px;}.rc-move-fly{right:12px;}}
 @media(prefers-reduced-motion:reduce){.rc-root *{animation:none!important;transition:none!important;}}
 @media(max-width:900px){
 .rc-shell{grid-template-columns:minmax(0,1fr);}
@@ -3551,6 +3846,7 @@ const CSS=`@import url('${FONTS}');
 .rc-root,.rc-root[data-theme="night"]{--bg:#fff;--sf:#fff;--sf2:#f4f4f4;--in:#fff;--ln:#cfcfcf;--ln2:#e3e3e3;--tx:#111;--tx2:#333;--mt:#555;--ft:#888;--ac:#d4581a;--act:#b44810;--acs:#fbede4;--g:#1e7a34;--w:#8a5a00;--r:#b3261e;--b:#1f5f99;color-scheme:light;background:#fff!important;}
 .rc-side,.rc-top,.rc-scrim,.rc-noprint,.rc-ov,.rc-ba,.rc-bs,.rc-bsg,.rc-bsr,.rc-fb,.rc-si,.rc-qty,.rc-qb,.rc-splash,.rc-goal,.rc-lm{display:none!important;}
 .rc-shell{display:block!important;}
+.rc-main{background:#fff!important;}
 .rc-body{padding:0!important;max-width:none!important;}
 .rc-stat,.rc-card{box-shadow:none!important;break-inside:avoid;}
 .rc-card{overflow:visible!important;}
@@ -3572,16 +3868,22 @@ const CSS=`@import url('${FONTS}');
 function Login({onAuthed,theme}){
   const[email,setEmail]=useState("");const[pw,setPw]=useState("");const[err,setErr]=useState("");const[busy,setBusy]=useState(false);
   const submit=async(e)=>{if(e)e.preventDefault();if(busy||!email||!pw)return;setErr("");setBusy(true);const{session,error}=await signIn(email.trim(),pw);setBusy(false);if(error){setErr(error);return;}if(session)onAuthed(session);};
-  return (<div className="rc-root" data-theme={theme} style={{display:"flex",alignItems:"center",justifyContent:"center",minHeight:"100vh",padding:20}}><style>{CSS}</style>
-    <form onSubmit={submit} className="rc-card" style={{width:"100%",maxWidth:360,padding:24,marginBottom:0}}>
-      <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:18}}><div className="rc-hi">RC</div><div><div className="rc-hn">Rollin Coal</div><div className="rc-hs">Diesel Engine Specialists</div></div></div>
+  return (<div className="rc-root rc-login rc-gridbg" data-theme={theme}><style>{CSS}</style>
+    <div className="rc-login-wrap">
+    <div className="rc-login-hero">
+      <div className="rc-logo"><div className="rc-hi">RC</div><div><div className="rc-hn">Rollin Coal</div><div className="rc-hs">Diesel Engine Specialists</div></div></div>
+      <div><div className="rc-login-k">Ops terminal</div><div className="rc-login-h" style={{marginTop:8}}>Engines.<br/>Shop. Money.</div></div>
+      <div className="rc-login-boot" aria-hidden="true"><div>&gt; RC-OPS · MEDICINE HAT, AB</div><div>&gt; 2040 11TH AVE NW · 1-587-863-0505</div><div>&gt; LINK <b>SECURE</b> · AWAITING SIGN-IN<span className="rc-caret"/></div></div>
+    </div>
+    <form onSubmit={submit} className="rc-login-form">
       <div className="rc-mt" style={{marginBottom:14}}>Staff Sign In</div>
       <div className="rc-fg"><label className="rc-fl">Email</label><input className="rc-fi" type="email" autoComplete="username" value={email} onChange={e=>setEmail(e.target.value)} placeholder="you@rollin-coal.ca" autoFocus/></div>
       <div className="rc-fg"><label className="rc-fl">Password</label><input className="rc-fi" type="password" autoComplete="current-password" value={pw} onChange={e=>setPw(e.target.value)} placeholder="••••••••"/></div>
       {err&&<div style={{fontSize:13,color:"var(--r)",margin:"4px 0 8px",fontFamily:"var(--fb)"}}>{err}</div>}
       <button className="rc-ba" type="submit" disabled={busy||!email||!pw} style={{width:"100%",marginTop:6}}>{busy?"Signing in…":"Sign In"}</button>
-      <div style={{fontSize:12,color:"var(--mt)",marginTop:14,lineHeight:1.6}}>Accounts are created by the shop owner. Contact your administrator if you need access.</div>
+      <div className="rc-login-note">Accounts are created by the shop owner. Contact your administrator if you need access.</div>
     </form>
+    </div>
   </div>);
 }
 
@@ -3613,6 +3915,33 @@ const ICO={
 };
 const Ico=({n})=>(<svg className="rc-ico" viewBox="0 0 24 24" aria-hidden="true">{ICO[n]}</svg>);
 const THEMES=[["day","☀","Day"],["night","☾","Night"],["auto","◐","Auto"]];
+// The SOLD moment: the engine (its photo, or its name), the price counting up, the margin, and this month's goal bar
+// jumping from where it was to where the sale puts it. Tap anywhere (or Escape) to dismiss; it also goes by itself.
+function SoldSplash({s,d}){const w=s.soldSplash;const eng=(s.inventory||[]).find(x=>sameId(x.id,w.engineId));const[photoOk,setPhotoOk]=useState(true);const photo=photoOk&&eng?safeUrl(eng.photo):"";
+  const m=(+w.price||0)-(+w.cost||0);const soundOn=getSet(s).soundOn!==false;
+  const goal=+getSet(s).monthlyGoal||50000;const cm=Tsh.shopToday().slice(0,7);const mon=Tsh.monthLabel(cm).split(" ")[0].toUpperCase();
+  const mRev=Mny.sales(s).filter(x=>Mny.winDate(x).slice(0,7)===cm).reduce((a,x)=>a+(+x.price||0),0);
+  const before=Math.max(0,mRev-(Mny.winDate(w).slice(0,7)===cm?(+w.price||0):0));
+  const p0=goal>0?Math.min(100,before/goal*100):0,p1=goal>0?Math.min(100,mRev/goal*100):0;
+  const mk="spl-m"+w.id;if(!CNT_LAST.has(mk))CNT_LAST.set(mk,before);
+  const[jump,setJump]=useState(RM());useEffect(()=>{if(jump)return;const t=setTimeout(()=>setJump(true),600);return()=>clearTimeout(t);},[]);
+  const close=()=>d({type:"SPLASH",d:null});
+  useEffect(()=>{const k=e=>{if(e.key==="Escape")close();};document.addEventListener("keydown",k);return()=>document.removeEventListener("keydown",k);},[]);
+  const setSound=e=>{e.stopPropagation();const cur=(s.settings||[])[0];if(cur)d({type:"UPDATE",list:"settings",id:cur.id,d:{soundOn:!soundOn}});else d({type:"ADD",list:"settings",d:{soundOn:!soundOn},label:soundOn?"Horn muted":"Horn on"});};
+  return(<div className="rc-splash" role="dialog" aria-modal="true" aria-label={"Sold: "+(w.name||"engine")} onClick={close}>
+    <button className="rc-bs rc-splash-mute" aria-label={soundOn?"Mute the horn":"Turn the horn on"} onClick={setSound}>{soundOn?"🔊":"🔇"}</button>
+    <div className="rc-splash-in">
+      <div className="rc-stamp">SOLD</div>
+      {photo&&<img className="rc-spl-photo" src={photo} alt="" onError={()=>setPhotoOk(false)}/>}
+      <div className="rc-spl-name">{w.name}</div>{w.sku&&<div className="rc-spl-sku">{w.sku}</div>}
+      <div className="rc-spl-price"><Count k={"spl-p"+w.id} v={w.price} fmt={$$}/></div>
+      {w.cost>0?(<div className="rc-spl-margin">+<Count k={"spl-g"+w.id} v={m} fmt={$$}/> margin · {w.price>0?Math.round(m/w.price*100):0}%</div>):(<div className="rc-spl-margin dim">enter cost basis to see the true margin</div>)}
+      <div className="rc-spl-month"><div className="rc-spl-mt"><span>{mon} GOAL</span><span><Count k={mk} v={jump?mRev:before}/> / {$R(goal)}</span></div>
+        <div className="rc-spl-bar" role="progressbar" aria-label={mon+" goal"} aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(p1)}><span className="now" style={{width:(jump?p1:p0)+"%"}}/><span className="was" style={{width:p0+"%"}}/></div>
+        {jump&&<div className="rc-spl-hit">{mRev>=goal?"🏁 GOAL HIT":"+"+Math.round(p1-p0)+"% OF THE MONTH'S GOAL"}</div>}</div>
+      <div className="rc-spl-src" onClick={e=>e.stopPropagation()}><div className="rc-spl-src-l">Buyer came from</div><div style={{display:"flex",gap:6,justifyContent:"center",flexWrap:"wrap"}}>{SALE_SRC.map(([k,l])=>(<button key={k} className={"rc-bs"+(w.src===k?" on":"")} aria-pressed={w.src===k} onClick={()=>{d({type:"UPDATE",list:"wins",id:w.id,d:{src:k}});d({type:"SPLASH",d:{...w,src:k}});}}>{l}</button>))}</div></div>
+      <div className="rc-spl-note">Logged to Wins · tap anywhere to dismiss</div>
+    </div></div>);}
 
 export default function App(){
   const[s,d]=useReducer(reducer,EMPTY);const[loading,setLoading]=useState(true);const[loadErr,setLoadErr]=useState(false);const[time,setTime]=useState(new Date());
@@ -3622,13 +3951,14 @@ export default function App(){
   // Which login's data is on screen: a scanned tag waits for it (right after signing in, `loading` is
   // still false for one render before the load starts, with no shop data yet).
   const loadedFor=useRef(null);const took=data=>{fresh.current=new Set(data.__fresh||[]);delete data.__fresh;lastSaved.current=data;loadedFor.current=live.current.role;d({type:"LOAD",d:data});};
-  // Colour theme is a per-device preference (lib/prefs.js), never shop data: Day by default, Night, or Auto (follow the phone/computer).
-  const[themePref,setThemePref]=useState(()=>getPref("rc:theme","day"));
+  // Colour theme is a per-device preference (lib/prefs.js), never shop data: Night (the ops terminal) on a device that
+  // never picked one, Day, or Auto (follow the phone/computer). A saved choice is kept.
+  const[themePref,setThemePref]=useState(()=>getPref("rc:theme","night"));
   const[sysDark,setSysDark]=useState(()=>{try{return window.matchMedia("(prefers-color-scheme: dark)").matches;}catch(e){return false;}});
   const[navOpen,setNavOpen]=useState(false);
   useEffect(()=>{let mq;try{mq=window.matchMedia("(prefers-color-scheme: dark)");}catch(e){return;}const f=e=>setSysDark(e.matches);if(mq.addEventListener)mq.addEventListener("change",f);else mq.addListener(f);return()=>{if(mq.removeEventListener)mq.removeEventListener("change",f);else mq.removeListener(f);};},[]);
   const theme=themePref==="night"||(themePref==="auto"&&sysDark)?"night":"day";
-  useEffect(()=>{try{document.documentElement.style.colorScheme=theme==="night"?"dark":"light";document.body.style.background=theme==="night"?"#121314":"#f3f2ef";document.body.style.margin="0";}catch(e){}},[theme]);
+  useEffect(()=>{try{document.documentElement.style.colorScheme=theme==="night"?"dark":"light";document.body.style.background=theme==="night"?"#0d0f11":"#f4f2ec";document.body.style.margin="0";}catch(e){}},[theme]);
   const chooseTheme=k=>{setThemePref(k);setPref("rc:theme",k);};
   const[session,setSession]=useState(null);const[authReady,setAuthReady]=useState(!usingCloud);
   const authed=!usingCloud||!!session;
@@ -3702,16 +4032,16 @@ export default function App(){
     document.addEventListener("keydown",onKey);document.addEventListener("focusin",onIn);return()=>{document.removeEventListener("keydown",onKey);document.removeEventListener("focusin",onIn);};},[]);
   const TABL={overview:"Overview",inventory:"Engines",shop3d:"Shop 3D",lab:"Engine Lab",parts:"Parts",boms:"BOM",social:"Marketing",services:"Services",prospects:"Prospects",competitors:"Competitors",issues:"Issues",ecm:"ECM",customers:"Customers & Jobs",operations:"Operations",schedule:"Schedule",quotes:"Quotes",invoices:"Invoicing",employees:"Team",reports:"Reports"};
   const NAV=[{t:"overview",i:"home"},{h:"Shop"},{t:"inventory",i:"eng"},{t:"shop3d",i:"shop"},{t:"lab",i:"cube"},{t:"boms",i:"clip"},{t:"parts",i:"box"},{t:"issues",i:"wrench"},{t:"ecm",i:"chip"},{h:"Sales"},{t:"social",i:"mega"},{t:"prospects",i:"target"},{t:"competitors",i:"flag"},{t:"services",i:"tag"},{t:"quotes",i:"doc"},{t:"invoices",i:"cash"},{h:"Operations"},{t:"customers",i:"users"},{t:"operations",i:"truck"},{t:"schedule",i:"cal"},{h:"Business"},{t:"employees",i:"team"},{t:"reports",i:"chart"}];
-  const splash=(<div className="rc-root" data-theme={theme} style={{display:"flex",alignItems:"center",justifyContent:"center",minHeight:"100vh"}}><style>{CSS}</style><div style={{textAlign:"center"}}><div className="rc-hi" style={{width:50,height:50,fontSize:24,margin:"0 auto 12px"}}>RC</div><div style={{fontFamily:"var(--fd)",fontSize:17.5,letterSpacing:2,textTransform:"uppercase",color:"var(--tx2)"}}>Loading...</div></div></div>);
-  const toastEl=s.toast&&(<div role="status" className="rc-toast" style={{position:"fixed",bottom:20,left:"50%",transform:"translateX(-50%)",background:"var(--tx)",border:"none",borderLeft:"3px solid var(--ac)",borderRadius:10,padding:"11px 16px",display:"flex",alignItems:"center",gap:14,zIndex:9999,boxShadow:"var(--sh2)",fontFamily:"var(--fb)",fontSize:14,color:"var(--bg)",maxWidth:"calc(100vw - 32px)"}}><span>{s.toast.msg}</span>{s.toast.undo&&<button className="rc-bs" onClick={()=>d({type:"UNDO"})} style={{fontSize:13,color:"var(--act)",borderColor:"var(--ac)",background:"transparent"}}>↩ Undo</button>}</div>);
+  const splash=(<div className="rc-root rc-gridbg" data-theme={theme} style={{display:"flex",alignItems:"center",justifyContent:"center",minHeight:"100vh"}}><style>{CSS}</style><div style={{textAlign:"center"}}><div className="rc-hi" style={{width:50,height:50,fontSize:24,margin:"0 auto 12px"}}>RC</div><div style={{fontFamily:"var(--fm)",fontSize:13,letterSpacing:3,textTransform:"uppercase",color:"var(--tx2)"}}>Loading<span className="rc-caret"/></div></div></div>);
+  const toastEl=s.toast&&(<div role="status" className="rc-toast"><span>{s.toast.msg}</span>{s.toast.undo&&<button className="rc-bs" onClick={()=>d({type:"UNDO"})}>↩ Undo</button>}</div>);
   if(usingCloud&&!authReady)return splash;
   if(usingCloud&&!session)return <Login onAuthed={setSession} theme={theme}/>;
-  if(usingCloud&&role==="none")return (<div className="rc-root" data-theme={theme} style={{display:"flex",alignItems:"center",justifyContent:"center",minHeight:"100vh",padding:20}}><style>{CSS}</style><div style={{textAlign:"center",maxWidth:360}}><div className="rc-hi" style={{width:50,height:50,fontSize:24,margin:"0 auto 12px"}}>RC</div><div style={{fontSize:14.5,color:"var(--tx2)",marginBottom:16,lineHeight:1.6}}>This login doesn't have access yet. Ask the owner to set it up from the Team tab.</div><button className="rc-bs" onClick={leave}>Sign out</button></div></div>);
-  if(usingCloud&&loadErr)return (<div className="rc-root" data-theme={theme} style={{display:"flex",alignItems:"center",justifyContent:"center",minHeight:"100vh",padding:20}}><style>{CSS}</style><div style={{textAlign:"center",maxWidth:360}}><div className="rc-hi" style={{width:50,height:50,fontSize:24,margin:"0 auto 12px"}}>RC</div><div style={{fontFamily:"var(--fd)",fontSize:19,letterSpacing:1,textTransform:"uppercase",color:"var(--r)",marginBottom:8}}>Couldn't reach the server</div><div style={{fontSize:14,color:"var(--tx2)",marginBottom:16,lineHeight:1.6}}>Your shop data didn't load, so editing is paused to protect it — nothing will be saved over your cloud data until a clean load succeeds. Check your connection and retry.</div><button className="rc-ba" onClick={()=>window.location.reload()}>↻ Retry</button></div></div>);
+  if(usingCloud&&role==="none")return (<div className="rc-root rc-gridbg" data-theme={theme} style={{display:"flex",alignItems:"center",justifyContent:"center",minHeight:"100vh",padding:20}}><style>{CSS}</style><div style={{textAlign:"center",maxWidth:360}}><div className="rc-hi" style={{width:50,height:50,fontSize:24,margin:"0 auto 12px"}}>RC</div><div style={{fontSize:14.5,color:"var(--tx2)",marginBottom:16,lineHeight:1.6}}>This login doesn't have access yet. Ask the owner to set it up from the Team tab.</div><button className="rc-bs" onClick={leave}>Sign out</button></div></div>);
+  if(usingCloud&&loadErr)return (<div className="rc-root rc-gridbg" data-theme={theme} style={{display:"flex",alignItems:"center",justifyContent:"center",minHeight:"100vh",padding:20}}><style>{CSS}</style><div style={{textAlign:"center",maxWidth:360}}><div className="rc-hi" style={{width:50,height:50,fontSize:24,margin:"0 auto 12px"}}>RC</div><div style={{fontFamily:"var(--fd)",fontSize:19,letterSpacing:1,textTransform:"uppercase",color:"var(--r)",marginBottom:8}}>Couldn't reach the server</div><div style={{fontSize:14,color:"var(--tx2)",marginBottom:16,lineHeight:1.6}}>Your shop data didn't load, so editing is paused to protect it — nothing will be saved over your cloud data until a clean load succeeds. Check your connection and retry.</div><button className="rc-ba" onClick={()=>window.location.reload()}>↻ Retry</button></div></div>);
   if(loading)return splash;
   // An employee login, or the owner looking at an employee's screen: their timesheet and nothing else.
   if(isEmployee||(preview&&preview.emp)){
-    if(isEmployee&&!empId)return (<div className="rc-root" data-theme={theme} style={{display:"flex",alignItems:"center",justifyContent:"center",minHeight:"100vh",padding:20}}><style>{CSS}</style><div style={{textAlign:"center",maxWidth:360}}><div className="rc-hi" style={{width:50,height:50,fontSize:24,margin:"0 auto 12px"}}>RC</div><div style={{fontSize:14.5,color:"var(--tx2)",marginBottom:16,lineHeight:1.6}}>This login isn't linked to a team member yet. Ask the owner to set it up from the Team tab.</div><button className="rc-bs" onClick={leave}>Sign out</button></div></div>);
+    if(isEmployee&&!empId)return (<div className="rc-root rc-gridbg" data-theme={theme} style={{display:"flex",alignItems:"center",justifyContent:"center",minHeight:"100vh",padding:20}}><style>{CSS}</style><div style={{textAlign:"center",maxWidth:360}}><div className="rc-hi" style={{width:50,height:50,fontSize:24,margin:"0 auto 12px"}}>RC</div><div style={{fontSize:14.5,color:"var(--tx2)",marginBottom:16,lineHeight:1.6}}>This login isn't linked to a team member yet. Ask the owner to set it up from the Team tab.</div><button className="rc-bs" onClick={leave}>Sign out</button></div></div>);
     const me=isEmployee?{id:empId,name:meta.name||""}:{id:preview.emp,name:preview.name};
     return (<div className="rc-root" data-theme={theme}><style>{CSS}</style>
       <EmployeeShell s={s} d={d} me={me} email={session&&session.user&&session.user.email} preview={!isEmployee} onExit={()=>setPreview(null)} onSignOut={leave} saveBadge={saveBadge} themePref={themePref} chooseTheme={chooseTheme}/>
@@ -3719,11 +4049,17 @@ export default function App(){
       {toastEl}
     </div>);
   }
+  // Sidebar counts (mono): what's on the lot, what needs chasing. Red ones need action.
+  const NCNT={inventory:[(s.inventory||[]).filter(i=>isEngine(i)&&engStatus(i)!=="sold").length,"","engines not sold"],
+    invoices:[(s.invoices||[]).filter(v=>Mny.isOverdue(v)).length,"hot","invoices overdue"],quotes:[(s.quotes||[]).filter(q=>q.status==="sent"||q.status==="draft").length,"","open quotes"],
+    customers:[(s.jobs||[]).filter(j=>j.status!=="complete").length,"","open work orders"],ecm:[(s.ecmJobs||[]).filter(j=>j.status!=="complete").length,"","ECM jobs open"],
+    prospects:[resFollowups(s,0).length,"hot","follow-ups due"],issues:[(s.diagnoses||[]).filter(x=>x.outcome==="open").length,"","open diagnoses"]};
+  const nowMT=time.toLocaleTimeString("en-CA",{timeZone:Tsh.SHOP_TZ,hour:"2-digit",minute:"2-digit",hour12:false});
   return (<div className="rc-root" data-theme={theme}><style>{CSS}</style>
     <div className={"rc-shell"+(navOpen?" nav-open":"")}>
       <aside className="rc-side" aria-label="Main navigation">
         <div className="rc-logo"><div className="rc-hi">RC</div><div><div className="rc-hn">Rollin Coal</div><div className="rc-hs">Diesel Engine Specialists</div></div></div>
-        <nav className="rc-navlist">{NAV.map((n,k)=>n.h?(<div key={"h"+k} className="rc-nsec">{n.h}</div>):(<button key={n.t} className={"rc-ni"+(s.tab===n.t?" on":"")} aria-current={s.tab===n.t?"page":undefined} onClick={()=>{d({type:"TAB",v:n.t});setNavOpen(false);}}><Ico n={n.i}/>{TABL[n.t]}</button>))}</nav>
+        <nav className="rc-navlist">{NAV.map((n,k)=>n.h?(<div key={"h"+k} className="rc-nsec">{n.h}</div>):(<button key={n.t} className={"rc-ni"+(s.tab===n.t?" on":"")} aria-current={s.tab===n.t?"page":undefined} onClick={()=>{d({type:"TAB",v:n.t});setNavOpen(false);}}><Ico n={n.i}/>{TABL[n.t]}{n.t==="overview"?<span className="rc-nlive" aria-hidden="true"><span className="rc-live"/>LIVE</span>:NCNT[n.t]&&NCNT[n.t][0]>0?<span className={"rc-ncnt "+NCNT[n.t][1]} title={NCNT[n.t][0]+" "+NCNT[n.t][2]}>{NCNT[n.t][0]}</span>:null}</button>))}</nav>
         <div className="rc-sfoot">
           <div className="rc-seg" role="group" aria-label="Colour theme">{THEMES.map(([k,ic,l])=>(<button key={k} className={themePref===k?"on":""} aria-pressed={themePref===k} title={k==="auto"?"Follow this device's light/dark setting":l+" theme"} onClick={()=>chooseTheme(k)}><span aria-hidden="true">{ic}</span>{l}</button>))}</div>
           {usingCloud&&session&&<div className="rc-user"><span className="rc-dot"/><span>{session.user&&session.user.email}</span></div>}
@@ -3734,7 +4070,7 @@ export default function App(){
       <main className="rc-main">
         <div className="rc-top">
           <button className="rc-menu" aria-label="Open the menu" onClick={()=>setNavOpen(true)}><Ico n="menu"/></button>
-          <div style={{minWidth:0}}><h1 className="rc-pt">{TABL[s.tab]||"Overview"}</h1><div className="rc-psub">{time.toLocaleDateString("en-US",{weekday:"long",month:"long",day:"numeric"})} · Medicine Hat, AB</div></div>{preview==="staff"&&<button className="rc-fb on rc-ts-prevbar" onClick={()=>setPreview(null)}>👁 Previewing as staff · back to owner view</button>}{saveBadge}
+          <div style={{minWidth:0}}><h1 className="rc-pt">{TABL[s.tab]||"Overview"}</h1><div className="rc-psub">{time.toLocaleDateString("en-US",{weekday:"long",month:"long",day:"numeric"})} · Medicine Hat, AB · {nowMT} MT</div></div>{preview==="staff"&&<button className="rc-fb on rc-ts-prevbar" onClick={()=>setPreview(null)}>👁 Previewing as staff · back to owner view</button>}{saveBadge}{!saveBadge&&preview!=="staff"&&<span className="rc-sys" title={usingCloud?"Signed in; changes save to the shop's database":"Local mode: this browser only"}><span className="rc-live" aria-hidden="true"/>{usingCloud?"Online":"Local"}</span>}
         </div>
         <div className="rc-body">
       {s.tab==="overview"&&<Overview s={s} d={d} owner={ownerView}/>}
@@ -3759,16 +4095,7 @@ export default function App(){
       </main>
     </div>
     <Modals s={s} d={d} owner={ownerView} who={{role:ownerView?"owner":"staff"}}/>
-    {s.soldSplash&&(()=>{const w=s.soldSplash;const m=(+w.price||0)-(+w.cost||0);const soundOn=getSet(s).soundOn!==false;return(<div className="rc-splash" onClick={()=>d({type:"SPLASH",d:null})}>
-      <button className="rc-bs rc-splash-mute" onClick={e=>{e.stopPropagation();const cur=(s.settings||[])[0];if(cur)d({type:"UPDATE",list:"settings",id:cur.id,d:{soundOn:!soundOn}});else d({type:"ADD",list:"settings",d:{soundOn:!soundOn},label:soundOn?"Horn muted":"Horn on"});}}>{soundOn?"🔊":"🔇"}</button>
-      <div className="rc-splash-in">
-        <div className="rc-stamp">SOLD</div>
-        <div className="rc-spl-name">{w.name}</div>
-        <div className="rc-spl-price">{$$(w.price)}</div>
-        {w.cost>0?(<div className="rc-spl-margin">+{$$(m)} margin · {w.price>0?Math.round(m/w.price*100):0}%</div>):(<div className="rc-spl-margin dim">enter cost basis to see the true margin</div>)}
-        <div style={{marginTop:16}} onClick={e=>e.stopPropagation()}><div style={{fontSize:11,color:"var(--tx2)",letterSpacing:1,textTransform:"uppercase",marginBottom:6}}>Buyer came from</div><div style={{display:"flex",gap:6,justifyContent:"center",flexWrap:"wrap"}}>{SALE_SRC.map(([k,l])=>(<button key={k} className="rc-bs" style={w.src===k?{borderColor:"var(--g)",color:"var(--g)",background:"var(--gs)"}:{}} onClick={()=>{d({type:"UPDATE",list:"wins",id:w.id,d:{src:k}});d({type:"SPLASH",d:{...w,src:k}});}}>{l}</button>))}</div></div>
-        <div className="rc-spl-note">Logged to Wins · tap anywhere to dismiss</div>
-      </div></div>);})()}
+    {s.soldSplash&&<SoldSplash key={s.soldSplash.id} s={s} d={d}/>}
     {toastEl}
   </div>);
 }
