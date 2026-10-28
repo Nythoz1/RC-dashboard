@@ -287,6 +287,29 @@ export async function shopFolder() {
   return s.id + "/";
 }
 
+// Customer quote links (migration 0018). makeQuoteLink returns the page's address with the token
+// after the #; only a hash of it is stored, so a link can be shown once and replaced, never looked up.
+const linkErr = (error, fallback) => new Error(error.code === "42501" ? "Only the owner or the office can share a quote." : /function .*does not exist|PGRST202/i.test(error.message || "") || error.code === "PGRST202" ? "Quote links need the database update (migration 0018)." : error.message || fallback);
+export async function makeQuoteLink(quoteId) {
+  if (!supabase) throw new Error("Quote links need the cloud setup.");
+  const { data, error } = await supabase.rpc("quote_link_make", { p_quote_id: String(quoteId), p_days: 30 });
+  if (error) throw linkErr(error, "Couldn't make the link.");
+  return window.location.origin + "/quote.html#t=" + data;
+}
+export async function revokeQuoteLink(quoteId) {
+  if (!supabase) return 0;
+  const { data, error } = await supabase.rpc("quote_link_revoke", { p_quote_id: String(quoteId) });
+  if (error) throw linkErr(error, "Couldn't turn the link off.");
+  return data || 0;
+}
+// The quote's links, newest first: when made, by whom, expiry, views, the customer's answer.
+export async function quoteLinks(quoteId) {
+  if (!supabase) return [];
+  const { data, error } = await supabase.from("quote_links").select("created_at,created_by,expires_at,revoked,views,viewed_at,decided_at,decision,decided_name,decided_note").eq("quote_id", String(quoteId)).order("created_at", { ascending: false });
+  if (error) throw linkErr(error, "Couldn't read the links.");
+  return data || [];
+}
+
 // The engines a timesheet can name: id, stock #, name and stage of every engine that isn't sold
 // (migration 0015). Employee logins can't read the inventory, so their day editor asks for this.
 // Locally (no Supabase) returns null and the dashboard uses its own inventory.

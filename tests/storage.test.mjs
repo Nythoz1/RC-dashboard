@@ -57,7 +57,7 @@ test("a save that never reaches the database throws, so the app can retry it", a
 });
 
 test("before migration 0017 (no shops yet) the same build still reads and saves app_state", async () => {
-  const old = await mockSupabase({ users: [{ email: "owner@old.test", password: "owner-pass-1", app_metadata: { role: "owner" } }], skip: ["0017_shops.sql"] });
+  const old = await mockSupabase({ users: [{ email: "owner@old.test", password: "owner-pass-1", app_metadata: { role: "owner" } }], skip: ["0017_shops.sql", "0018_quote_links.sql"] });
   const keep = globalThis.fetch;
   globalThis.fetch = async (input, init) => old.handle(input instanceof Request ? input : new Request(String(input), init));
   try {

@@ -17,7 +17,7 @@ const CORS = {
   "Access-Control-Allow-Methods": "GET, POST, PATCH, PUT, DELETE, OPTIONS",
   "Access-Control-Expose-Headers": "content-range, x-total-count, x-supabase-api-version",
 };
-const TABLES = { app_state: "key", tenant_state: "tenant_id,key", tenants: "id", memberships: "user_id", inventory: "id", timesheet_entries: "id", timesheet_approvals: "id" };
+const TABLES = { app_state: "key", tenant_state: "tenant_id,key", tenants: "id", memberships: "user_id", quote_links: "token_hash", inventory: "id", timesheet_entries: "id", timesheet_approvals: "id" };
 const COL = /^[a-z_][a-z0-9_]*$/;
 const MAX_ROWS = 1000;
 const b64url = (s) => Buffer.from(s).toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");

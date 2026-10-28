@@ -7,7 +7,7 @@
 import { PGlite } from "@electric-sql/pglite";
 import { readFileSync } from "node:fs";
 
-const MIGRATIONS = ["0001_init.sql", "0002_auth.sql", "0003_inventory_table.sql", "0004_engine_photos_storage.sql", "0005_narrow_photo_listing.sql", "0010_ecm_files_bucket.sql", "0011_timesheets.sql", "0012_ts_locked_invoker.sql", "0013_known_roles_only.sql", "0014_merged_saves.sql", "0015_timesheet_engines.sql", "0016_timesheet_autofill.sql", "0017_shops.sql"];
+const MIGRATIONS = ["0001_init.sql", "0002_auth.sql", "0003_inventory_table.sql", "0004_engine_photos_storage.sql", "0005_narrow_photo_listing.sql", "0010_ecm_files_bucket.sql", "0011_timesheets.sql", "0012_ts_locked_invoker.sql", "0013_known_roles_only.sql", "0014_merged_saves.sql", "0015_timesheet_engines.sql", "0016_timesheet_autofill.sql", "0017_shops.sql", "0018_quote_links.sql"];
 
 // Rollin Coal, the first shop (0017). Logins with a role join it unless they
 // already belong to a shop, the way 0017 backfills the real logins.

@@ -550,6 +550,26 @@ const bothSaved=((await sb.sql("select value from tenant_state where key='rc:cus
 await oq.evaluate(()=>window.dispatchEvent(new Event("focus")));
 const ownerSees=await oq.waitForSelector('.rc-main :text("Office Merge Trucking")',{timeout:10000}).then(()=>true,()=>false);
 console.log("two people at once: customers saved "+JSON.stringify(bothSaved)+" | the owner's screen picked up the office's "+ownerSees);
+// The customer quote link (migration 0018): the owner makes a link from the quote, a customer opens it with no login,
+// sees that quote only (no internal notes, no costs) and approves it; the quote and the Shop Log show the answer.
+await sb.sql("insert into tenant_state (tenant_id, key, value) values ('c0a10000-0000-4000-8000-000000000001','rc:quotes',$1::jsonb) on conflict (tenant_id,key) do update set value = excluded.value || tenant_state.value",[JSON.stringify([{id:880001,quoteNum:"QT-SMK1",custId:0,description:"DD15 top end",date:new Date().toISOString().slice(0,10),validUntil:"30 days",taxRate:0.05,status:"draft",notes:"INTERNAL cost 4k",items:[{d:"Head gasket kit",q:1,r:1200,cost:800},{d:"Labour",q:10,r:125}]}])]);
+await oq.reload();await oq.waitForSelector(".rc-side");await oq.click('.rc-ni:has-text("Quotes")');
+await oq.locator('tr:has-text("DD15 top end") button:has-text("View")').click();
+await oq.click('.rc-mod button:has-text("Make a customer link")');
+const qlUrl=await oq.locator('.rc-mod input[aria-label="Customer link"]').inputValue({timeout:15000});
+const cc=await b.newContext({viewport:{width:390,height:844}});const cp=await cc.newPage();cp.on("pageerror",e=>errs.push("quote page pageerror: "+e.message));
+await cp.goto(qlUrl.replace(/^https?:\/\/[^/]+/,"http://localhost:4174"));await cp.waitForSelector(".qnum");
+const qlText=await cp.locator("main").innerText();
+await cp.fill("#nm","Pat Customer");await cp.fill("#nt","Bring it Monday");await cp.click("#yes");await cp.waitForSelector(".state.ok");
+const qlAfter=await cp.locator(".state").innerText();
+const qlRow=((await sb.sql("select value from tenant_state where key='rc:quotes'"))[0].value||[]).find(x=>x.id===880001)||{};
+const qlLog=((await sb.sql("select value from tenant_state where key='rc:activity'"))[0]?.value||[])[0]||{};
+const qlWide=await cp.evaluate(()=>document.documentElement.scrollWidth>window.innerWidth);
+await oq.click('.rc-mod button:has-text("Close")').catch(()=>{});await oq.evaluate(()=>window.dispatchEvent(new Event("focus")));
+await oq.waitForTimeout(1500);await oq.locator('tr:has-text("DD15 top end") button:has-text("View")').click();
+const qlOwner=await oq.waitForSelector('.rc-mod :text("Approved by Pat Customer")',{timeout:10000}).then(()=>true,()=>false);
+console.log("quote link: "+/#t=[0-9a-f]{64}$/.test(qlUrl)+" | page shows QT-SMK1 "+/QT-SMK1/.test(qlText)+", total $2,572.50 "+/\$2,572\.50/.test(qlText)+", internal note "+/INTERNAL|4k|800\.00/.test(qlText)+" | approved: "+qlAfter.split("\n")[0]+" | quote "+qlRow.status+" by "+(qlRow.custDecision||{}).name+" | log "+JSON.stringify(qlLog.msg)+" | phone page scrolls sideways "+qlWide+" | owner sees it "+qlOwner);
+await cc.close();
 await co.close();
 await cx.close();srv2.kill();mockSrv.close();
 console.log("errors:",errs.length?errs:"none");

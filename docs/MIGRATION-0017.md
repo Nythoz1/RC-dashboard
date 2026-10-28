@@ -38,7 +38,7 @@ The dashboard build on this branch works both before and after 0017.
 ## The window (about 15 minutes, after 4:30 PM so the timesheet autofill has run)
 
 1. Tell the crew to save and close the dashboard.
-2. **Apply** `supabase/migrations/0017_shops.sql`, either with `apply_migration` or pasted into the SQL Editor. It runs as one statement batch.
+2. **Apply** `supabase/migrations/0017_shops.sql`, then `0018_quote_links.sql` (customer quote links; it needs 0017), either with `apply_migration` or pasted into the SQL Editor. Each runs as one statement batch.
 3. **Deploy the three functions** from this commit, all with `--no-verify-jwt`:
    - `brief`: runs each shop on its own data, and stores into `tenant_state`.
    - `team-logins`: the owner manages only their own shop, and new logins join it.
@@ -70,7 +70,7 @@ Last, run the Supabase security advisor.
 
 ## If something's wrong: undo
 
-`supabase/rollback/0017_undo.sql` is DROP-free and keeps everything saved since 0017. It does four things:
+`supabase/rollback/0017_undo.sql` is DROP-free and keeps everything saved since 0017. Quote links (0018) stop working after it, since they read the shops; the quotes and their answers stay. It does four things:
 - copies Rollin Coal's lists back into `app_state`;
 - reopens `app_state` to owner and staff;
 - puts `merge_list` and `ts_autofill` back;
